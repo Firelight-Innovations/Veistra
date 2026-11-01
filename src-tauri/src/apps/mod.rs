@@ -18,6 +18,7 @@
 mod agent_cli;
 mod agent_context;
 mod agent_history;
+mod agent_install;
 pub(crate) mod agent_tab;
 mod agents;
 mod blender_viewer;

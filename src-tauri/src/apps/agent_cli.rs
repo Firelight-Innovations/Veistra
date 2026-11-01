@@ -35,8 +35,8 @@ pub(super) fn open(
         .map_err(|error| RpcError::new(INVALID_PARAMS, error.to_string()))?;
     let cli = harness::which(
         harness.descriptor().cli,
-        std::env::var_os("PATH").as_deref(),
-        std::env::var_os("PATHEXT").as_deref(),
+        super::agent_install::search_path().as_deref(),
+        super::agent_install::pathext().as_deref(),
     )
     .ok_or_else(|| RpcError::new(INVALID_PARAMS, "the selected harness CLI is not installed"))?;
     let ptys = app.state::<PtySessions>();

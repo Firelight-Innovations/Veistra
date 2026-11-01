@@ -563,6 +563,16 @@ export function onAgentTabLogin(cb: (payload: unknown) => void): Promise<Unliste
   return listen<unknown>(AGENT_TAB_LOGIN, (e) => cb(e.payload));
 }
 
+/** The event Rust sends an agent tab for each step of an install it started
+ *  (`apps::agent_install::INSTALL`). Payload is
+ *  `{ instanceId, harness, step, ok, hint, detail }`. */
+export const AGENT_TAB_INSTALL = "agent-tab:install";
+
+/** Hear an install's progress, to relay to the tab that started it. */
+export function onAgentTabInstall(cb: (payload: unknown) => void): Promise<UnlistenFn> {
+  return listen<unknown>(AGENT_TAB_INSTALL, (e) => cb(e.payload));
+}
+
 /** The event Rust sends a tab a saved session was opened in from elsewhere,
  *  such as the Agents page (`apps::agent_tab::RESTORED`). Payload is `{ instanceId }`. */
 export const AGENT_TAB_RESTORED = "agent-tab:restored";

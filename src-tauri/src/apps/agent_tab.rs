@@ -96,6 +96,8 @@ const INSTANCE_METHODS: &[&str] = &[
     "agent-tab/reset",
     "agent-tab/choose",
     "agent-tab/login",
+    "agent-tab/install",
+    "agent-tab/get-node",
     "agent-tab/btw-send",
     "agent-tab/btw-attach",
     "agent-tab/btw-cancel",
@@ -151,6 +153,8 @@ const UNGATED_METHODS: &[&str] = &[
     "agent-tab/reset",
     "agent-tab/choose",
     "agent-tab/login",
+    "agent-tab/install",
+    "agent-tab/get-node",
 ];
 
 /// The host, built on first use so it can hold the `AppHandle` it emits on,
@@ -165,6 +169,8 @@ pub struct Sessions {
     /// What each harness's agent offers in each worktree, asked once per
     /// launch.
     models: Catalogue,
+    /// The harnesses `agent-tab/install` is installing now.
+    pub(super) installs: super::agent_install::Installs,
     /// Held by a send from reading the tab's harness until its agent has
     /// started, and by a choice from its check until it is stored. Without
     /// it, a choice could land in between, and the tab would run one harness
@@ -572,12 +578,7 @@ pub fn call_for(
             // on: reading a file or rendering a frame needs no harness.
             let resolve = || refs::prompt::resolve(app, context, &uris);
             sessions.send_as(host, instance, resolve, |harness, model, resolved| {
-                let mut launch = spec(
-                    harness,
-                    std::env::var_os("PATH").as_deref(),
-                    std::env::var_os("PATHEXT").as_deref(),
-                )
-                .map_err(|hint| {
+                let mut launch = launch(harness).map_err(|hint| {
                     let name = harness.descriptor().name;
                     refused(
                         "harness",
@@ -707,6 +708,21 @@ pub fn call_for(
             login(app, instance, harness)?;
             Ok(json!({}))
         }
+        // The vendor's own installer for what the harness is missing, which
+        // the user pressed Install for. Signing in stays `agent-tab/login`.
+        "agent-tab/install" => {
+            let harness = match params.get("harness") {
+                Some(_) => harness_param(&params)?,
+                None => sessions.current(host, instance),
+            };
+            super::agent_install::start(app, instance, harness)?;
+            Ok(json!({}))
+        }
+        // npm comes with Node.js: its download page, in the user's browser.
+        "agent-tab/get-node" => {
+            super::agent_install::get_node(app)?;
+            Ok(json!({}))
+        }
         _ => Err(unreached(method)),
     }
 }
@@ -749,8 +765,8 @@ fn login(app: &AppHandle, instance: &str, harness: Harness) -> Result<(), RpcErr
     let descriptor = harness.descriptor();
     let cli = veistra_agent_host::harness::which(
         descriptor.cli,
-        std::env::var_os("PATH").as_deref(),
-        std::env::var_os("PATHEXT").as_deref(),
+        super::agent_install::search_path().as_deref(),
+        super::agent_install::pathext().as_deref(),
     )
     .ok_or_else(|| {
         refused(
@@ -815,11 +831,10 @@ fn harnesses(app: &AppHandle, context: &CallContext, tab: Option<&str>) -> Value
     // Asking starts each agent, so only a tab asks, and only in testing.
     let asks = tab.is_some() && refuse_unless_developer(app).is_ok();
     let choice = tab.and_then(|id| sessions.chosen().get(id).cloned());
-    let (path, pathext) = (std::env::var_os("PATH"), std::env::var_os("PATHEXT"));
     let harnesses: Vec<HarnessInfo> = REGISTRY
         .iter()
         .map(|d| {
-            let launch = spec(d.harness, path.as_deref(), pathext.as_deref());
+            let launch = launch(d.harness);
             let hint = launch.as_ref().err().copied();
             if let (Ok(launch), Some(here), true) = (launch, &here, asks) {
                 sessions.ask_models(app, launch, here.clone());
@@ -1111,13 +1126,31 @@ fn queued(result: Result<u64, HostError>) -> Result<Value, RpcError> {
         .map_err(host_error)
 }
 
+/// How to start `harness`, found on [`super::agent_install::search_path`],
+/// or the hint that says what is missing. A harness found only on the widened
+/// PATH gets that PATH too, so its adapter's npm shim finds `node`.
+pub(super) fn launch(harness: Harness) -> Result<LaunchSpec, veistra_agent_host::event::Hint> {
+    let path = super::agent_install::search_path();
+    let mut launch = spec(
+        harness,
+        path.as_deref(),
+        super::agent_install::pathext().as_deref(),
+    )?;
+    if let Some(path) = path.filter(|p| Some(p) != std::env::var_os("PATH").as_ref()) {
+        launch
+            .env
+            .push(("PATH".to_string(), path.to_string_lossy().into_owned()));
+    }
+    Ok(launch)
+}
+
 fn host_error(error: HostError) -> RpcError {
     let code = error.code();
     let hint = error.hint();
     refused(code, &error.to_string(), json!(hint))
 }
 
-fn refused(code: &str, message: &str, hint: Value) -> RpcError {
+pub(super) fn refused(code: &str, message: &str, hint: Value) -> RpcError {
     RpcError::with_data(REFUSED, message, json!({ "code": code, "hint": hint }))
 }
 
