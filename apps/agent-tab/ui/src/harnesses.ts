@@ -1,16 +1,18 @@
 /**
  * The harnesses the settings menu lists, each with the models it offers.
- * The menu shows Claude, Codex and Veistra in that order. One the host does
- * not report reads "Coming soon": Veistra is our own harness and still being
- * built. The harness in use is never locked, even before the host's answer
- * arrives.
+ * The menu shows Veistra, Claude and Codex in that order: Veistra, our own
+ * harness, first. One the host does not report reads "Coming soon", as
+ * Veistra does until its descriptor lands in the registry. One the host
+ * reports but cannot start, such as one not installed, can still be chosen:
+ * the tab then offers to install it. The harness in use is never locked, even
+ * before the host's answer arrives.
  */
 import type { HarnessInfo } from "./protocol.generated";
 import type { HarnessChoice, PickerChoice } from "./components/types";
 import { strings } from "./strings";
 
 /** The menu's order. A harness the host reports beyond these follows them. */
-export const HARNESSES = ["claude", "codex", "veistra"];
+export const HARNESSES = ["veistra", "claude", "codex"];
 
 /** The running session's model setting: what it offers and what it runs. */
 export interface RunningModel {
@@ -38,19 +40,17 @@ export function harnessChoices(
     const inUse = id === current;
     const live = inUse ? running : null;
     // The one in use is running, or about to: whatever the host has said so far.
-    const unavailable = inUse
-      ? null
-      : !info
-        ? strings.harnessSoon
-        : info.hint !== null
-          ? strings.harnessNotReady
-          : null;
+    const unavailable = inUse || info ? null : strings.harnessSoon;
+    // Not installed, or missing its adapter: still a choice, which the tab
+    // follows with its install card.
+    const notReady = info?.hint != null && !live;
     return {
       id,
       name,
-      models: unavailable === null ? (live?.models ?? info?.models ?? []) : [],
+      models: unavailable === null && !notReady ? (live?.models ?? info?.models ?? []) : [],
       model: live ? live.model : (info?.model ?? null),
       unavailable,
+      note: notReady ? strings.harnessNotReady : null,
     };
   });
 }

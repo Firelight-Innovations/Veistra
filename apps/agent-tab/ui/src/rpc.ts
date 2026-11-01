@@ -8,6 +8,7 @@ import type {
   Envelope,
   Harness,
   HarnessInfo,
+  Hint,
   QuestionOutcome,
 } from "./protocol.generated";
 import type { MentionHit } from "./mentions";
@@ -106,6 +107,14 @@ export const reset = () => invoke<object>("agent-tab/reset");
 /** Starts the harness's own sign-in in the browser; `onLogin` hears how it ended. */
 export const login = () => invoke<object>("agent-tab/login");
 /**
+ * Runs the vendor's own installer for whatever `harness` is missing, at the
+ * user's press; `onInstall` hears each step. Refused with `nodeMissing` before
+ * anything runs when npm is not found.
+ */
+export const install = (harness: Harness) => invoke<object>("agent-tab/install", { harness });
+/** Opens Node.js's download page in the user's browser. */
+export const getNode = () => invoke<object>("agent-tab/get-node");
+/**
  * Queues the change and answers with its number. The first status whose
  * `answered` reaches that number shows what the agent chose.
  */
@@ -153,6 +162,36 @@ export const onLogin = (cb: (harness: Harness, ok: boolean) => void) =>
   on(LOGIN, (payload) => {
     const { harness, ok } = payload as { harness: Harness; ok: boolean };
     cb(harness, ok);
+  });
+
+/** Mirrors `apps::agent_install::INSTALL`. */
+export const INSTALL = "agent-tab:install";
+
+/**
+ * One step of an install this tab started. `step` names the part running
+ * (`ok` is `null`) or the one that failed (`ok` is `false`); with `step` null
+ * the install has ended, and `hint` says what the harness still lacks.
+ */
+export interface InstallProgress {
+  harness: Harness;
+  step: "cli" | "adapter" | null;
+  ok: boolean | null;
+  hint: Hint | null;
+  /** The end of what a failed step printed. */
+  detail: string | null;
+}
+
+/** How the install this tab started is going. */
+export const onInstall = (cb: (progress: InstallProgress) => void) =>
+  on(INSTALL, (payload) => {
+    const p = payload as Partial<InstallProgress> & { harness: Harness };
+    cb({
+      harness: p.harness,
+      step: p.step ?? null,
+      ok: p.ok ?? null,
+      hint: p.hint ?? null,
+      detail: p.detail ?? null,
+    });
   });
 
 /** A refusal's `data`: which refusal, and the hint that explains it. */

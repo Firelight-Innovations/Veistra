@@ -73,7 +73,7 @@ export const strings = {
   harnessName: { claude: "Claude", codex: "Codex", veistra: "Veistra" } as Record<string, string>,
   /** A harness that is listed but cannot run yet. */
   harnessSoon: "Coming soon",
-  /** A harness the host reports but cannot start, such as one not installed or signed out. */
+  /** A harness the host reports but cannot start yet: choosing it offers to install it. */
   harnessNotReady: "Not set up",
   /** A harness whose models are not known: it runs its own default. */
   defaultModel: "Default model",
@@ -212,6 +212,30 @@ export const strings = {
     dismiss: "Dismiss notice",
     details: "Technical details",
     reset: (time: string) => `Your limit resets at ${time}.`,
+  },
+  /**
+   * The card that installs a harness the tab cannot find. The button runs the
+   * vendor's own installer; signing in stays the user's own step after it.
+   */
+  install: {
+    missing: (name: string) => `${name} isn't installed on this computer yet.`,
+    adapterMissing: (name: string) => `${name} needs one more piece to run here.`,
+    why: (name: string) =>
+      `Veistra can run ${name}'s official installer for you. Then you sign in with your own account.`,
+    typed: (command: string) => `Or run \`${command}\` in a terminal.`,
+    button: (name: string) => `Install ${name}`,
+    runningCli: (name: string) => `Installing ${name}…`,
+    runningAdapter: (name: string) => `Setting up ${name} for Veistra…`,
+    failed: (name: string) => `Could not install ${name}.`,
+    retry: "Try again",
+    details: "What the installer said",
+    needsNode: (name: string) =>
+      `Installing ${name} needs Node.js 22 or newer. Install it, then press Try again.`,
+    getNode: "Get Node.js",
+    needsShell: (name: string) => `${name}'s installer needs PowerShell, which was not found.`,
+    done: (name: string) => `${name} is installed. Sign in with your own account to start.`,
+    signIn: (name: string) => `Sign in to ${name}`,
+    busy: (name: string) => `${name} is being installed already.`,
   },
   login: {
     description: "Sign in to your account",
@@ -360,7 +384,7 @@ export const strings = {
     code === null ? "The agent stopped." : `The agent stopped with exit code ${code}.`,
   hint: {
     harnessMissing: ({ name, setup }: HarnessWords) =>
-      `${name} is not installed, or not on PATH. Install it, then run \`${setup.signIn}\` once in a terminal to sign in.`,
+      `${name} is not installed, or not on PATH. Install it with \`${setup.cliInstall}\`, then run \`${setup.signIn}\` once in a terminal to sign in.`,
     adapterMissing: ({ name, setup }: HarnessWords) =>
       `The ${name} ACP adapter is not installed. Run \`${setup.adapterInstall}\` in a terminal.`,
     signedOut: ({ name, setup }: HarnessWords) =>
@@ -386,5 +410,8 @@ export const strings = {
     harness: "The agent is not ready to run.",
     running: "This tab's agent runs another harness. Start a new session to switch.",
     spawn: "The agent could not be started.",
+    installing: "That harness is being installed already.",
+    nodeMissing: "Installing that harness needs Node.js 22 or newer.",
+    shellMissing: "That harness's installer needs PowerShell, which was not found.",
   } as Record<string, string>,
 };

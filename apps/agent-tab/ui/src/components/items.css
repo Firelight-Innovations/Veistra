@@ -400,3 +400,43 @@ details:not([open]) > .at-tool__head .at-tool__title {
   font-size: var(--k-size-small);
   overflow-wrap: anywhere;
 }
+
+.at-setup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--k-space-1-5);
+  padding: var(--k-space-2) var(--k-space-2-5);
+  border: 1px solid var(--k-panel-border);
+  border-radius: var(--k-radius-card);
+  color: var(--k-editor-fg);
+}
+
+.at-setup[aria-busy="true"] .at-setup__title {
+  color: var(--k-fg-muted);
+}
+
+.at-setup__body {
+  color: var(--k-fg-muted);
+  font-size: var(--k-size-small);
+}
+
+.at-setup__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--k-space-1);
+}
+
+.at-setup__detail summary {
+  color: var(--k-fg-faint);
+  font-size: var(--k-size-small);
+  cursor: pointer;
+}
+
+.at-setup__detail pre {
+  max-height: 160px;
+  margin: var(--k-space-1) 0 0;
+  overflow: auto;
+  font-size: var(--k-size-small);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
