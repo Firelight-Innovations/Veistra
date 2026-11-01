@@ -34,6 +34,7 @@ import { QuestionCard } from "./QuestionCard";
 import { Ring } from "./Ring";
 import { SendButton } from "./SendButton";
 import { SessionList } from "./SessionList";
+import { SetupCard } from "./SetupCard";
 import { StatusBadge } from "./StatusBadge";
 import { StopButton } from "./StopButton";
 import { SideChat } from "./SideChat";
@@ -84,6 +85,7 @@ export interface Slots {
   ErrorItem: ComponentType<P.ErrorItemProps>;
   Note: ComponentType<P.NoteProps>;
   Hint: ComponentType<P.HintProps>;
+  SetupCard: ComponentType<P.SetupCardProps>;
   // Composer
   Composer: ComponentType<P.ComposerProps>;
   ContextLink: ComponentType<P.ContextLinkProps>;
@@ -139,6 +141,7 @@ export const defaultSlots: Slots = {
   ErrorItem,
   Note,
   Hint,
+  SetupCard,
   Composer,
   ContextLink,
   SideChat,

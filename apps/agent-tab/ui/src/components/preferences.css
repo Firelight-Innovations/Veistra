@@ -563,3 +563,15 @@
     box-shadow: none;
   }
 }
+
+/* A harness that is not set up yet: still a choice, marked with a dot. */
+.at-model__harness[data-note]::after {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-inline-start: var(--k-space-1);
+  border-radius: 50%;
+  background: var(--k-warning-fg);
+  vertical-align: middle;
+}

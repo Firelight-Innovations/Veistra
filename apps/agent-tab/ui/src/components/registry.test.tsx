@@ -99,6 +99,7 @@ const CLAUDE: HarnessInfo = {
   setup: {
     cli: "claude",
     signIn: "claude",
+    cliInstall: "curl -fsSL https://claude.ai/install.sh | bash",
     adapterInstall: "npm i -g --omit=optional @agentclientprotocol/claude-agent-acp@0.90.0",
     adapterVersion: "0.90.0",
   },

@@ -164,6 +164,7 @@ describe("the model menu's harnesses", () => {
       ],
       model: "opus",
       unavailable: null,
+      note: null,
     },
     {
       id: "codex",
@@ -171,9 +172,17 @@ describe("the model menu's harnesses", () => {
       models: [{ value: "gpt-6-astra", name: "GPT-6 Astra" }],
       model: "gpt-6-astra",
       unavailable: null,
+      note: null,
     },
-    { id: "pi", name: "Pi", models: [], model: null, unavailable: null },
-    { id: "veistra", name: "Veistra", models: [], model: null, unavailable: "Coming soon" },
+    { id: "pi", name: "Pi", models: [], model: null, unavailable: null, note: null },
+    {
+      id: "veistra",
+      name: "Veistra",
+      models: [],
+      model: null,
+      unavailable: "Coming soon",
+      note: null,
+    },
   ];
   const EFFORT: PickerProps = { label: "Effort", value: "high", choices: [] };
 
@@ -253,7 +262,16 @@ describe("compact preferences and friendly notices", () => {
       <ModelMenu
         label="Agent settings"
         harness="claude"
-        harnesses={[{ id: "claude", name: "Claude", model: "Opus 5.5", models, unavailable: null }]}
+        harnesses={[
+          {
+            id: "claude",
+            name: "Claude",
+            model: "Opus 5.5",
+            models,
+            unavailable: null,
+            note: null,
+          },
+        ]}
         onChoose={vi.fn()}
         sections={[]}
       />,

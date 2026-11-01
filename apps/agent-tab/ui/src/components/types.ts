@@ -97,6 +97,24 @@ export interface EmptyStateProps {
   blocked: string | null;
   /** What the harness still needs, already in words, or `null`. */
   setupHint: string | null;
+  /** The card that sets the harness up, shown in place of `setupHint`, or `null`. */
+  setup?: SetupCardProps | null;
+}
+
+/** A harness's setup, with the buttons that do it (`SetupCard`). */
+export interface SetupCardProps {
+  /** What stands in the way, or what is happening: "Installing Claude…". */
+  title: string;
+  /** One more sentence, or `null`. */
+  body: string | null;
+  /** The command a person could type instead, already in words, or `null`. */
+  typed: string | null;
+  /** The end of what a failed installer printed, folded away, or `null`. */
+  detail: { label: string; text: string } | null;
+  /** The buttons, the first one primary. Empty while a step runs. */
+  actions: { label: string; onClick: () => void }[];
+  /** A step is running. */
+  busy: boolean;
 }
 
 export interface UserMessageProps {
@@ -308,6 +326,11 @@ export interface HarnessChoice {
   model: string | null;
   /** Why it cannot be picked, in words ("Coming soon"), or `null`. */
   unavailable: string | null;
+  /**
+   * What it still needs, in words ("Not set up"), or `null`. Unlike
+   * `unavailable` it can still be picked: the tab then offers to set it up.
+   */
+  note: string | null;
 }
 
 /** The composer's settings button: the harnesses and their models, then effort, mode and the rest. */

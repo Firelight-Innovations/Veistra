@@ -11,7 +11,9 @@
 //! (`config::NOT_OFFERED`). No token, config file or auth request is passed,
 //! and a `DEFAULT_AUTH_REQUEST` in Veistra's own environment is not inherited.
 
-use super::{AcpAdapter, Capabilities, Descriptor, Harness, Policy, Protocol, SkillDelivery};
+use super::{
+    AcpAdapter, Capabilities, CliInstall, Descriptor, Harness, Policy, Protocol, SkillDelivery,
+};
 
 /// Codex, through `codex-acp`.
 pub static CODEX: Descriptor = Descriptor {
@@ -25,6 +27,11 @@ pub static CODEX: Descriptor = Descriptor {
         version: "2.2.2",
     },
     sign_in: "codex login",
+    // OpenAI's own npm package. Its native binary is in its optional
+    // dependencies, so this install keeps them.
+    install: CliInstall::Npm {
+        package: "@openai/codex",
+    },
     env: &[("INITIAL_AGENT_MODE", "read-only")],
     // With this set, a signed-out session signs itself in: `chat-gpt` opens a
     // browser. Only the user's `/login` starts one, through `codex login`.

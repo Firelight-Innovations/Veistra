@@ -53,6 +53,7 @@ const CLAUDE: HarnessInfo = {
   setup: {
     cli: "claude",
     signIn: "claude",
+    cliInstall: "curl -fsSL https://claude.ai/install.sh | bash",
     adapterInstall: "npm i -g --omit=optional @agentclientprotocol/claude-agent-acp@0.90.0",
     adapterVersion: "0.90.0",
   },
@@ -69,6 +70,7 @@ const CODEX: HarnessInfo = {
   setup: {
     cli: "codex",
     signIn: "codex login",
+    cliInstall: "npm i -g @openai/codex",
     adapterInstall: "npm i -g --omit=optional @agentclientprotocol/codex-acp@2.2.2",
     adapterVersion: "2.2.2",
   },
@@ -1583,6 +1585,138 @@ describe("the harness", () => {
     await waitFor(() => expect(asked()).toBe(1));
     act(() => bridge.listeners.get("agent-tab:models")?.({ instanceId: "i", harness: "claude" }));
     await waitFor(() => expect(asked()).toBe(2));
+  });
+});
+
+describe("installing a harness", () => {
+  /** The harnesses, with Claude missing until `installed` says otherwise. */
+  function missing(hint: "harnessMissing" | "adapterMissing" = "harnessMissing") {
+    const state = { installed: false };
+    backend(
+      { status: null, seq: 0, items: [] },
+      {
+        "agent-tab/harnesses": () =>
+          Promise.resolve({
+            harnesses: [{ ...CLAUDE, hint: state.installed ? null : hint }, CODEX],
+            current: "claude",
+            blocked: null,
+          }),
+      },
+    );
+    return state;
+  }
+
+  function progress(payload: object) {
+    act(() =>
+      bridge.listeners.get("agent-tab:install")?.({
+        instanceId: "i",
+        harness: "claude",
+        ...payload,
+      }),
+    );
+  }
+
+  it("lists Veistra first, then Claude, then Codex", async () => {
+    missing();
+    render(<App />);
+    fireEvent.click(await settingsButton());
+    const group = await screen.findByRole("group", { hidden: true, name: "Harness" });
+    const names = within(group)
+      .getAllByRole("button")
+      .map((b) => b.textContent);
+    expect(names).toEqual(["Veistra", "Claude", "Codex"]);
+  });
+
+  it("offers to install a harness that is not installed, and runs the installer when asked", async () => {
+    const state = missing();
+    render(<App />);
+    const install = await screen.findByRole("button", { name: "Install Claude" });
+    expect(document.body.textContent).toContain(strings.install.missing("Claude"));
+    expect(document.body.textContent).toContain("https://claude.ai/install.sh");
+    await act(async () => {
+      fireEvent.click(install);
+    });
+    expect(bridge.invoke).toHaveBeenCalledWith("agent-tab/install", { harness: "claude" });
+    await screen.findByText(strings.install.runningCli("Claude"));
+    progress({ step: "adapter", ok: null, hint: "adapterMissing", detail: null });
+    await screen.findByText(strings.install.runningAdapter("Claude"));
+    state.installed = true;
+    progress({ step: null, ok: true, hint: null, detail: null });
+    const signIn = await screen.findByRole("button", { name: "Sign in to Claude" });
+    await act(async () => {
+      fireEvent.click(signIn);
+    });
+    expect(bridge.invoke).toHaveBeenCalledWith("agent-tab/login");
+    await screen.findByText(strings.login.started("Claude"));
+  });
+
+  it("says what the installer printed when a step fails, and can try again", async () => {
+    missing();
+    render(<App />);
+    const install = await screen.findByRole("button", { name: "Install Claude" });
+    await act(async () => {
+      fireEvent.click(install);
+    });
+    progress({ step: "cli", ok: false, hint: "harnessMissing", detail: "network down" });
+    progress({ step: null, ok: false, hint: "harnessMissing", detail: null });
+    await screen.findByText(strings.install.failed("Claude"));
+    expect(screen.getByText("network down")).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: strings.install.retry }));
+    });
+    const calls = bridge.invoke.mock.calls.filter(([m]) => m === "agent-tab/install");
+    expect(calls).toHaveLength(2);
+  });
+
+  it("asks for Node.js first when npm is missing, and opens its download page", async () => {
+    missing("adapterMissing");
+    const refused = new bridge.VeistraRpcError(-32010, "needs npm", {
+      code: "nodeMissing",
+      hint: null,
+    });
+    const invoke = bridge.invoke.getMockImplementation()!;
+    bridge.invoke.mockImplementation((method: string, params?: unknown) =>
+      method === "agent-tab/install" ? Promise.reject(refused) : invoke(method, params),
+    );
+    render(<App />);
+    const install = await screen.findByRole("button", { name: "Install Claude" });
+    await act(async () => {
+      fireEvent.click(install);
+    });
+    await screen.findByText(strings.install.needsNode("Claude"));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: strings.install.getNode }));
+    });
+    expect(bridge.invoke).toHaveBeenCalledWith("agent-tab/get-node");
+  });
+
+  it("lets a harness that is not installed be chosen, then offers to install it", async () => {
+    backend(
+      { status: null, seq: 0, items: [] },
+      {
+        "agent-tab/harnesses": () =>
+          Promise.resolve({
+            harnesses: [CLAUDE, { ...CODEX, hint: "harnessMissing" }],
+            current: "claude",
+            blocked: null,
+          }),
+      },
+    );
+    render(<App />);
+    fireEvent.click(await settingsButton());
+    const group = await screen.findByRole("group", { hidden: true, name: "Harness" });
+    const codex = within(group).getByRole("button", { name: "Codex" });
+    expect(codex.getAttribute("aria-disabled")).toBe("false");
+    await act(async () => {
+      fireEvent.click(codex);
+    });
+    expect(bridge.invoke).toHaveBeenCalledWith("agent-tab/choose", {
+      harness: "codex",
+      model: null,
+    });
+    act(() => bridge.listeners.get("agent-tab:chosen")?.({ instanceId: "i", harness: "codex" }));
+    await screen.findByRole("button", { name: "Install Codex" });
+    expect(document.body.textContent).toContain("npm i -g @openai/codex");
   });
 });
 

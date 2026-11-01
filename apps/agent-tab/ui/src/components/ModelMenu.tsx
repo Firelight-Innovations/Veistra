@@ -36,9 +36,10 @@ function sectionOf(
   current: string | null,
   onChoose: ModelMenuProps["onChoose"],
 ): PickerProps {
+  const why = harness.unavailable ?? harness.note;
   const choices: PickerChoice[] =
-    harness.unavailable !== null
-      ? [{ value: "", name: harness.unavailable }]
+    why !== null
+      ? [{ value: "", name: why }]
       : harness.models.length > 0
         ? harness.models
         : [{ value: "", name: strings.defaultModel }];
@@ -47,7 +48,7 @@ function sectionOf(
     label: harness.name,
     value: inUse ? (harness.models.length > 0 ? harness.model : "") : null,
     choices,
-    disabled: harness.unavailable !== null,
+    disabled: why !== null,
     onChange: onChoose && ((value) => onChoose(harness.id, value === "" ? null : value)),
   };
 }
@@ -231,8 +232,13 @@ export function ModelMenu({
                   }
                   title={
                     h.unavailable ??
-                    (harnessLocked && h.id !== harness ? strings.preferences.nextSession : h.name)
+                    (harnessLocked && h.id !== harness
+                      ? strings.preferences.nextSession
+                      : h.note
+                        ? `${h.name}: ${h.note}`
+                        : h.name)
                   }
+                  data-note={h.note === null ? undefined : ""}
                   onClick={() => {
                     if (!onChoose || h.unavailable !== null || (harnessLocked && h.id !== harness))
                       return;

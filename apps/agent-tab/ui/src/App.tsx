@@ -37,6 +37,7 @@ import type {
 } from "./protocol.generated";
 import { completion, isLogin, matching, offered, skillCommands, commandSupport } from "./commands";
 import { harnessChoices, type RunningModel } from "./harnesses";
+import { useSetup } from "./useSetup";
 import { latestUsage } from "./meters";
 import { latestValidation } from "./validation";
 import {
@@ -390,6 +391,17 @@ export default function App() {
   // What the session's own hints are about, even once it has ended. An error
   // item names its own harness, which an earlier session may have run.
   const session = infoOf(harnesses, status?.harness ?? null);
+  // The harness's own sign-in, as `/login` starts it.
+  const signIn = useCallback(() => {
+    setLoginNote(strings.login.started(current?.name ?? ""));
+    rpc.login().catch((err: unknown) => {
+      setLoginNote(null);
+      setNotice(noticeOf(err, strings.login.notStarted, current));
+    });
+  }, [current]);
+  const relist = useCallback(() => void listHarnesses(), [listHarnesses]);
+  // A harness that is not installed: the card that installs it, then signs in.
+  const setup = useSetup(running ? undefined : current, relist, signIn);
   const reportedCommands = useMemo(
     () =>
       status?.harness === (running ?? chosen) && status.commands.length
@@ -519,11 +531,7 @@ export default function App() {
       // The sign-in is the host's, not a prompt: the agent never sees it.
       if (isLogin(text)) {
         setDraft("");
-        setLoginNote(strings.login.started(current?.name ?? ""));
-        rpc.login().catch((err: unknown) => {
-          setLoginNote(null);
-          setNotice(noticeOf(err, strings.login.notStarted, current));
-        });
+        signIn();
         return;
       }
       // A cluster's chip is still being copied: sending now would leave it out.
@@ -576,6 +584,7 @@ export default function App() {
       setEffort,
       setUltracode,
       renameSession,
+      signIn,
     ],
   );
 
@@ -1277,9 +1286,14 @@ export default function App() {
                 <S.EmptyState
                   blocked={blocked}
                   setupHint={current?.hint ? hintText(current.hint, current) : null}
+                  setup={setup}
                 />
               ) : (
-                <Turns />
+                <>
+                  <Turns />
+                  {/* Chosen mid-conversation: the card follows what was said. */}
+                  {setup && <S.SetupCard {...setup} />}
+                </>
               )}
               {pendingPrompt !== null && <S.UserMessage text={pendingPrompt} pending />}
               {hint && <S.Hint text={hintText(hint, session)} />}

@@ -13,6 +13,7 @@ const PI: HarnessInfo = {
   setup: {
     cli: "pi",
     signIn: "pi login",
+    cliInstall: "npm i -g pi",
     adapterInstall: "npm i -g --omit=optional pi-acp@1.2.3",
     adapterVersion: "1.2.3",
   },

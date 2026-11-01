@@ -27,6 +27,11 @@ cli: string,
  */
 signIn: string, 
 /**
+ * The vendor's own command that installs the program, for a person to
+ * type; the tab's Install button runs the same installer.
+ */
+cliInstall: string, 
+/**
  * The command that installs the tested adapter.
  */
 adapterInstall: string, 
