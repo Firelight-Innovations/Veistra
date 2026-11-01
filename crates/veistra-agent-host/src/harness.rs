@@ -22,6 +22,7 @@ use crate::mcp::McpServer;
 
 mod claude;
 mod codex;
+pub mod install;
 mod managed;
 
 pub use claude::CLAUDE;
@@ -54,6 +55,12 @@ pub const NO_CWD_SEARCH: &str = "NoDefaultCurrentDirectoryInExePath";
 
 /// Every harness, in the order the tab lists them. The first is the one a tab
 /// runs until it chooses another.
+///
+/// TODO(veistra-harness): Veistra's own harness, a modified Pi, goes first
+/// here once it speaks ACP. Until then the tab lists it first as "Coming soon"
+/// (`apps/agent-tab/ui/src/harnesses.ts`). Its descriptor must keep `env` free
+/// of credentials: the Veistra backend's token comes from the harness's own
+/// sign-in, as Claude's and Codex's do. See `docs/agent-harnesses.md`.
 pub static REGISTRY: &[&Descriptor] = &[&CLAUDE, &CODEX];
 
 /// The harness a tab runs until it chooses another.
@@ -78,6 +85,9 @@ pub struct Descriptor {
     pub adapter: AcpAdapter,
     /// What the user runs in a terminal to sign in. Veistra never runs it.
     pub sign_in: &'static str,
+    /// How the tab installs `cli` when the user presses Install. See
+    /// [`install`].
+    pub install: CliInstall,
     /// More variables for the adapter's environment. Never a credential.
     pub env: &'static [(&'static str, &'static str)],
     /// Variables the adapter must not inherit from Veistra's environment, such
@@ -91,6 +101,30 @@ pub struct Descriptor {
     pub capabilities: Capabilities,
     /// How Veistra's built-in skills reach it. See [`SkillDelivery`].
     pub skills: SkillDelivery,
+}
+
+/// How a harness's own program is installed when the user asks the tab to.
+///
+/// Always the vendor's own installer, run as the vendor publishes it, and only
+/// at the user's press ([`install::plan`]). Veistra never ships, mirrors or
+/// patches the program, and signing in stays the user's own step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CliInstall {
+    /// The vendor's installer script, piped to PowerShell on Windows and to
+    /// bash elsewhere.
+    Script {
+        /// The PowerShell command.
+        windows: &'static str,
+        /// The POSIX shell command.
+        unix: &'static str,
+    },
+    /// The vendor's npm package, installed globally with its optional
+    /// dependencies.
+    Npm {
+        /// The package name, unpinned: the user's own program, kept current
+        /// as the vendor ships it.
+        package: &'static str,
+    },
 }
 
 /// How a harness is given Veistra's built-in skills (`src-tauri/src/skills.rs`).
@@ -134,6 +168,7 @@ impl Descriptor {
             setup: Setup {
                 cli: self.cli.to_string(),
                 sign_in: self.sign_in.to_string(),
+                cli_install: install::cli_command(self.install),
                 adapter_install: self.adapter.install(),
                 adapter_version: self.adapter.version.to_string(),
             },
@@ -157,6 +192,9 @@ pub struct Setup {
     pub cli: String,
     /// The command that signs in.
     pub sign_in: String,
+    /// The vendor's own command that installs the program, for a person to
+    /// type; the tab's Install button runs the same installer.
+    pub cli_install: String,
     /// The command that installs the tested adapter.
     pub adapter_install: String,
     /// The adapter version this build was tested with.

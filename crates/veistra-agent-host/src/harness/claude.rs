@@ -4,7 +4,9 @@
 //! `CLAUDE_CODE_EXECUTABLE`, so it never falls back to a copy of its own.
 //! Nothing else is passed: no flag, no token, no settings file.
 
-use super::{AcpAdapter, Capabilities, Descriptor, Harness, Policy, Protocol, SkillDelivery};
+use super::{
+    AcpAdapter, Capabilities, CliInstall, Descriptor, Harness, Policy, Protocol, SkillDelivery,
+};
 
 /// Claude, through `claude-agent-acp`.
 pub static CLAUDE: Descriptor = Descriptor {
@@ -18,6 +20,13 @@ pub static CLAUDE: Descriptor = Descriptor {
         version: "0.90.0",
     },
     sign_in: "claude",
+    // Anthropic's own native installer, as its setup docs publish it. Claude
+    // is closed source, so Veistra never ships or mirrors the binary: the
+    // installer fetches it from Anthropic at the user's press.
+    install: CliInstall::Script {
+        windows: "irm https://claude.ai/install.ps1 | iex",
+        unix: "curl -fsSL https://claude.ai/install.sh | bash",
+    },
     env: &[],
     env_remove: &[],
     // `default` asks before acting. A user whose own default is to act
