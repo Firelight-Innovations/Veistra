@@ -20,7 +20,7 @@ import {
   sendable,
   updateNote,
 } from "./notes";
-import { frameSeries, nearestTick, parseTicks, recordedTarget } from "./telemetry";
+import { frameSeries, nearestTick, parseTicks, recordedTarget, toViewport } from "./telemetry";
 
 describe("notes", () => {
   it("number notes once and never reuse a number", () => {
@@ -116,6 +116,41 @@ describe("telemetry", () => {
     });
     expect(recordedTarget(tick, 10, 10, { width: 640, height: 360 })?.nodePath).toBe("A/Big");
     expect(recordedTarget(null, 0, 0, { width: 1, height: 1 })).toBeNull();
+  });
+
+  // Base 640x360 under stretch aspect "keep" in a 1000x700 window: Godot
+  // draws the viewport 1000x562 with 69 px bars above and below it.
+  const letterboxed = (fields: string) =>
+    parseTicks(
+      `{"t":1,"kind":"tick","scene":"","viewport":[640,360]${fields},"nodes":[{"path":"L/Lamp","type":"MeshInstance3D","rect":[300,10,40,20]},{"path":"L/Room","type":"MeshInstance3D","rect":[0,0,640,360]}]}`,
+    )[0];
+
+  it("map a pin through the box the recorded window shows the viewport in", () => {
+    const tick = letterboxed(',"window":[1000,700],"content":[0,69,1000,562]');
+    const shown = { width: 500, height: 350 };
+    // (250, 50) is window (500, 100), which is viewport y 20: on the lamp.
+    expect(recordedTarget(tick, 250, 50, shown)?.nodePath).toBe("L/Lamp");
+    // (250, 20) is on the top bar, so on nothing, though the room fills the viewport.
+    expect(recordedTarget(tick, 250, 20, shown)).toBeNull();
+    // The same base in a 1400x600 window has bars at the sides instead.
+    const wide = letterboxed(',"window":[1400,600],"content":[167,0,1066,600]');
+    expect(toViewport(wide, 700, 300, { width: 1400, height: 600 })).toEqual([320, 180]);
+  });
+
+  it("stretch both ways when the window says the viewport fills it, as aspect ignore does", () => {
+    const tick = letterboxed(',"window":[1000,700],"content":[0,0,1000,700]');
+    const [, py] = toViewport(tick, 500, 100, { width: 1000, height: 700 });
+    expect(py).toBeCloseTo((100 / 700) * 360);
+  });
+
+  it("fit the viewport into the window at its own aspect when a tick does not say", () => {
+    for (const fields of ["", ',"window":[1000,700],"content":[0,69,1000]']) {
+      const tick = letterboxed(fields);
+      expect(tick.content).toBeUndefined();
+      const [px, py] = toViewport(tick, 500, 100, { width: 1000, height: 700 });
+      expect(px).toBeCloseTo(320);
+      expect(py).toBeCloseTo(20);
+    }
   });
 });
 

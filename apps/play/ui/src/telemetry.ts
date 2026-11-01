@@ -19,13 +19,34 @@ export interface Tick {
   /** Wall-clock milliseconds. */
   t: number;
   scene: string;
+  /** The longest frame since the tick before. */
   frameMs?: number;
   /** The game's viewport size, which `rect`s are measured in. */
   viewport?: [number, number];
+  /** The game window's size in pixels: the frame a take records. */
+  window?: [number, number];
+  /**
+   * Where that window shows the viewport, as x, y, width, height in window
+   * pixels. Outside it are the bars a stretch setting that keeps the
+   * viewport's aspect leaves.
+   */
+  content?: [number, number, number, number];
   nodes: TrackedNode[];
 }
 
+interface Size {
+  width: number;
+  height: number;
+}
+
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
+
+/** `count` finite numbers whose last two are sizes above zero, or undefined. */
+function sized(v: unknown, count: number): number[] | undefined {
+  if (!Array.isArray(v) || v.length !== count) return undefined;
+  const n = v.map(Number);
+  return n.every(Number.isFinite) && n[count - 2] > 0 && n[count - 1] > 0 ? n : undefined;
+}
 
 function node(v: unknown): TrackedNode | null {
   if (!isRecord(v) || typeof v.path !== "string" || !Array.isArray(v.rect)) return null;
@@ -47,12 +68,13 @@ export function parseTicks(text: string): Tick[] {
     try {
       const v: unknown = JSON.parse(line);
       if (!isRecord(v) || v.kind !== "tick" || typeof v.t !== "number") continue;
-      const vp = Array.isArray(v.viewport) ? v.viewport.map(Number) : null;
       ticks.push({
         t: v.t,
         scene: typeof v.scene === "string" ? v.scene : "",
         frameMs: typeof v.frameMs === "number" ? v.frameMs : undefined,
-        viewport: vp && vp.length === 2 ? [vp[0], vp[1]] : undefined,
+        viewport: sized(v.viewport, 2) as Tick["viewport"],
+        window: sized(v.window, 2) as Tick["window"],
+        content: sized(v.content, 4) as Tick["content"],
         nodes: (Array.isArray(v.nodes) ? v.nodes : [])
           .map(node)
           .filter((n): n is TrackedNode => n !== null),
@@ -81,20 +103,41 @@ export function nearestTick(ticks: readonly Tick[], wallMs: number, withinMs = 1
 }
 
 /**
+ * A point on the shown frame in the viewport pixels the tick's boxes are in.
+ * The frame is the recorded window, bars and all, so the point is placed in
+ * the window and then in the box the window shows the viewport in; a point
+ * on a bar lands outside the viewport. A tick without that box, from an
+ * addon build before it was reported, is read as the viewport fitted into
+ * the window at its own aspect and centred, which is what Godot draws for
+ * every stretch setting except aspect "ignore".
+ */
+export function toViewport(tick: Tick, x: number, y: number, shown: Size): [number, number] {
+  const [vw, vh] = tick.viewport ?? [shown.width, shown.height];
+  const [ww, wh] = tick.window ?? [shown.width, shown.height];
+  let box = tick.window && tick.content;
+  if (!box) {
+    const fit = Math.min(ww / vw, wh / vh);
+    box = [(ww - vw * fit) / 2, (wh - vh * fit) / 2, vw * fit, vh * fit];
+  }
+  const [cx, cy, cw, ch] = box;
+  const wx = (x / shown.width) * ww;
+  const wy = (y / shown.height) * wh;
+  return [((wx - cx) / cw) * vw, ((wy - cy) / ch) * vh];
+}
+
+/**
  * The smallest tracked box under a point. `x` and `y` are in the displayed
  * frame's pixels, `shown` is that frame's size; the tick's boxes are in the
- * game's viewport pixels, so the point is scaled into them first.
+ * game's viewport pixels, so the point is mapped into them first.
  */
 export function recordedTarget(
   tick: Tick | null,
   x: number,
   y: number,
-  shown: { width: number; height: number },
+  shown: Size,
 ): Target | null {
   if (!tick || shown.width <= 0 || shown.height <= 0) return null;
-  const [vw, vh] = tick.viewport ?? [shown.width, shown.height];
-  const px = (x / shown.width) * vw;
-  const py = (y / shown.height) * vh;
+  const [px, py] = toViewport(tick, x, y, shown);
   let best: TrackedNode | null = null;
   for (const n of tick.nodes) {
     const [rx, ry, rw, rh] = n.rect;
