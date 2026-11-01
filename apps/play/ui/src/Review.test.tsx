@@ -137,7 +137,9 @@ describe("Review", () => {
     await waitFor(() => expect(calls("play/notes-save").length).toBeGreaterThan(0), {
       timeout: 2000,
     });
-    const saved = calls("play/notes-save").slice(-1)[0]?.[1] as { notes: { notes: { n: number }[] } };
+    const saved = calls("play/notes-save").slice(-1)[0]?.[1] as {
+      notes: { notes: { n: number }[] };
+    };
     expect(saved.notes.notes.map((n) => n.n)).toEqual([1, 3]);
   });
 
