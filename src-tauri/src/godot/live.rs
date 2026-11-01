@@ -436,6 +436,49 @@ fn notes(ctx: &Ctx, p: &P) -> Result<Value, RpcError> {
     Ok(json!({ "notes": to_value(&wanted)? }))
 }
 
+/// Whether cluster `key`'s Play pane is on screen: the cluster is the one
+/// some window shows, and a Play instance is the active tab of one of its
+/// panes. Anything else (another tab, another cluster, a closed window)
+/// hides the game, which keeps running.
+pub fn play_shown(snapshot: &crate::shell_state::ShellSnapshot, key: &str) -> bool {
+    use crate::layout::PaneNode;
+    fn active(node: &PaneNode, out: &mut Vec<String>) {
+        match node {
+            PaneNode::Leaf { active_tab, .. } => out.extend(active_tab.clone()),
+            PaneNode::Split { children, .. } => children.iter().for_each(|c| active(c, out)),
+        }
+    }
+    snapshot.windows.iter().any(|w| {
+        w.active_cluster_id.as_deref() == Some(key)
+            && w.clusters.iter().filter(|c| c.id == key).any(|c| {
+                let mut tabs = Vec::new();
+                active(&c.tree, &mut tabs);
+                tabs.iter().any(|tab| {
+                    snapshot
+                        .instances
+                        .iter()
+                        .any(|i| &i.id == tab && i.app_id == "play")
+                })
+            })
+    })
+}
+
+/// Hide or show every running game after a change to the shell's state.
+/// Called beside `plane_webview::sync_visibility`, for the same reasons.
+pub fn sync_visibility(app: &tauri::AppHandle, snapshot: &crate::shell_state::ShellSnapshot) {
+    use tauri::Manager;
+    let godot = app.state::<super::Godot>();
+    for (key, session) in godot.sessions() {
+        if !session.embed.set_shown(play_shown(snapshot, &key)) {
+            continue;
+        }
+        let label = godot.pane(&key).and_then(|p| p.window);
+        if let Some(owner) = super::rpc::owner_of(app, label.as_deref()) {
+            session.embed.reapply(&owner);
+        }
+    }
+}
+
 /// The `live` part of `play/state`.
 pub fn state(ctx: &Ctx, key_since: u64) -> Value {
     let run = ctx.godot.runner.get(&ctx.key);
@@ -476,6 +519,70 @@ pub fn state(ctx: &Ctx, key_since: u64) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::PaneNode;
+    use crate::shell_state::{
+        Cluster, ShellSnapshot, SurfaceInstance, SurfaceKind, WindowPlacement,
+    };
+
+    fn snapshot(active_cluster: &str, active_tab: &str) -> ShellSnapshot {
+        let cluster = |id: &str| Cluster {
+            id: id.to_string(),
+            name: id.to_string(),
+            tree: PaneNode::Leaf {
+                id: format!("{id}-pane"),
+                tabs: vec![format!("{id}-play"), format!("{id}-files")],
+                active_tab: Some(format!("{id}-{active_tab}")),
+            },
+            project: None,
+            worktree: None,
+            active_terminal: None,
+            band_height: None,
+            page: None,
+            environment: None,
+            pinned: false,
+            icon: None,
+            environment_missing: false,
+        };
+        let instance = |id: &str, app: &str| SurfaceInstance {
+            id: id.to_string(),
+            app_id: app.to_string(),
+            kind: SurfaceKind::App,
+            title: app.to_string(),
+        };
+        ShellSnapshot {
+            windows: vec![WindowPlacement {
+                label: "main".into(),
+                clusters: vec![cluster("c1"), cluster("c2")],
+                active_cluster_id: Some(active_cluster.to_string()),
+                geometry: None,
+                right_page: None,
+            }],
+            instances: ["c1", "c2"]
+                .iter()
+                .flat_map(|c| {
+                    [
+                        instance(&format!("{c}-play"), "play"),
+                        instance(&format!("{c}-files"), "files"),
+                    ]
+                })
+                .collect(),
+            terminals: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_game_shows_only_with_its_cluster_on_screen_and_play_the_active_tab() {
+        assert!(play_shown(&snapshot("c1", "play"), "c1"));
+        assert!(!play_shown(&snapshot("c1", "files"), "c1"), "another tab");
+        assert!(
+            !play_shown(&snapshot("c2", "play"), "c1"),
+            "another cluster"
+        );
+        assert!(
+            !play_shown(&snapshot("c1", "play"), "c9"),
+            "no such cluster"
+        );
+    }
 
     #[test]
     fn asset_urls_encode_the_path_the_way_convert_file_src_does() {

@@ -115,6 +115,13 @@
   line-height: 1.4;
 }
 
+.k-comment-card__reply {
+  font-size: 11px;
+  color: var(--txt-secondary);
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
+
 .k-comment-card__resolve {
   align-self: flex-start;
   font-size: 11px;

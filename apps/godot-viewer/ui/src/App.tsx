@@ -20,6 +20,7 @@ import {
   createComment,
   listComments,
   resolveComment,
+  verdictComment,
   type Comment,
 } from "../../../shared/comments";
 import { formatRenderAge } from "../../../shared/age";
@@ -518,6 +519,10 @@ export default function App() {
             error={commentsError}
             onResolve={async (id, note) => {
               await resolveComment(id, note);
+              await refreshComments();
+            }}
+            onVerdict={async (id, verdict, reply) => {
+              await verdictComment(id, verdict, reply);
               await refreshComments();
             }}
             emptyHint="No comments on this scene yet. Select a node and leave one."

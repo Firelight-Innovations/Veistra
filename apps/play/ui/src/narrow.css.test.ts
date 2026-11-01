@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 // `?raw` rather than node:fs: the app tsconfig carries no Node types.
 import play from "./App.css?raw";
 import footer from "../../../shared/send-footer.css?raw";
+import toolbar from "../../../shared/viewer-toolbar.css?raw";
 
 /**
  * Structure checks for the narrow-pane layout. jsdom does no layout, so these
@@ -15,10 +16,16 @@ function rule(css: string, selector: string): string {
 }
 
 describe("narrow panes", () => {
-  it("Play header wraps and never clips the badge or state pill", () => {
-    expect(rule(play, ".pl__header")).toContain("flex-wrap: wrap");
-    expect(rule(play, ".pl__badge")).toContain("flex-shrink: 0");
-    expect(rule(play, ".pl__pill")).toContain("white-space: nowrap");
+  it("the shared toolbar wraps and never clips its chip or buttons", () => {
+    expect(rule(toolbar, ".k-vtb")).toContain("flex-wrap: wrap");
+    expect(rule(toolbar, ".k-vtb__chip")).toContain("white-space: nowrap");
+    expect(rule(toolbar, ".k-vtb__btn")).toContain("white-space: nowrap");
+  });
+
+  it("the live strip and the review wrap rather than overlap", () => {
+    expect(rule(play, ".pl-strip")).toContain("flex-wrap: wrap");
+    expect(rule(play, ".pl-review")).toContain("flex-wrap: wrap");
+    expect(rule(play, ".pl-review__transport")).toContain("flex-wrap: wrap");
   });
 
   it("Play footer buttons keep their labels on one line", () => {

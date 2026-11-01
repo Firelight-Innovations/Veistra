@@ -1,10 +1,13 @@
 /**
  * The wire shapes `play/*` answers with, restated from
- * `src-tauri/src/godot/runner.rs` and `rpc.rs`. The pane polls `play/state`
- * with a log cursor; nothing is pushed.
+ * `src-tauri/src/godot/runner.rs`, `rpc.rs`, `live.rs`, `session.rs` and
+ * `takes.rs`. The pane polls `play/state` with a log cursor and a key cursor;
+ * nothing is pushed.
  */
 import { invoke } from "@veistra/bridge";
 import type { AddonState } from "../../../shared/godot";
+import type { Comment } from "../../../shared/comments";
+import type { NotesDoc } from "./notes";
 
 export type RunState =
   { kind: "running" } | { kind: "stopped" } | { kind: "exited"; code: number | null };
@@ -29,6 +32,7 @@ export interface LogLine {
   stream: "stdout" | "stderr";
   level: Level;
   text: string;
+  /** Wall-clock milliseconds. */
   at: number;
 }
 
@@ -39,9 +43,53 @@ export interface LogSlice {
   truncated: boolean;
 }
 
+/** Where the game's window is (`embed::State`). */
+export type EmbedState =
+  | { kind: "waiting" }
+  | { kind: "embedded" }
+  | { kind: "poppedOut" }
+  | { kind: "ownWindow"; reason: string };
+
+/** Where this run's take is (`session::TakeState`). */
+export type TakeState =
+  | { state: "off" }
+  | { state: "starting"; number: number }
+  | { state: "recording"; id: string; number: number; startedAt: number | null }
+  | { state: "saving"; id: string; number: number }
+  | { state: "saved"; id: string; number: number }
+  | { state: "failed"; reason: string };
+
+/** A key the addon handled for Veistra: F7 or Ctrl Shift M. */
+export interface KeyEvent {
+  seq: number;
+  key: string;
+  t: number;
+}
+
+export interface Session {
+  runId: number;
+  embed: EmbedState;
+  embedded: boolean;
+  take: TakeState;
+  /** Wall time zero for the live strip: the take's first frame, else the run's start. */
+  zero: number;
+  /** Wall-clock milliseconds, F8 and the toolbar's. */
+  marks: number[];
+  keys: KeyEvent[];
+  ticks: number;
+  /** The addon version the game reported, or null before it has. */
+  addon: number | null;
+}
+
+export interface Live {
+  record: { on: boolean; blocked: string | null };
+  session: Session | null;
+}
+
 export interface PlayState {
   run: RunInfo | null;
   log: LogSlice | null;
+  live?: Live;
 }
 
 export interface Capture {
@@ -61,7 +109,59 @@ export interface AddonStatus {
   readOnly: boolean;
 }
 
-export const getState = (since: number) => invoke<PlayState>("play/state", { since });
+export interface TakeSummary {
+  version: number;
+  id: string;
+  number: number;
+  environment: { branch: string | null; commit: string | null };
+  project: string;
+  godot: string;
+  startedAt: number;
+  durationMs: number;
+  video: { width: number; height: number; fps: number };
+  scenes: { path: string; fromMs: number; toMs: number }[];
+  marks: number[];
+  counts: { errors: number; warnings: number };
+  ticks: number;
+}
+
+export interface ListedTake extends TakeSummary {
+  path: string;
+  bytes: number;
+  hasVideo: boolean;
+  drafts: number;
+}
+
+export interface TakeDetail {
+  take: ListedTake;
+  urls: { video: string; telemetry: string; log: string };
+  notes: NotesDoc;
+}
+
+export interface PickHit {
+  nodePath: string;
+  type?: string;
+  worldPoint?: number[] | null;
+  script?: string;
+  source?: string;
+}
+
+/** What `play/send` answers: the packet, and each note's comment. */
+export interface Sent {
+  packet: string;
+  packetMd: string;
+  comments: [number, string][];
+}
+
+export interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export const getState = (since: number, keySince = 0) =>
+  invoke<PlayState>("play/state", { since, keySince });
 export const run = (project?: string, scene?: string) =>
   invoke<PlayState>("play/run", { project, scene });
 export const stop = () => invoke<PlayState>("play/stop");
@@ -74,3 +174,22 @@ export const installAddon = (project?: string) =>
   invoke<AddonStatus>("play/addon-install", { project });
 export const removeAddon = (project?: string) =>
   invoke<AddonStatus>("play/addon-remove", { project });
+
+export const embedRect = (r: Rect, visible: boolean, window?: string) =>
+  invoke<{ ok: boolean }>("play/embed-rect", { ...r, visible, window });
+export const setRecord = (on: boolean, project?: string) =>
+  invoke<{ on: boolean }>("play/record", { on, project });
+export const mark = () => invoke<{ t: number; marks: number[] }>("play/mark");
+export const pick = (x: number, y: number) =>
+  invoke<{ hit: PickHit | null; t: number | null }>("play/pick", { x, y });
+export const still = () => invoke<{ png: string; source: string }>("play/still");
+export const popOut = () => invoke<{ embed: EmbedState }>("play/pop-out");
+export const dock = () => invoke<{ embed: EmbedState }>("play/dock");
+export const listTakes = () => invoke<{ takes: ListedTake[]; dir: string }>("play/takes");
+export const getTake = (id: string) => invoke<TakeDetail>("play/take", { id });
+export const deleteTake = (id: string) => invoke<{ deleted: string }>("play/take-delete", { id });
+export const saveNotes = (take: string, notes: NotesDoc) =>
+  invoke<{ saved: boolean }>("play/notes-save", { take, notes });
+export const sendNotes = (take: string, notes: unknown[]) =>
+  invoke<Sent>("play/send", { take, notes });
+export const listNotes = (take?: string) => invoke<{ notes: Comment[] }>("play/notes", { take });

@@ -102,6 +102,10 @@ pub struct Embed {
     hwnd: Mutex<Option<isize>>,
     saved: Mutex<Option<sys::Saved>>,
     last: Mutex<Option<(CssRect, bool)>>,
+    /// Whether the shell shows the pane at all: its cluster on screen and
+    /// Play the active tab. Decided in Rust from the shell's state, because a
+    /// hidden cluster's pane may not be running to say so itself.
+    shown: Mutex<bool>,
 }
 
 impl Default for Embed {
@@ -111,6 +115,7 @@ impl Default for Embed {
             hwnd: Mutex::new(None),
             saved: Mutex::new(None),
             last: Mutex::new(None),
+            shown: Mutex::new(true),
         }
     }
 }
@@ -198,6 +203,14 @@ impl Embed {
         }
     }
 
+    /// The shell showed or hid the pane. Answers whether that changed anything.
+    pub fn set_shown(&self, shown: bool) -> bool {
+        let mut now = self.shown.lock_or_panic();
+        let changed = *now != shown;
+        *now = shown;
+        changed
+    }
+
     pub fn last_rect(&self) -> Option<CssRect> {
         self.last.lock_or_panic().map(|(r, _)| r)
     }
@@ -211,7 +224,7 @@ impl Embed {
         let (Some(hwnd), Some((rect, visible))) = (self.hwnd(), *self.last.lock_or_panic()) else {
             return;
         };
-        let visible = visible && rect.w >= 1.0 && rect.h >= 1.0;
+        let visible = visible && *self.shown.lock_or_panic() && rect.w >= 1.0 && rect.h >= 1.0;
         if let Err(e) = sys::place(hwnd, to_screen(rect, owner), visible) {
             crate::veistra_log!("play: could not move the game window: {e}");
         }

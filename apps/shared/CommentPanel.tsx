@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { CircleCheck } from "lucide-react";
-import { anchorLabel, type Comment } from "./comments";
+import { anchorLabel, isActive, statusView, type Comment, type Verdict } from "./comments";
 import { SendButton, SendFooter } from "./SendFooter";
 import "./comment-panel.css";
 
@@ -18,6 +18,11 @@ export interface CommentPanelProps {
   loading: boolean;
   error: string | null;
   onResolve: (id: string, note: string) => void | Promise<void>;
+  /**
+   * Looks good or Still broken on a comment an agent marked fixed. Without
+   * it a fixed comment can only be resolved with a note, like an open one.
+   */
+  onVerdict?: (id: string, verdict: Verdict, reply?: string) => void | Promise<void>;
   /** What to say when there is nothing to show — each viewer's own honest
    *  empty-state sentence, per the workstream brief's "never leave a dead
    *  button, never fake data" rule. */
@@ -29,9 +34,14 @@ export function CommentPanel({
   loading,
   error,
   onResolve,
+  onVerdict,
   emptyHint,
 }: CommentPanelProps) {
-  const open = comments.filter((c) => c.status === "open").sort((a, b) => b.created - a.created);
+  // Fixed first: those wait on the person reading this.
+  const rank = (c: Comment) => (c.status === "fixed" ? 0 : 1);
+  const open = comments
+    .filter((c) => c.status !== "resolved")
+    .sort((a, b) => rank(a) - rank(b) || b.created - a.created);
   const resolved = comments
     .filter((c) => c.status === "resolved")
     .sort((a, b) => b.created - a.created);
@@ -56,7 +66,12 @@ export function CommentPanel({
         {!loading &&
           !error &&
           [...open, ...resolved].map((comment) => (
-            <CommentCard key={comment.id} comment={comment} onResolve={onResolve} />
+            <CommentCard
+              key={comment.id}
+              comment={comment}
+              onResolve={onResolve}
+              onVerdict={onVerdict}
+            />
           ))}
       </div>
 
@@ -77,9 +92,11 @@ export function CommentPanel({
 function CommentCard({
   comment,
   onResolve,
+  onVerdict,
 }: {
   comment: Comment;
   onResolve: (id: string, note: string) => void | Promise<void>;
+  onVerdict?: (id: string, verdict: Verdict, reply?: string) => void | Promise<void>;
 }) {
   const [resolving, setResolving] = useState(false);
   const [note, setNote] = useState("");
@@ -96,25 +113,74 @@ function CommentCard({
     }
   };
 
+  const verdict = async (v: Verdict) => {
+    if (!onVerdict) return;
+    setBusy(true);
+    try {
+      await onVerdict(comment.id, v, v === "broken" ? note.trim() || undefined : undefined);
+      setNote("");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // A viewer comment's open state reads "Open" here; "Sent" is Play's word
+  // for a note that went out in a packet.
+  const view = statusView(comment.status);
+  const label = comment.status === "open" ? "Open" : view.label;
+  const fixedByAgent = comment.status === "fixed" && comment.resolution;
+
   return (
     <div className={`k-comment-card k-comment-card--${comment.status}`}>
       <div className="k-comment-card__meta">
         <span className="k-comment-card__anchor">{anchorLabel(comment.anchor)}</span>
-        <span className={`k-badge k-badge--${comment.status === "open" ? "info" : "success"}`}>
+        <span className={`k-badge k-badge--${view.tone}`}>
           <span className="k-badge__dot" aria-hidden="true" />
-          {comment.status === "open" ? "Open" : "Resolved"}
+          {label}
         </span>
       </div>
       <p className="k-comment-card__body">{comment.body}</p>
 
-      {comment.status === "resolved" && comment.resolution && (
+      {(comment.replies ?? []).map((r) => (
+        <p key={r.at} className="k-comment-card__reply">
+          <strong>{r.by === "agent" ? "Agent" : "You"}:</strong> {r.body}
+        </p>
+      ))}
+
+      {(comment.status === "resolved" || fixedByAgent) && comment.resolution && (
         <p className="k-comment-card__resolution">
           <CircleCheck size={12} strokeWidth={1.5} aria-hidden="true" />
           {comment.resolution.note}
+          {comment.resolution.commit ? ` (${comment.resolution.commit})` : ""}
         </p>
       )}
 
-      {comment.status === "open" && !resolving && (
+      {fixedByAgent && onVerdict && (
+        <div className="k-comment-card__resolve-form">
+          <textarea
+            className="k-comment-card__resolve-input"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="If it is still broken, say what you saw"
+            rows={2}
+          />
+          <div className="k-comment-card__resolve-actions">
+            <button type="button" onClick={() => void verdict("broken")} disabled={busy}>
+              Still broken
+            </button>
+            <button
+              type="button"
+              className="k-comment-card__resolve-confirm"
+              onClick={() => void verdict("good")}
+              disabled={busy}
+            >
+              Looks good
+            </button>
+          </div>
+        </div>
+      )}
+
+      {(isActive(comment.status) || (comment.status === "fixed" && !onVerdict)) && !resolving && (
         <button
           type="button"
           className="k-comment-card__resolve"
@@ -124,7 +190,7 @@ function CommentCard({
         </button>
       )}
 
-      {comment.status === "open" && resolving && (
+      {(isActive(comment.status) || (comment.status === "fixed" && !onVerdict)) && resolving && (
         <div className="k-comment-card__resolve-form">
           <textarea
             className="k-comment-card__resolve-input"

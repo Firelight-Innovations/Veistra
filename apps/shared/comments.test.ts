@@ -7,7 +7,7 @@
 // `vitest.config.ts`'s note on why this is a per-file docblock rather than a
 // DOM for the whole config.
 import { describe, expect, it } from "vitest";
-import { anchorLabel, formatPlayTime, type Anchor } from "./comments";
+import { anchorLabel, formatPlayTime, isActive, statusView, type Anchor } from "./comments";
 
 describe("formatPlayTime", () => {
   it("pads minutes and seconds to the board's mm:ss.s shape", () => {
@@ -46,5 +46,35 @@ describe("anchorLabel", () => {
   it("drops the scene name when the anchor carries none", () => {
     const anchor: Anchor = { kind: "scene", scene: "", time: 5, screenshot: false };
     expect(anchorLabel(anchor)).toBe("Play · 00:05.0");
+  });
+});
+
+describe("take notes", () => {
+  it("label a take anchor with its number, time and object", () => {
+    const anchor: Anchor = {
+      kind: "take",
+      take: "2026-10-30-1402-0f3a",
+      n: 2,
+      atMs: 102_180,
+      packet: ".veistra/feedback/2026-10-30-1402-0f3a-1",
+      nodePath: "Hallway/Enemy_02",
+    };
+    expect(anchorLabel(anchor)).toBe("Note 2 · 01:42.2 · Hallway/Enemy_02");
+  });
+
+  it("read each status in the board's words", () => {
+    expect(statusView("open").label).toBe("Sent");
+    expect(statusView("working")).toEqual({ label: "Agent working", tone: "warning" });
+    expect(statusView("fixed").label).toBe("Fixed, check it");
+    expect(statusView("resolved").tone).toBe("success");
+  });
+
+  it("count open and working as the agent's work, not fixed", () => {
+    expect([
+      isActive("open"),
+      isActive("working"),
+      isActive("fixed"),
+      isActive("resolved"),
+    ]).toEqual([true, true, false, false]);
   });
 });

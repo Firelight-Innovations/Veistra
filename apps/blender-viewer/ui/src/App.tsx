@@ -22,6 +22,7 @@ import {
   createComment,
   listComments,
   resolveComment,
+  verdictComment,
   type Comment,
 } from "../../../shared/comments";
 import { SegmentedControl } from "../../../shared/SegmentedControl";
@@ -733,6 +734,10 @@ export default function App() {
             error={commentsError}
             onResolve={async (id, note) => {
               await resolveComment(id, note);
+              await refreshComments();
+            }}
+            onVerdict={async (id, verdict, reply) => {
+              await verdictComment(id, verdict, reply);
               await refreshComments();
             }}
             emptyHint="No comments on this model yet. Select a part and leave one."

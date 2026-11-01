@@ -2,8 +2,8 @@
  * The comment model shared by the Godot Viewer, the Blender Viewer and Play —
  * three apps, one store. `docs/VEISTRA-UX-REWORK.md` §3.4: a comment anchors to
  * a node path, a mesh part plus material, or a scene plus a playhead time plus
- * a screenshot, and lives as a file in `.veistra/comments/` inside the calling
- * cluster's environment.
+ * a screenshot, or is a note on a recorded take, and lives as a file in
+ * `.veistra/comments/` inside the calling cluster's environment.
  *
  * The three apps' Rust halves (`godot_viewer.rs`, `blender_viewer.rs`,
  * `play.rs`) all answer the same three methods below by delegating to
@@ -22,11 +22,27 @@ import { invoke } from "@veistra/bridge";
 
 // --- what the backend returns --------------------------------------------
 
-/** Where a comment points — exactly the three anchors the written spec names. */
+/** A note on a recorded Play take, filed by Send (`src-tauri/src/godot/feedback.rs`). */
+export interface TakeAnchor {
+  kind: "take";
+  take: string;
+  /** The note's number in its take; never reused. */
+  n: number;
+  atMs: number;
+  inMs?: number;
+  outMs?: number;
+  /** The feedback packet folder, relative to the environment. */
+  packet: string;
+  scene?: string;
+  nodePath?: string;
+}
+
+/** Where a comment points: the three anchors the written spec names, and a note on a take. */
 export type Anchor =
   | { kind: "node"; path: string }
   | { kind: "mesh"; part: string; material: string }
-  | { kind: "scene"; scene: string; time: number; screenshot: boolean };
+  | { kind: "scene"; scene: string; time: number; screenshot: boolean }
+  | TakeAnchor;
 
 /** As {@link Anchor}, minus the one field a caller never gets to assert:
  *  whether a screenshot exists is decided by whether {@link CreateCommentInput.screenshotBase64}
@@ -38,13 +54,27 @@ export type AnchorInput =
 
 export type Author = "user" | "agent";
 
-export type Status = "open" | "resolved";
+/**
+ * Where a comment is in the fix loop. An agent's resolve lands on `fixed`,
+ * for the person to check; only the person moves it to `resolved` (Looks
+ * good) or back to `open` (Still broken). See `comments::Status` in Rust.
+ */
+export type Status = "open" | "working" | "fixed" | "resolved";
 
 export interface Resolution {
   note: string;
   by: Author;
   /** Milliseconds since the Unix epoch. */
   at: number;
+  commit?: string;
+}
+
+/** A message after the first: an earlier fix note, or the person's reply. */
+export interface Reply {
+  by: Author;
+  body: string;
+  at: number;
+  commit?: string;
 }
 
 export interface Comment {
@@ -57,6 +87,8 @@ export interface Comment {
    *  comment (`#[serde(skip_serializing_if = "Option::is_none")]`), so an open
    *  comment's JSON simply has no `resolution` key. */
   resolution?: Resolution;
+  /** Absent when empty, as `resolution` is when unset. */
+  replies?: Reply[];
   created: number;
   updated: number;
 }
@@ -83,6 +115,34 @@ export const createComment = (input: CreateCommentInput) =>
 export const resolveComment = (id: string, note: string) =>
   invoke<Comment>("comments/resolve", { id, note });
 
+export type Verdict = "good" | "broken";
+
+/** The person's answer to a fixed comment: Looks good, or Still broken with a reply. */
+export const verdictComment = (id: string, verdict: Verdict, reply?: string) =>
+  invoke<Comment>("comments/verdict", { id, verdict, reply });
+
+/** Still the agent's to work on. */
+export function isActive(status: Status): boolean {
+  return status === "open" || status === "working";
+}
+
+/** How a status reads on a card or in a lane: the board's words and badge tones. */
+export function statusView(status: Status): {
+  label: string;
+  tone: "info" | "warning" | "accent" | "success";
+} {
+  switch (status) {
+    case "open":
+      return { label: "Sent", tone: "info" };
+    case "working":
+      return { label: "Agent working", tone: "warning" };
+    case "fixed":
+      return { label: "Fixed, check it", tone: "accent" };
+    case "resolved":
+      return { label: "Resolved", tone: "success" };
+  }
+}
+
 // --- display --------------------------------------------------------------
 
 /**
@@ -101,6 +161,11 @@ export function anchorLabel(anchor: Anchor): string {
       return anchor.scene
         ? `Play · ${formatPlayTime(anchor.time)} · ${anchor.scene}`
         : `Play · ${formatPlayTime(anchor.time)}`;
+    case "take": {
+      const where = anchor.nodePath ?? anchor.scene ?? "";
+      const when = formatPlayTime(anchor.atMs / 1000);
+      return `Note ${anchor.n} · ${when}${where ? ` · ${where}` : ""}`;
+    }
   }
 }
 
