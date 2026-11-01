@@ -96,8 +96,10 @@ breaks one.
   is the same command for the user's own terminal.
 - ACP is the wire protocol. A harness without ACP gets a translating adapter behind the same
   `Adapter` trait, never a second UI.
-- The user installs the adapter, pinned to a tested version. Record that version in
-  `docs/agent-host-versions.md`.
+- The adapter is pinned to a tested version. Record that version in
+  `docs/agent-host-versions.md`. The user installs it, from their terminal or with the tab's
+  Install button (see [Installing from the tab](#installing-from-the-tab)); Veistra never ships
+  either the harness or its adapter.
 - Every session that `harness::spec` builds starts in the harness's ask-first mode,
   `Policy::ask_first`. If the agent refuses to switch to it, the session does not run.
 - The tab must never offer two kinds of mode:
@@ -123,12 +125,55 @@ that are not registered yet, as "Coming soon", by the fallback names in `harness
   harness and that model. While the tab's agent runs, the menu cannot switch harness. A model
   chosen under the running harness changes that agent's model at once, through
   `agent-tab/set-config`. A choice under any other harness is ignored.
+- **The order.** Veistra, then Claude, then Codex (`HARNESSES` in
+  `apps/agent-tab/ui/src/harnesses.ts`). A registered harness that is not installed can still be
+  chosen: it is marked with a dot, its models read "Not set up", and the tab shows the setup
+  card below.
 - **The model.** While an agent runs, the tab's header shows its harness and its model.
 - **Hints.** Each `Hint` is a sentence template in the tab's `apps/agent-tab/ui/src/strings.ts`.
   A template fills in the harness's name and its setup commands from `HarnessInfo`, so a new
   harness gets correct install and sign-in hints without a new string. `tsc` holds the tab's table
   to `Hint`, so a new `Hint` needs a sentence in the tab. An error item records the harness that
   raised it, so its hint names that harness after the tab switches to another.
+
+## Installing from the tab
+
+When the chosen harness reports `harnessMissing` or `adapterMissing`, the tab shows a setup card
+(`useSetup.ts`, drawn by the `SetupCard` slot) in place of the hint. It names the command a person
+would type (`Setup.cliInstall` or `Setup.adapterInstall`) and has an Install button.
+
+- **What a press runs.** `agent-tab/install` asks `harness::install::plan` for what is missing and
+  runs it on its own thread, in order: the vendor's own installer for the program (Anthropic's
+  install script for Claude through PowerShell or bash, `npm i -g @openai/codex` for Codex, from
+  `Descriptor::install`), then the pinned adapter with `npm i -g --omit=optional`. Nothing runs
+  unless the whole plan can: a missing npm refuses the press as `nodeMissing`, and the card offers
+  "Get Node.js", which opens nodejs.org's download page (`agent-tab/get-node`).
+- **Who can press it.** Both methods are tab-only (`INSTANCE_METHODS`). An MCP `app_call` has no
+  instance, so an agent can never install anything. One install per harness runs at a time;
+  a second press is refused as `installing`.
+- **What the tab hears.** `agent-tab:install` carries `{harness, step, ok, hint, detail}` for each
+  step, and once more with `step: null` when the install ends. A failed step's `detail` is the
+  end of what it printed, shown folded under the card's retry button.
+- **Signing in.** Installing never signs in. When the install ends with no hint left, the card
+  offers "Sign in to {name}", which is `/login`.
+- **A PATH that is out of date.** An installer adds its folder to the user's PATH, but Veistra
+  read its PATH when it started. `agent_install::search_path` adds the folders the installers use
+  (`~/.local/bin`, and `%APPDATA%\npm` on Windows) after the user's own, and every lookup and
+  launch in the tab goes through it, so a harness is found without restarting Veistra. The
+  launched agent gets the widened PATH as `env`, which is not a credential.
+
+## Veistra's own harness
+
+Veistra's harness is a modified Pi. It is listed first and shows "Coming soon" until it has a
+descriptor. To wire it:
+
+1. Give the modified Pi an ACP entry point (an adapter like `pi-acp`, or Pi itself), and verify
+   it as step 1 of [Adding a harness](#adding-a-harness) says, including its ask-first mode.
+2. Add `Harness::Veistra` and its descriptor, and put it first in `REGISTRY`. That also makes it
+   the harness a new tab runs.
+3. Its sign-in is the Veistra backend's, run by its own CLI the way `claude auth login` is. The
+   token stays in the harness's own store and never in `env`. The backend and its sign-in are
+   built separately; this repository only adds the descriptor.
 
 ## Models
 
