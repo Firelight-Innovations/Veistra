@@ -1,0 +1,179 @@
+/*
+ * The shared viewer toolbar (`ViewerToolbar.tsx`). Sizes follow the
+ * `Components` board: a 44px bar, 28px buttons, a 22px chip. Wraps rather than
+ * scrolls when the pane is narrow, so nothing is ever cut off behind an edge.
+ */
+.k-vtb {
+  min-height: 44px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-surface-1);
+  color: var(--txt-primary);
+  font: var(--type-body);
+}
+
+.k-vtb__group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.k-vtb__actions {
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.k-vtb__spacer {
+  flex: 1;
+}
+
+.k-vtb__divider {
+  width: 1px;
+  height: 20px;
+  background: var(--border-subtle);
+}
+
+.k-vtb__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font: var(--type-caption);
+  white-space: nowrap;
+}
+
+.k-vtb__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 3px;
+  background: currentColor;
+}
+
+.k-vtb__chip--success {
+  background: var(--success-subtle);
+  color: var(--txt-success);
+}
+.k-vtb__chip--success .k-vtb__dot {
+  background: var(--success);
+}
+.k-vtb__chip--warning {
+  background: var(--warning-subtle);
+  color: var(--txt-warning);
+}
+.k-vtb__chip--warning .k-vtb__dot {
+  background: var(--warning);
+}
+.k-vtb__chip--danger {
+  background: var(--danger-subtle);
+  color: var(--txt-danger);
+}
+.k-vtb__chip--danger .k-vtb__dot {
+  background: var(--danger);
+}
+.k-vtb__chip--info {
+  background: var(--info-subtle);
+  color: var(--txt-info);
+}
+.k-vtb__chip--info .k-vtb__dot {
+  background: var(--info);
+}
+.k-vtb__chip--accent {
+  background: var(--accent-subtle);
+  color: var(--txt-accent);
+}
+.k-vtb__chip--accent .k-vtb__dot {
+  background: var(--accent);
+}
+.k-vtb__chip--idle {
+  background: var(--bg-layer-1);
+  color: var(--txt-tertiary);
+}
+.k-vtb__chip--idle .k-vtb__dot {
+  background: var(--state-idle);
+}
+
+.k-vtb__btn {
+  height: 28px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--txt-secondary);
+  font: var(--type-body);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.k-vtb__btn:hover:not(:disabled) {
+  border-color: var(--border-strong-1);
+  color: var(--txt-primary);
+}
+
+.k-vtb__btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.k-vtb__btn:disabled {
+  color: var(--txt-disabled);
+  cursor: default;
+  border-style: dashed;
+}
+
+.k-vtb__btn--icon {
+  width: 28px;
+  padding: 0;
+  justify-content: center;
+  border-color: transparent;
+  color: var(--txt-tertiary);
+}
+
+.k-vtb__btn--icon:disabled {
+  border-color: transparent;
+}
+
+.k-vtb__btn--primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--txt-on-accent);
+  font: var(--type-body-strong);
+}
+
+.k-vtb__btn--primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  color: var(--txt-on-accent);
+}
+
+.k-vtb__btn[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  background: var(--danger-subtle);
+  color: var(--txt-danger);
+  font: var(--type-body-strong);
+}
+
+.k-vtb__kbd {
+  font: 400 11px/1 var(--mono);
+  color: var(--txt-placeholder);
+}
+
+.k-vtb__select {
+  height: 28px;
+  max-width: 260px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle-1);
+  background: var(--bg-layer-1);
+  color: var(--txt-primary);
+  font: 400 12px/1 var(--mono);
+}
