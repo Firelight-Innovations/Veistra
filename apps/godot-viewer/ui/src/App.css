@@ -1,6 +1,7 @@
 /*
- * Godot Viewer — board 02 (U-Workspace): a 34px header, a node tree beside the
- * viewport render area, and a footer strip. New veistra-ds token names (see
+ * Godot Viewer — board 02 (U-Workspace): the shared viewer toolbar
+ * (`apps/shared/viewer-toolbar.css`), a node tree beside the viewport render
+ * area, and a footer strip. New veistra-ds token names (see
  * apps/shared/app.css's note on this) — the tokens workstream is landing their
  * definitions in `src/tokens.css` in parallel.
  */
@@ -14,41 +15,8 @@
   color: var(--txt-primary);
 }
 
-.gv__header {
-  min-height: 34px;
-  min-width: 0;
-  flex-shrink: 0;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 12px;
-  padding: 4px 10px;
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg-layer-1);
-}
-
-.gv__badge {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  color: var(--txt-secondary);
-  white-space: nowrap;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.gv__age {
-  white-space: nowrap;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  color: var(--txt-secondary);
-}
-
+/* Sits in the toolbar's Actions slot; the slot's spacer does the pushing right. */
 .gv__preview-toggle {
-  margin-left: auto;
   white-space: nowrap;
   display: flex;
   align-items: center;
@@ -126,6 +94,10 @@
   white-space: nowrap;
 }
 
+.gv__tree-notes {
+  flex-shrink: 0;
+}
+
 .gv__tree-type {
   margin-left: auto;
   font-size: 10px;
@@ -133,11 +105,12 @@
   flex-shrink: 0;
 }
 
+/* Padded on top too: the 3D view's own bar would otherwise touch the toolbar. */
 .gv__viewport {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  padding: 0 16px 16px;
+  padding: 8px 16px 16px;
   overflow: auto;
 }
 
@@ -283,18 +256,6 @@
   cursor: not-allowed;
 }
 
-.gv__select {
-  min-width: 0;
-  max-width: 220px;
-  font: inherit;
-  font-size: 11px;
-  padding: 3px 6px;
-  border-radius: var(--radius-sm, 4px);
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-surface-1);
-  color: var(--txt-primary);
-}
-
 .gv__notices {
   flex-shrink: 0;
   display: flex;
@@ -324,13 +285,6 @@
   font-size: 10px;
 }
 
-.gv__actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px 0;
-}
-
 .gv__action {
   display: flex;
   align-items: center;
@@ -348,11 +302,6 @@
 .gv__action:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-}
-
-.gv__phase {
-  font-size: 11px;
-  color: var(--txt-secondary);
 }
 
 .gv__note {

@@ -1,13 +1,18 @@
+/**
+ * The Godot Viewer: a scene's node tree beside a 3D view or its last rendered
+ * frame, read-only. The header is the shared `ViewerToolbar`, so Scene reads
+ * like Play and the Blender viewer: mode, scene, freshness, actions, leave.
+ */
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { openIn, reportPainted } from "@veistra/bridge";
 import {
   ChevronDown,
   ChevronRight,
-  Clock,
   ExternalLink,
   FolderTree,
   Image as ImageIcon,
   MessageSquarePlus,
+  Play as PlayIcon,
   RefreshCw,
 } from "lucide-react";
 import { CommentPanel } from "../../../shared/CommentPanel";
@@ -21,6 +26,7 @@ import { formatRenderAge } from "../../../shared/age";
 import { errorText, getStatus, openInGodot, type GodotStatus } from "../../../shared/godot";
 import { SegmentedControl } from "../../../shared/SegmentedControl";
 import { SendButton, SendFooter, useSendAction } from "../../../shared/SendFooter";
+import { ToolbarButton, ViewerToolbar } from "../../../shared/ViewerToolbar";
 import {
   getImage,
   getState,
@@ -36,6 +42,8 @@ import { AUTO_SEND_KEY, GODOT_TARGET, TIP_KEY } from "../../../shared/markupFlow
 import { MarkupBar, MarkupTip, PreviousMarkup } from "../../../shared/MarkupPanels";
 import { nodeLookup } from "./preview";
 import { usePreview, type PreviewState } from "./usePreview";
+import { sceneChip } from "./chip";
+import { openNotesByNode } from "./notes";
 import "./App.css";
 
 /**
@@ -47,6 +55,16 @@ const Scene3D = lazy(() => import("./Scene3D"));
 
 type Mode = "scene" | "play";
 type View = "3d" | "render";
+
+const MODES: readonly { value: Mode; label: string }[] = [
+  { value: "scene", label: "Scene" },
+  { value: "play", label: "Play" },
+];
+
+const VIEWS: readonly { value: View; label: string }[] = [
+  { value: "3d", label: "3D" },
+  { value: "render", label: "Render" },
+];
 
 const POLL_MS = 600;
 
@@ -146,9 +164,23 @@ export default function App() {
   const found = status?.executable.found ?? null;
   const readOnly = status?.environment.readOnly ?? false;
   const openCount = useMemo(() => comments.filter((c) => c.status === "open").length, [comments]);
+  const notes = useMemo(() => openNotesByNode(comments), [comments]);
   const job = preview ? null : (state?.job ?? null);
   const busy = job?.running === true;
   const noScenes = !preview && state !== null && state.scenes.length === 0;
+  const playable = !preview && !noScenes && !!state?.scene;
+
+  // `openIn` is the bridge's `veistra/open` (docs/tool-protocol.md §3). Play is
+  // opened, or brought forward, in this cluster and receives `{ scene }`, a
+  // `res://` path, as the payload of `OPENED_EVENT` (`answerOpen` in
+  // `src/shell/toolwindow/ToolWindow.tsx`). Play is expected to read it and run
+  // that scene: `run(project, scene)` in `apps/play/ui/src/rpc.ts` already takes
+  // one. Until Play listens for the event, this opens Play on its own choice.
+  const playScene = () => {
+    if (!state?.scene) return;
+    setProblem(null);
+    openIn("play", { scene: state.scene }).catch((e: unknown) => setProblem(errorText(e)));
+  };
 
   const { sent, send } = useSendAction(setProblem, errorText);
 
@@ -205,44 +237,108 @@ export default function App() {
 
   return (
     <div className="gv">
-      <header className="gv__header">
-        <span className="gv__badge">GODOT VIEWER · READ-ONLY</span>
-        <SegmentedControl
-          aria-label="View"
-          value={mode}
-          onChange={setMode}
-          options={[
-            { value: "scene", label: "Scene" },
-            { value: "play", label: "Play" },
-          ]}
-        />
-        {!preview && state && state.scenes.length > 0 && (
-          <select
-            className="gv__select"
-            aria-label="Scene"
-            value={state.scene ?? ""}
-            disabled={busy}
-            onChange={(e) => {
-              setScene(e.target.value);
-              setSelected(null);
+      {/* Mark up is not here: it belongs to the 3D view and sits on that view's
+          own bar (`apps/shared/MarkupScene.tsx`), which already knows when the
+          view can be drawn on. A second trigger here would need a handle into
+          that lazy-loaded view for no gain. */}
+      <ViewerToolbar
+        label="Godot"
+        mode={{ value: mode, options: MODES, onChange: setMode }}
+        subject={
+          !preview &&
+          state &&
+          state.scenes.length > 0 && (
+            <select
+              className="k-vtb__select"
+              aria-label="Scene"
+              value={state.scene ?? ""}
+              disabled={busy}
+              onChange={(e) => {
+                setScene(e.target.value);
+                setSelected(null);
+              }}
+            >
+              {state.scenes.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          )
+        }
+        status={sceneChip(state, preview)}
+        actions={
+          <>
+            {mode === "scene" && (
+              <>
+                <SegmentedControl
+                  aria-label="Scene view"
+                  value={view}
+                  onChange={setView}
+                  options={VIEWS}
+                />
+                <ToolbarButton
+                  icon={<RefreshCw size={13} strokeWidth={1.5} aria-hidden="true" />}
+                  disabled={preview || busy || noScenes || !state}
+                  onClick={() => void startRefresh(false)}
+                >
+                  Refresh tree
+                </ToolbarButton>
+                <ToolbarButton
+                  icon={<ImageIcon size={13} strokeWidth={1.5} aria-hidden="true" />}
+                  disabled={preview || busy || noScenes || !state?.engineFound}
+                  title={
+                    state?.engineFound === false
+                      ? "Rendering needs Godot 4."
+                      : "Opens a Godot window for a moment and saves one frame."
+                  }
+                  onClick={() => void startRefresh(true)}
+                >
+                  Render view
+                </ToolbarButton>
+              </>
+            )}
+            <ToolbarButton
+              icon={<PlayIcon size={13} strokeWidth={1.5} aria-hidden="true" />}
+              disabled={!playable}
+              title={
+                playable
+                  ? `Run ${state?.scene ?? "this scene"} in Play`
+                  : "Pick a scene in this project to play it."
+              }
+              onClick={playScene}
+            >
+              Play scene
+            </ToolbarButton>
+            <label className="gv__preview-toggle">
+              <input
+                type="checkbox"
+                checked={preview}
+                onChange={(e) => setPreview(e.target.checked)}
+              />
+              Preview with sample data
+            </label>
+          </>
+        }
+        leave={
+          <ToolbarButton
+            icon={<ExternalLink size={14} strokeWidth={1.5} aria-hidden="true" />}
+            label="Open in Godot"
+            disabled={!found || readOnly}
+            title={
+              readOnly
+                ? "The default branch is read-only; open a worktree to edit."
+                : found
+                  ? "Open this project in the Godot editor"
+                  : "Godot 4 was not found."
+            }
+            onClick={() => {
+              setProblem(null);
+              openInGodot().catch((e) => setProblem(errorText(e)));
             }}
-          >
-            {state.scenes.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-        )}
-        <span className="gv__age">
-          <Clock size={12} strokeWidth={1.5} aria-hidden="true" />
-          {formatRenderAge(shown?.renderedAt ?? null)}
-        </span>
-        <label className="gv__preview-toggle">
-          <input type="checkbox" checked={preview} onChange={(e) => setPreview(e.target.checked)} />
-          Preview with sample data
-        </label>
-      </header>
+          />
+        }
+      />
 
       {(problem || job?.error || (!preview && state && !state.engineFound)) && (
         <div className="gv__notices">
@@ -285,6 +381,7 @@ export default function App() {
                       depth={0}
                       selected={selected}
                       onSelect={setSelected}
+                      notes={notes}
                     />
                   ))}
                 </div>
@@ -292,42 +389,9 @@ export default function App() {
             </aside>
 
             <main className="gv__viewport">
-              <div className="gv__actions">
-                <SegmentedControl
-                  aria-label="Scene view"
-                  value={view}
-                  onChange={setView}
-                  options={[
-                    { value: "3d", label: "3D" },
-                    { value: "render", label: "Render" },
-                  ]}
-                />
-                <button
-                  type="button"
-                  className="gv__action"
-                  disabled={preview || busy || noScenes || !state}
-                  onClick={() => void startRefresh(false)}
-                >
-                  <RefreshCw size={13} strokeWidth={1.5} aria-hidden="true" />
-                  Refresh tree
-                </button>
-                <button
-                  type="button"
-                  className="gv__action"
-                  disabled={preview || busy || noScenes || !state?.engineFound}
-                  title={
-                    state?.engineFound === false
-                      ? "Rendering needs Godot 4."
-                      : "Opens a Godot window for a moment and saves one frame."
-                  }
-                  onClick={() => void startRefresh(true)}
-                >
-                  <ImageIcon size={13} strokeWidth={1.5} aria-hidden="true" />
-                  Render view
-                </button>
-                {busy && <span className="gv__phase">{job?.phase}...</span>}
-                {sourceLabel && !busy && <span className="gv__phase">{sourceLabel}</span>}
-              </div>
+              {/* The refresh phase is the toolbar chip now; how the tree was
+                  read stays here, beside what it describes. */}
+              {sourceLabel && !busy && <p className="gv__note">{sourceLabel}</p>}
               {shown?.note && !busy && <p className="gv__note">{shown.note}</p>}
               {view === "3d" && !preview && (
                 <Preview3DStatus
@@ -478,35 +542,14 @@ export default function App() {
       )}
       <SendFooter
         trailing={
-          <>
-            <button
-              type="button"
-              className="gv__footer-btn"
-              onClick={() => setCommentsOpen((v) => !v)}
-            >
-              <MessageSquarePlus size={13} strokeWidth={1.5} aria-hidden="true" />
-              Comments {openCount > 0 ? `· ${openCount} open` : ""}
-            </button>
-            <button
-              type="button"
-              className="gv__footer-btn"
-              disabled={!found || readOnly}
-              title={
-                readOnly
-                  ? "The default branch is read-only; open a worktree to edit."
-                  : found
-                    ? "Open this project in the Godot editor"
-                    : "Godot 4 was not found."
-              }
-              onClick={() => {
-                setProblem(null);
-                openInGodot().catch((e) => setProblem(errorText(e)));
-              }}
-            >
-              <ExternalLink size={13} strokeWidth={1.5} aria-hidden="true" />
-              Open in Godot
-            </button>
-          </>
+          <button
+            type="button"
+            className="gv__footer-btn"
+            onClick={() => setCommentsOpen((v) => !v)}
+          >
+            <MessageSquarePlus size={13} strokeWidth={1.5} aria-hidden="true" />
+            Comments {openCount > 0 ? `· ${openCount} open` : ""}
+          </button>
         }
       >
         {mode === "scene" && (
@@ -549,14 +592,19 @@ function TreeRow({
   depth,
   selected,
   onSelect,
+  notes,
 }: {
   node: GodotNode;
   depth: number;
   selected: string | null;
   onSelect: (path: string) => void;
+  /** Unresolved comments per node path, from `openNotesByNode`. */
+  notes: ReadonlyMap<string, number>;
 }) {
   const [expanded, setExpanded] = useState(true);
   const hasChildren = node.children.length > 0;
+  const noteCount = notes.get(node.path) ?? 0;
+  const noteLabel = `${noteCount} open comment${noteCount === 1 ? "" : "s"}`;
 
   return (
     <div className="gv__tree-node">
@@ -586,6 +634,16 @@ function TreeRow({
           <span className="gv__tree-toggle-spacer" />
         )}
         <span className="gv__tree-name">{node.name}</span>
+        {noteCount > 0 && (
+          <span
+            className="k-badge k-badge--count gv__tree-notes"
+            title={noteLabel}
+            aria-label={noteLabel}
+            role="img"
+          >
+            {noteCount}
+          </span>
+        )}
         <span className="gv__tree-type">{node.type}</span>
       </div>
       {hasChildren && expanded && (
@@ -597,6 +655,7 @@ function TreeRow({
               depth={depth + 1}
               selected={selected}
               onSelect={onSelect}
+              notes={notes}
             />
           ))}
         </div>
