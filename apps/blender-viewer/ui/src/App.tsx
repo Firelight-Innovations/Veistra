@@ -283,7 +283,13 @@ export default function App() {
     }
   };
 
-  const openCount = useMemo(() => comments.filter((c) => c.status === "open").length, [comments]);
+  // Every comment not yet resolved, as the panel and Play count them: one an
+  // agent is working on, or has fixed and left for the person to check, still
+  // waits on someone.
+  const openCount = useMemo(
+    () => comments.filter((c) => c.status !== "resolved").length,
+    [comments],
+  );
 
   const postComment = async () => {
     if (!selected || !draft.trim()) return;

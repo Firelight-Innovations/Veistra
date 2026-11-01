@@ -66,10 +66,14 @@ const STATE = {
   },
 };
 
-function backend(put: () => unknown = () => ({ key: "k" }), state: object = {}) {
+function backend(
+  put: () => unknown = () => ({ key: "k" }),
+  state: object = {},
+  comments: unknown[] = [],
+) {
   bridge.invoke.mockImplementation((method: string) => {
     if (method === "blender-viewer/state") return Promise.resolve({ ...STATE, ...state });
-    if (method === "comments/list") return Promise.resolve([]);
+    if (method === "comments/list") return Promise.resolve(comments);
     if (method === "context/put") return Promise.resolve(put());
     return Promise.resolve(null);
   });
@@ -188,6 +192,26 @@ describe("Blender Viewer toolbar", () => {
     render(<App />);
     await screen.findByText(/has not been exported yet/);
     expect(screen.getByText("No export").closest(".k-vtb")).toBeTruthy();
+  });
+
+  it("counts every comment not yet resolved in the footer, as the panel does", async () => {
+    const comment = (id: string, status: string) => ({
+      id,
+      anchor: { kind: "mesh", part: "Frame", material: "none" },
+      author: "user",
+      body: id,
+      status,
+      created: 1,
+      updated: 1,
+    });
+    backend(undefined, {}, [
+      comment("a", "open"),
+      comment("b", "working"),
+      comment("c", "fixed"),
+      comment("d", "resolved"),
+    ]);
+    render(<App />);
+    expect(await screen.findByText("Comments · 3 open")).toBeTruthy();
   });
 
   it("reaches the wireframe pass from the view switch, with the parts list still beside it", async () => {

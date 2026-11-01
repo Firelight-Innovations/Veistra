@@ -35,6 +35,21 @@ describe("visibleOverlays", () => {
       { x: 40, y: 40, width: 80, height: 20 },
     ]);
   });
+
+  it("counts the role-less popovers and the surfaces that cover the whole tool window", () => {
+    document.body.innerHTML = `
+      <div class="toolhealth__popover" id="health"></div>
+      <div class="hamburger__dropdown" id="hamburger"></div>
+      <div class="menu-list__beside" data-menu-surface id="beside"></div>
+      <div class="toolwindow__surface" data-solo id="takeover"></div>
+      <div class="toolwindow__surface" id="pane-surface"></div>
+      <div class="frame__page-expanded" id="expanded"></div>
+      <div class="frame__page" id="docked"></div>`;
+    const ids = ["health", "hamburger", "beside", "takeover", "pane-surface", "expanded", "docked"];
+    ids.forEach((id, i) => box(document.getElementById(id)!, i, 0, 10, 10));
+    // A pane's own surface and a docked page sit beside the game, not over it.
+    expect(visibleOverlays(document.body).map((r) => r.x)).toEqual([0, 1, 2, 3, 5]);
+  });
 });
 
 describe("intersects", () => {
@@ -74,5 +89,27 @@ describe("watchOverlays", () => {
     expect(seen).toEqual([1, 0]);
     expect(events).toEqual(["open", "close"]);
     expect(sameRects([], [])).toBe(true);
+  });
+
+  it("sees a surface take over the window when only its data-solo changes", async () => {
+    // Home already mounted in a pane, then shown from the cluster chip: the
+    // same element gains `data-solo` and nothing else this watch listens for.
+    document.body.innerHTML = `<div class="toolwindow__surface" id="home"></div>`;
+    const home = document.getElementById("home")!;
+    box(home, 0, 0, 1200, 800);
+    const seen: number[] = [];
+    const stop = watchOverlays((rects) => seen.push(rects.length));
+    const frame = () => new Promise((r) => requestAnimationFrame(() => r(null)));
+    await frame();
+
+    home.setAttribute("data-solo", "true");
+    await frame();
+    await frame();
+    home.removeAttribute("data-solo");
+    await frame();
+    await frame();
+    stop();
+
+    expect(seen).toEqual([1, 0]);
   });
 });

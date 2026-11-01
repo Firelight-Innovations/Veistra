@@ -1,6 +1,7 @@
 /**
  * Which of the shell's overlays are open, and where: menus, the Ctrl K
- * palette, search, dialogs, tooltips, toasts and a dragged tab.
+ * palette, search, dialogs, tooltips, toasts, a dragged tab, and the surfaces
+ * that cover the whole tool window.
  *
  * A native window placed over a pane (Play's game, design §4.3) paints above
  * the WebView, so anything the shell draws over that pane would be hidden
@@ -16,7 +17,7 @@
  * after a DOM change, and only while something is listening.
  */
 
-/** What counts as an overlay. A role an overlay already carries, or a class for the two that have none. */
+/** What counts as an overlay. A role an overlay already carries, or the class or attribute of one with none. */
 export const OVERLAY_SELECTOR = [
   '[role="dialog"]',
   '[role="alertdialog"]',
@@ -25,8 +26,35 @@ export const OVERLAY_SELECTOR = [
   '[role="tooltip"]',
   ".drag-ghost",
   ".library__toasts",
+  ".toolhealth__popover",
+  ".hamburger__dropdown",
+  // Every surface `MenuItemList` portals beside a row, a prompt field included.
+  "[data-menu-surface]",
+  // These two cover the whole tool window: a takeover (Home, Tutorials) and an
+  // expanded rail page. Play stays its pane's active tab under them, so nothing
+  // else tells it that it is hidden. Named here rather than marked with
+  // `data-overlay` where drawn, which would be one more thing to remember.
+  ".toolwindow__surface[data-solo]",
+  ".frame__page-expanded",
   "[data-overlay]",
 ].join(", ");
+
+/**
+ * The attributes whose change can make an element match, or stop matching,
+ * `OVERLAY_SELECTOR`. A takeover is a surface that gains `data-solo` in place,
+ * and a watch that did not listen for it would miss the takeover opening.
+ */
+const WATCHED_ATTRIBUTES = [
+  "role",
+  "class",
+  "style",
+  "hidden",
+  "open",
+  "aria-hidden",
+  "data-solo",
+  "data-menu-surface",
+  "data-overlay",
+];
 
 export interface OverlayRect {
   x: number;
@@ -95,7 +123,7 @@ export function watchOverlays(
     subtree: true,
     childList: true,
     attributes: true,
-    attributeFilter: ["role", "class", "style", "hidden", "open", "aria-hidden"],
+    attributeFilter: WATCHED_ATTRIBUTES,
   });
   doc.defaultView?.addEventListener("resize", schedule);
   schedule();

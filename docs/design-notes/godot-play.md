@@ -77,9 +77,9 @@ state, beside the Plane webview's). With no embedder (macOS, Linux) or no window
 the game keeps its own window and the live strip says so.
 
 **Airspace.** The game paints above the WebView. The shell reports its open overlays (menus,
-dialogs, the palette, the drag ghost) to Play as `veistra/overlays`
-(`src/shell/overlayWatch.ts`), and Play hides the game and shows its last frame while one covers
-the box.
+popovers, dialogs, the palette, the drag ghost, and a takeover or expanded page that covers the
+whole tool window) to Play as `veistra/overlays` (`src/shell/overlayWatch.ts`), and Play hides
+the game and shows its last frame while one covers the box.
 
 **Takes** (`record.rs`, `takes.rs`, `session.rs`). Record is per project, per computer, off by
 default, and needs addon v2 and Windows. A take is `.veistra/takes/<utc minute>-<4 hex>/` with

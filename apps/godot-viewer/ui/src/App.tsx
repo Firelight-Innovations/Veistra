@@ -164,7 +164,13 @@ export default function App() {
   const nodes = shown?.nodes ?? [];
   const found = status?.executable.found ?? null;
   const readOnly = status?.environment.readOnly ?? false;
-  const openCount = useMemo(() => comments.filter((c) => c.status === "open").length, [comments]);
+  // Every comment not yet resolved, as the panel and Play count them: one an
+  // agent is working on, or has fixed and left for the person to check, still
+  // waits on someone.
+  const openCount = useMemo(
+    () => comments.filter((c) => c.status !== "resolved").length,
+    [comments],
+  );
   const notes = useMemo(() => openNotesByNode(comments), [comments]);
   const job = preview ? null : (state?.job ?? null);
   const busy = job?.running === true;
@@ -172,15 +178,17 @@ export default function App() {
   const playable = !preview && !noScenes && !!state?.scene;
 
   // `openIn` is the bridge's `veistra/open` (docs/tool-protocol.md §3). Play is
-  // opened, or brought forward, in this cluster and receives `{ scene }`, a
-  // `res://` path, as the payload of `OPENED_EVENT` (`answerOpen` in
-  // `src/shell/toolwindow/ToolWindow.tsx`). Play is expected to read it and run
-  // that scene: `run(project, scene)` in `apps/play/ui/src/rpc.ts` already takes
-  // one. Until Play listens for the event, this opens Play on its own choice.
+  // opened, or brought forward, in this cluster and receives `{ scene, project }`
+  // as the payload of `OPENED_EVENT` (`answerOpen` in
+  // `src/shell/toolwindow/ToolWindow.tsx`), and runs that scene in that project.
+  // The project goes with the scene because a `res://` path means nothing on
+  // its own: Play's picker may be on another of the environment's projects.
   const playScene = () => {
     if (!state?.scene) return;
     setProblem(null);
-    openIn("play", { scene: state.scene }).catch((e: unknown) => setProblem(errorText(e)));
+    openIn("play", { scene: state.scene, project: state.project }).catch((e: unknown) =>
+      setProblem(errorText(e)),
+    );
   };
 
   const { sent, send } = useSendAction(setProblem, errorText);

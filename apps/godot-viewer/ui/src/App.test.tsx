@@ -140,8 +140,10 @@ describe("Godot Viewer toolbar", () => {
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Not read yet"));
   });
 
-  it("opens Play on the selected scene with veistra/open", async () => {
-    backend();
+  it("opens Play on the selected scene, in this viewer's project, with veistra/open", async () => {
+    // A project other than the environment root, so the payload cannot be
+    // right by Play falling back to the first project it finds.
+    backend(undefined, { state: { project: "games/hall" } });
     render(<App />);
     const play = await screen.findByRole("button", { name: "Play scene" });
     await waitFor(() => expect((play as HTMLButtonElement).disabled).toBe(false));
@@ -149,7 +151,7 @@ describe("Godot Viewer toolbar", () => {
     await waitFor(() => expect(calls("veistra/open")).toHaveLength(1));
     expect(calls("veistra/open")[0]![1]).toEqual({
       appId: "play",
-      payload: { scene: "res://main.tscn" },
+      payload: { scene: "res://main.tscn", project: "games/hall" },
     });
   });
 
@@ -178,6 +180,19 @@ describe("Godot Viewer toolbar", () => {
     render(<App />);
     const badge = await screen.findByRole("img", { name: "3 open comments" });
     expect(badge.textContent).toBe("3");
+  });
+
+  it("counts every comment not yet resolved in the footer, as the panel does", async () => {
+    backend(undefined, {
+      comments: [
+        comment("a", { kind: "node", path: "Main" }),
+        comment("b", { kind: "node", path: "Main" }, "working"),
+        comment("c", { kind: "node", path: "Main" }, "fixed"),
+        comment("d", { kind: "node", path: "Main" }, "resolved"),
+      ],
+    });
+    render(<App />);
+    await screen.findByRole("button", { name: "Comments · 3 open" });
   });
 
   it("draws no badge on a node with nothing open", async () => {
