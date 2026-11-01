@@ -23,6 +23,7 @@ function everything() {
     split: vi.fn(),
     moveToNewWindow: vi.fn(),
     openSettings: vi.fn(),
+    feedback: vi.fn(),
     scope: vi.fn((): AgentScope | null => SCOPE),
     resume: vi.fn(),
     archive: vi.fn(),
@@ -79,11 +80,13 @@ describe("agentMenuItems for an open agent", () => {
       "Close All",
       "Move into New Window",
       "Agent Settings",
+      "Give Feedback",
       "Split Up",
       "Split Right",
     ]) {
       byLabel(items, label).onSelect?.();
     }
+    expect(a.feedback).toHaveBeenCalledTimes(1);
     expect(a.close).toHaveBeenCalledWith("b");
     expect(a.closeOthers).toHaveBeenCalledWith("b");
     expect(a.closeToRight).toHaveBeenCalledWith("b");
@@ -109,7 +112,6 @@ describe("agentMenuItems for an open agent", () => {
     for (const label of [
       "Export Transcript",
       "Copy Request ID",
-      "Give Feedback",
       "Fork Chat",
       "Close Saved",
       "Reopen Editor With…",
@@ -125,7 +127,14 @@ describe("agentMenuItems for an open agent", () => {
 
   it("disables what the host did not supply, instead of leaving it live", () => {
     const items = agentMenuItems(OPEN, {});
-    for (const label of ["Close", "Close All", "Rename Chat", "Agent Settings", "Split Up"]) {
+    for (const label of [
+      "Close",
+      "Close All",
+      "Rename Chat",
+      "Agent Settings",
+      "Give Feedback",
+      "Split Up",
+    ]) {
       expect(byLabel(items, label).disabled, label).toBe(true);
       expect(byLabel(items, label).onSelect, label).toBeUndefined();
     }

@@ -25,6 +25,7 @@ above, it is probably still here:
 - [`tool-protocol.md`](tool-protocol.md) — the wire contract between the
   orchestrator and a tool.
 - [`branding.md`](branding.md), [`settings.md`](settings.md),
+  [`telemetry.md`](telemetry.md),
   [`mcp-server-manager.md`](mcp-server-manager.md),
   [`files-app-methods.md`](files-app-methods.md),
   [`tutorials.md`](tutorials.md) — one document per subsystem.

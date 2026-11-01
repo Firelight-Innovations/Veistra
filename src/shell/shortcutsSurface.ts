@@ -7,6 +7,7 @@
  * the argument in `docs/settings.md` §9 applies here unchanged.
  */
 import { useEffect, useState } from "react";
+import { shell } from "./telemetry/features";
 
 export interface ShortcutsSurface {
   open: boolean;
@@ -25,6 +26,7 @@ function announce(next: ShortcutsSurface): void {
 
 /** Show the shortcuts. Safe to call twice. */
 export function openShortcuts(): void {
+  if (!surface.open) shell.track("shortcuts_opened");
   announce({ open: true });
 }
 

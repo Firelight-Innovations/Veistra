@@ -99,6 +99,16 @@ An app that never reports is waited on for four seconds, logged, and left
 behind. So forgetting the call costs a slow start, not a hang — but it does cost
 a slow start, which is why it is in this list rather than in a comment.
 
+## Reporting usage
+
+An app reports what people do with it through `apps/shared/telemetry.ts` —
+`track("exported", { format: "png" })` — and opens the feedback dialog about
+itself with `openFeedback()`. Both go to the shell over the bridge, which
+decides whether anything is sent and which feature the app reports for. For an
+app's events to be accepted, a feature in `src/shell/telemetry/features/` has to
+list the app in its `apps` and declare the event; `docs/telemetry.md` §4 and §5
+are the walkthrough.
+
 ## Apps talking to each other
 
 An app's calls go *down* to its Rust half, and for a long time that was the only

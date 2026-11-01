@@ -5,6 +5,7 @@
  * context — `docs/settings.md` §9 has the argument.
  */
 import { useEffect, useState } from "react";
+import { shell } from "./telemetry/features";
 
 export interface SettingsSurface {
   open: boolean;
@@ -30,6 +31,7 @@ function announce(next: SettingsSurface): void {
 
 /** Show the settings screen, optionally on a named section. Safe to call twice. */
 export function openSettings(section?: string): void {
+  if (!surface.open) shell.track("settings_opened", { section: section ?? null });
   announce({ open: true, section: section ?? null });
 }
 

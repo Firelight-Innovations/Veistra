@@ -2396,3 +2396,67 @@ export function agentSawList(terminalId: string): Promise<AgentSeen[]> {
 export function agentSawThumb(terminalId: string, path: string): Promise<[string, string]> {
   return invoke<[string, string]>("agent_saw_thumb", { terminalId, path });
 }
+
+/* --- usage data ------------------------------------------------------------
+ *
+ * Mirrors `src-tauri/src/telemetry.rs`. None of these sends anything: Rust
+ * decides whether this *build* may send and keeps the local ledger, and the
+ * shell's `src/shell/telemetry/` does the sending once a person has said yes.
+ * `docs/telemetry.md` is the contract.
+ */
+
+/**
+ * Mirrors `telemetry::Sink`. Narrow on `state`: the key exists only on the arm
+ * that can use it, and `reason` is a sentence written to be shown.
+ */
+export type TelemetrySink =
+  { state: "ready"; apiKey: string; host: string } | { state: "off"; reason: string };
+
+/** Mirrors `telemetry::TelemetryConfig`. */
+export interface TelemetryConfig {
+  sink: TelemetrySink;
+  /** One anonymous id per machine, minted on the first call. */
+  installId: string;
+  appVersion: string;
+  os: string;
+  arch: string;
+  build: "release" | "debug";
+}
+
+/** Mirrors `telemetry::PromptRecord`. */
+export interface PromptRecord {
+  shown: number;
+  lastShownMs: number | null;
+  /** Set by the first answer; an answered prompt is never shown again. */
+  answeredMs: number | null;
+}
+
+/** Mirrors `telemetry::Ledger`. */
+export interface UsageLedger {
+  installId: string;
+  firstSeenMs: number;
+  launches: number;
+  /** Keyed `"<feature>:<event>"`, and only for events a prompt waits on. */
+  counts: Record<string, number>;
+  prompts: Record<string, PromptRecord>;
+}
+
+/** Mirrors `telemetry::PromptOutcome`. */
+export type PromptOutcome = "shown" | "answered";
+
+export function telemetryConfig(): Promise<TelemetryConfig> {
+  return invoke<TelemetryConfig>("telemetry_config");
+}
+
+export function usageLedger(): Promise<UsageLedger> {
+  return invoke<UsageLedger>("telemetry_ledger");
+}
+
+/** Add one to a counter; resolves with the whole ledger, already counted. */
+export function countUsage(key: string): Promise<UsageLedger> {
+  return invoke<UsageLedger>("telemetry_count", { key });
+}
+
+export function recordPrompt(id: string, outcome: PromptOutcome): Promise<UsageLedger> {
+  return invoke<UsageLedger>("telemetry_prompt", { id, outcome });
+}

@@ -143,9 +143,9 @@ The bar for `Restart` is that specific. A setting read on every use is `Now` or
 Everything below is one file, `src-tauri/src/settings/schema.rs`, unless it says
 otherwise.
 
-1. **Pick the group.** `appearance`, `editor`, `terminal`, `search`, `github`, `mcp`,
-   `developer`. If none fits, add a `static Group` and an entry in `GROUPS`, with
-   an `order` in 0–99 — the shell's range (§6).
+1. **Pick the group.** `appearance`, `editor`, `terminal`, `search`, `github`,
+   `telemetry`, `mcp`, `developer`. If none fits, add a `static Group` and an
+   entry in `GROUPS`, with an `order` in 0–99 — the shell's range (§6).
 2. **Add a `Setting`** to that group's `&'static [Setting]`. The key is
    `<group id>.<camelCaseName>`, and the prefix is not optional: a test enforces
    it, and §6 explains what it is for.

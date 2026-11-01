@@ -2088,6 +2088,44 @@ pub(crate) fn apply_project_open_preset(app: &tauri::AppHandle, cluster_id: &str
     fill_preset_gaps(app, &shell, &ptys, &label, cluster_id, gaps);
 }
 
+// --- usage data -------------------------------------------------------------
+//
+// Four thin calls over `crate::telemetry`. None of them sends anything: what
+// leaves the machine leaves from the webview, and only after the person has
+// said yes. See `docs/telemetry.md`.
+
+/// Whether this build can send, where to, and the install id to send as.
+/// Mints the id on first call; safe to call from every window.
+#[tauri::command]
+pub fn telemetry_config(app: tauri::AppHandle) -> crate::telemetry::TelemetryConfig {
+    crate::telemetry::config(&app)
+}
+
+/// The usage ledger: launches, counted events and prompt history. Re-read on
+/// every call, so it doubles as the refresh after another window counted.
+#[tauri::command]
+pub fn telemetry_ledger(app: tauri::AppHandle) -> crate::telemetry::Ledger {
+    crate::telemetry::ledger(&app)
+}
+
+/// Add one to a counter, answering with the whole ledger. Refuses a name that
+/// is not lower-case `a-z0-9_:/.-`, or a new counter past the cap.
+#[tauri::command]
+pub fn telemetry_count(app: tauri::AppHandle, key: String) -> Result<crate::telemetry::Ledger> {
+    crate::telemetry::count(&app, &key)
+}
+
+/// Record that a feedback prompt was shown or answered. Answering twice keeps
+/// the first date.
+#[tauri::command]
+pub fn telemetry_prompt(
+    app: tauri::AppHandle,
+    id: String,
+    outcome: crate::telemetry::PromptOutcome,
+) -> Result<crate::telemetry::Ledger> {
+    crate::telemetry::record_prompt(&app, &id, outcome)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

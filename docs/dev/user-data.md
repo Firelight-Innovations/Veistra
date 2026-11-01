@@ -18,7 +18,7 @@ first launch of Veistra adopts the old config directory.
 
 ## What is actually at risk
 
-Eight stores under the config directory, plus one inside each checkout.
+Nine stores under the config directory, plus one inside each checkout.
 Everything here is what exists today, read off `src-tauri/src/` and off this
 machine.
 
@@ -31,10 +31,11 @@ machine.
 | `plugins.json` | `plugins/store.rs` | one record per installed package, and its switch | which apps you installed and where from |
 | `mcp.json` | `mcp/store.rs` | only server switches moved from their shipped state | which MCP servers you turned on or off |
 | `tutorials.json` | `apps/tutorial.rs` | the set of completed tutorial ids | tutorials offer themselves again |
+| `telemetry.json` | `telemetry.rs` | the anonymous install id, launch and event counts, which feedback prompts were shown | a new anonymous id, and a feedback question may be asked again |
 | `mcp-endpoint.json` | `mcp/handoff.rs` | this launch's port, token and pid | nothing — rewritten at every launch |
 | `plugins/` | `plugins/install.rs` | unpacked plugin checkouts, one directory per id | a re-download, if the source is still there |
 
-All nine resolve through the same two lines, repeated in eight modules:
+All ten resolve through the same two lines, repeated in nine modules:
 
 ```rust
 fn file(app: &AppHandle) -> Option<PathBuf> {
@@ -70,7 +71,7 @@ migration is allowed to throw away.
 
 **Reconstructible with effort** — losing it is annoying rather than
 destructive: `layout.json` (rearrange the windows again), `mcp.json` (flip the
-switches again), `tutorials.json`, `plugins/` (re-download).
+switches again), `tutorials.json`, `telemetry.json`, `plugins/` (re-download).
 
 **Cheap** — regenerated without the user noticing: `mcp-endpoint.json`, and the
 WebView2 profile under `%LOCALAPPDATA%\<identifier>\EBWebView`.

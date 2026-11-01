@@ -6,6 +6,7 @@
  * `docs/settings.md` §9 applies here unchanged.
  */
 import { useEffect, useState } from "react";
+import { shell } from "./telemetry/features";
 
 export interface LibrarySurface {
   open: boolean;
@@ -24,6 +25,7 @@ function announce(next: LibrarySurface): void {
 
 /** Show the library. Safe to call twice. */
 export function openLibrary(): void {
+  if (!surface.open) shell.track("library_opened");
   announce({ open: true });
 }
 

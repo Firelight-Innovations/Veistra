@@ -1,0 +1,195 @@
+/*
+ * The usage data and feedback surfaces: the first-run question, the feedback
+ * dialog and the corner card. The two dialogs take their surface from `.k-dialog`
+ * (src/veistra-ui.css); this file adds the widths, the form, and the card.
+ */
+
+/* Carries `data-telemetry-unmask` without becoming a box, so the dialog's
+   header, body and footer stay the flex children `.k-dialog` lays out. */
+.feedback__unmask {
+  display: contents;
+}
+
+.feedback__consent {
+  width: min(520px, calc(100vw - 2 * var(--space-6)));
+}
+
+.feedback__dialog {
+  width: min(560px, calc(100vw - 2 * var(--space-6)));
+}
+
+.feedback__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  color: var(--txt-primary);
+  font: var(--type-body);
+}
+
+.feedback__body p {
+  margin: 0;
+}
+
+.feedback__list {
+  margin: 0;
+  padding-left: var(--space-4);
+  color: var(--txt-secondary);
+}
+
+.feedback__check {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  color: var(--txt-secondary);
+  cursor: pointer;
+}
+
+.feedback__check input {
+  margin-top: 3px;
+  accent-color: var(--accent);
+}
+
+.feedback__fine {
+  font: var(--type-caption);
+  color: var(--txt-tertiary);
+}
+
+.feedback__error {
+  font: var(--type-caption);
+  color: var(--txt-danger);
+}
+
+.feedback__kinds {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-md);
+  background: var(--bg-canvas);
+}
+
+.feedback__kind {
+  height: var(--control-sm);
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--txt-tertiary);
+  font: var(--type-body);
+  cursor: pointer;
+}
+
+.feedback__kind[aria-checked="true"] {
+  background: var(--bg-layer-1-selected);
+  color: var(--txt-primary);
+}
+
+/* `.k-field__input` is sized for one line; a message needs several. */
+.feedback__message,
+.feedback__comment {
+  height: auto;
+  min-height: 112px;
+  padding: var(--space-2);
+  resize: vertical;
+}
+
+.feedback__comment {
+  min-height: 64px;
+}
+
+/* --- the corner card ---------------------------------------------------- */
+
+.feedback__card {
+  position: fixed;
+  right: var(--space-4);
+  bottom: calc(var(--h-statusbar) + var(--space-3));
+  /* Above the settings screen (60) so a prompt that arrives while it is open
+     is not hidden behind it; below the dialog scrim (100), which is meant to
+     be in front of everything. */
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: 320px;
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  border: 1px solid var(--border-subtle-1);
+  border-radius: var(--radius-lg);
+  background: var(--bg-layer-2);
+  box-shadow: var(--shadow-overlay);
+  color: var(--txt-primary);
+}
+
+.feedback__card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.feedback__question {
+  margin: 0;
+  padding-top: var(--space-1);
+  font: var(--type-body-strong);
+}
+
+.feedback__scale {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: var(--space-1);
+}
+
+.feedback__score {
+  height: var(--control-md);
+  border: 1px solid var(--border-subtle-1);
+  border-radius: var(--radius-md);
+  background: var(--bg-layer-1);
+  color: var(--txt-primary);
+  font: var(--type-body);
+  cursor: pointer;
+}
+
+.feedback__score:hover {
+  background: var(--bg-layer-1-hover);
+}
+
+.feedback__score[aria-checked="true"] {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+}
+
+.feedback__anchor {
+  grid-column: 1 / span 2;
+  font: var(--type-caption);
+  color: var(--txt-tertiary);
+}
+
+.feedback__anchor--end {
+  grid-column: 4 / span 2;
+  text-align: right;
+}
+
+.feedback__card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.feedback__stop {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--txt-tertiary);
+  font: var(--type-caption);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.feedback__stop:hover {
+  color: var(--txt-secondary);
+}
+
+.feedback__card :is(button, textarea):focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}

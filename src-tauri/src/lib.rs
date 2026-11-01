@@ -52,6 +52,7 @@ mod shell_store;
 mod skills;
 mod state;
 mod sync;
+mod telemetry;
 mod tool;
 mod tool_frontend;
 mod updater;
@@ -258,6 +259,10 @@ pub fn run() {
         // no correct resolution, and the event that keeps them level carries
         // this exact state.
         .manage(updater::UpdateStatus::default())
+        // The usage ledger: an install id, launch and event counts, and which
+        // feedback prompts have been shown. Loaded on first use; nothing in it
+        // is sent anywhere by holding it. See `telemetry`.
+        .manage(telemetry::Telemetry::default())
         // Every window, every navigation, one call site. The main window and
         // the splash are declared in `tauri.conf.json`, a detached one is built
         // by `windows::create` long after setup has run, and a page-load hook is
@@ -481,6 +486,12 @@ pub fn run() {
             // that is off — see `updater::start`.
             updater::start(handle.clone());
 
+            // One line in a local file. Counted whether or not usage data is
+            // on, because the feedback prompts that read it are scheduled from
+            // launches and a person who switches sharing on later should not
+            // look brand new. It is never sent.
+            telemetry::note_launch(&handle);
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -614,6 +625,10 @@ pub fn run() {
             cloud::google::google_sign_out,
             cloud::google::set_google_client_secret,
             search::search_content,
+            commands::telemetry_config,
+            commands::telemetry_ledger,
+            commands::telemetry_count,
+            commands::telemetry_prompt,
             updater::update_state,
             updater::check_for_update,
             updater::install_update,

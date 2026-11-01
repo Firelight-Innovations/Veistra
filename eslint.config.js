@@ -43,6 +43,13 @@ import globals from "globals";
  * wanted, which is the definition of a shared widget rather than a region;
  * `OverlayScrollbar.tsx` now sits directly under `src/shell/` beside
  * `contract.ts`, `motion.ts` and `dropZones.ts`.
+ *
+ * `telemetry` is off the list on purpose, and is the first *directory* to be a
+ * shared leaf rather than a single file. It draws nothing: it is the feature
+ * registry and the usage-data pipeline, and every region that has something
+ * to report imports it — the title bar's Help menu, the tool window's bridge
+ * handler, settings. What it would draw lives in the `dialogs` region, beside
+ * the `Dialog` primitive its two modal dialogs are built on.
  */
 const REGIONS = [
   "dialogs",

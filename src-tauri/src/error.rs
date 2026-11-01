@@ -181,6 +181,11 @@ pub enum AppError {
     /// `settings::SettingError`.
     #[error("{0}")]
     Setting(#[from] crate::settings::SettingError),
+
+    /// A usage counter or prompt name the ledger refused. The whole sentence,
+    /// for `Review`'s reason. See `telemetry::check_name`.
+    #[error("{0}")]
+    Telemetry(String),
 }
 
 /// Tauri sends a command's error across the IPC boundary into JavaScript, so the

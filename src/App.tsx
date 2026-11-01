@@ -17,6 +17,10 @@ import LibraryScreen from "./shell/library/LibraryScreen";
 import { openLibrary, useLibrarySurface } from "./shell/librarySurface";
 import ShortcutsScreen from "./shell/keys/ShortcutsScreen";
 import { useShortcutsSurface } from "./shell/shortcutsSurface";
+import FeedbackHost from "./shell/dialogs/FeedbackHost";
+import { answerConsent, stopPrompts } from "./shell/telemetry/consent";
+import { deliveryFor } from "./shell/telemetry/feedback";
+import { useConsent, useTelemetry } from "./shell/telemetry/useTelemetry";
 
 /**
  * Owns the stack snapshot and hands it to the shell.
@@ -31,6 +35,10 @@ import { useShortcutsSurface } from "./shell/shortcutsSurface";
  * says why the title bar and the status bar stay uncovered. The session is read
  * once, above the window, so the appearance settings apply whether or not the
  * screen has ever been opened.
+ *
+ * Usage data is wired here for the same reason: consent is a setting, and the
+ * feedback surfaces are no more about a window than settings is. See
+ * `docs/telemetry.md`.
  */
 export default function App() {
   const [snapshot, setSnapshot] = useState<StackSnapshot | null>(null);
@@ -79,6 +87,9 @@ export default function App() {
   const settingsSurface = useSettingsSurface();
   const librarySurface = useLibrarySurface();
   const shortcutsSurface = useShortcutsSurface();
+  const consent = useConsent(settings);
+  const telemetry = useTelemetry(consent);
+  const sink = telemetry.config?.sink;
 
   // Home's *Install App* button, arriving the only way it can: Home is an
   // iframe on another origin, so it calls its own Rust half and Rust emits.
@@ -125,6 +136,15 @@ export default function App() {
           before anybody has opened anything, and a closed screen still has to
           be able to report how that went. See its own comment. */}
       <LibraryScreen open={librarySurface.open} />
+      <FeedbackHost
+        askConsent={telemetry.askConsent}
+        onShare={(replay) => answerConsent(settings, { share: true, replay })}
+        onDecline={() => answerConsent(settings, { share: false })}
+        onLater={telemetry.deferConsent}
+        delivery={deliveryFor(telemetry.config, consent?.usage === "on")}
+        blockedBecause={sink?.state === "off" ? sink.reason : null}
+        onStopPrompts={() => stopPrompts(settings)}
+      />
     </>
   );
 }

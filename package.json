@@ -79,6 +79,7 @@
     "mermaid": "^11.16.1",
     "monaco-editor": "^0.56.0",
     "pdfjs-dist": "^6.2.108",
+    "posthog-js": "1.438.12",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },

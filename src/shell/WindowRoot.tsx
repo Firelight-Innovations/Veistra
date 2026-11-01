@@ -88,6 +88,8 @@ import {
 } from "./state/agentOpeners";
 import { openSavedSession, renameAgentTab } from "./state/savedSessions";
 import { agentScopeOf, type AgentMenuActions } from "./agentMenuItems";
+import { agentTab as agentTabUsage } from "./telemetry/features";
+import { openFeedback } from "./telemetry/surface";
 import ReadOnlyBanner from "./git/ReadOnlyBanner";
 import { useProjectIcon } from "./state/projectIcon";
 import { useUpdates } from "./state/updates";
@@ -1790,6 +1792,7 @@ export default function WindowRoot({
       },
       moveToNewWindow: (id) => void detachInstance(id),
       openSettings: () => openSettingsOnTop("mcp"),
+      feedback: () => openFeedback({ source: "agent-menu", feature: agentTabUsage.id }),
     };
   }, [orderedClusters, instances]);
 

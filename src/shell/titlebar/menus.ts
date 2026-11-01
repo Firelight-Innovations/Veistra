@@ -15,6 +15,7 @@ import { openShortcuts } from "../shortcutsSurface";
 import { appsMenu } from "../appsMenu";
 import type { AppsMenuHandlers } from "../appsMenu";
 import { rerunLabel } from "../run";
+import { openFeedback } from "../telemetry/surface";
 
 /**
  * Every command the shell's menus can ask a mounted app frame to carry out.
@@ -482,9 +483,16 @@ export function defaultMenus(handlers: MenuHandlers): Menu[] {
         // same promise it makes on `App Library…`, which raises a screen this
         // window owns. These hand the address to whatever browser the machine
         // has and this window keeps whatever it was showing.
+        // Beside Report Issue rather than replacing it. An issue is public and
+        // needs a GitHub account; this needs neither, and says before sending
+        // what goes with it. The ellipsis is the dialog it raises.
+        {
+          label: "Send Feedback…",
+          separatorBefore: true,
+          onSelect: () => openFeedback({ source: "help-menu", feature: null }),
+        },
         {
           label: "Report Issue…",
-          separatorBefore: true,
           onSelect: () => openHelpLink(HELP_LINKS.issues),
         },
         // The one menu item that names the product. It used to append a second

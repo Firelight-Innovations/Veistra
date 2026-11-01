@@ -11,6 +11,7 @@ import type {
   QuestionOutcome,
 } from "./protocol.generated";
 import type { MentionHit } from "./mentions";
+import { track } from "../../../shared/telemetry";
 
 /** Mirrors `apps::agent_tab::EVENT`. */
 export const EVENT = "agent-tab:event";
@@ -60,17 +61,29 @@ export interface PastedImage {
   mime: string;
   data: string;
 }
-/** Sends to the tab's current harness: the running agent's, else the one chosen. */
+/**
+ * Sends to the tab's current harness: the running agent's, else the one chosen.
+ *
+ * Every prompt leaves through here, so this is where one is counted. What is
+ * reported is the choices around the prompt, never the prompt.
+ */
 export const send = (
   text: string,
   preferences?: { effort: string | null; ultracode: boolean; mode?: string },
   images: PastedImage[] = [],
-) =>
-  invoke<object>("agent-tab/send", {
+) => {
+  track("prompt_sent", {
+    effort: preferences?.effort ?? null,
+    ultracode: preferences?.ultracode ?? false,
+    mode: preferences?.mode ?? null,
+    images: images.length,
+  });
+  return invoke<object>("agent-tab/send", {
     text,
     ...preferences,
     ...(images.length ? { images: images.map(({ mime, data }) => ({ mime, data })) } : {}),
   });
+};
 export const searchContext = (query: string, kinds?: string[]) =>
   invoke<{ items: MentionHit[] }>("refs/search", { query, kinds, limit: 50 });
 export const contextSources = () =>

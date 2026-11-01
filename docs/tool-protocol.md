@@ -249,6 +249,8 @@ the shell answers these itself and never forwards them to a core.
 | `veistra/escape` | none | `null` | I saw a bare Escape that nothing in me handled. |
 | `veistra/search-claim` | `{"placeholder":string,"value":string}` | `null` | Show my filter in the title bar's search field while I am the active surface. Sending it again updates the claim. |
 | `veistra/search-release` | none | `null` | I no longer have a filter to show. |
+| `veistra/track` | `{"event":string,"props"?:object}` | `null` | Report a usage event for the feature that lists my app. First-party apps only; see below. |
+| `veistra/feedback` | none | `null` | Open the shell's feedback dialog, about my feature. First-party apps only. |
 
 `veistra/painted` is a report, not a request. The orchestrator holds its splash
 window up until every first-party app has sent one, so that the window it hands
@@ -265,6 +267,16 @@ itself.
 
 The host may stop waiting. It does not wait forever, and a report that arrives
 after it gave up is discarded rather than being an error.
+
+`veistra/track` names an event and nothing else. Which feature it belongs to is
+resolved from `event.source` against the shell's feature registry, never from
+the message, and an event that feature does not declare is refused with
+`InvalidParams` and a list of the ones it does. Whether anything is *sent* is the
+person's choice and is not reported back: an accepted event may be dropped
+because usage data is off, and the frame cannot tell. A tool is refused both
+methods, with `InvalidParams`, so it does not wait out the timeout — consent to
+usage data covers the shell and its own apps, not somebody else's code.
+`docs/telemetry.md` §5 is the rest.
 
 ### Menu commands
 

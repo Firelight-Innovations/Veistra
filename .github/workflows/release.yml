@@ -104,11 +104,21 @@ jobs:
       # A build without the key is not a failure. It is the state this
       # repository is in until somebody creates the secret, and a release with
       # installers and no `latest.json` is strictly better than no release.
+      #
+      # The two PostHog lines are baked into the binary by `telemetry.rs`'s
+      # `option_env!`. Variables rather than secrets: a project key is
+      # write-only and public by design, and a variable can be read back when
+      # somebody needs to check which project a release reports to. Unset, they
+      # arrive empty, and the build ships unable to send usage data at all —
+      # Settings says so, and the feedback dialog offers GitHub issues instead.
+      # docs/telemetry.md §3.
       - name: Build the installers
         shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VEISTRA_POSTHOG_KEY: ${{ vars.VEISTRA_POSTHOG_KEY }}
+          VEISTRA_POSTHOG_HOST: ${{ vars.VEISTRA_POSTHOG_HOST }}
         run: |
           if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
             pnpm app:build --config src-tauri/tauri.updater.conf.json

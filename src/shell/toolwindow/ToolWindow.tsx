@@ -24,6 +24,8 @@ import { activateInstance, openInstance, setInstanceTitle } from "../state/shell
 import { clearsSubject, declaredSubject, getSubject, setSubject } from "../viewerSubjects";
 import { resolveViewerTarget as planViewerTarget } from "../viewerTarget";
 import { baseNameOf } from "../viewerTitle";
+import { feedbackFromFrame, trackFromFrame, type FrameAnswer } from "../telemetry/appTrack";
+import { shell } from "../telemetry/features";
 // The wire types come from `@veistra/bridge`'s `protocol`/`errors` subpaths
 // rather than its root entry. The root package does depend on `@veistra/bridge`
 // now — the first-party apps under `apps/` import it, and they are built by
@@ -1074,6 +1076,10 @@ const ToolWindow = forwardRef<
 
       if (event.data.kind === "hello") {
         answerHello(source, origin, frame);
+        // Counted here because every way an app reaches the screen ends in this
+        // handshake. A tool is somebody else's code and is not reported on; see
+        // `telemetry/appTrack.ts`.
+        if (frame.isApp) shell.track("app_loaded", { app: frame.appId });
         return;
       }
 
@@ -1214,6 +1220,29 @@ const ToolWindow = forwardRef<
 
       if (method === "veistra/publish") {
         answerPublish(params, respond, id, frame);
+        return;
+      }
+
+      // Usage data, and the feedback dialog, asked for by a frame. Host
+      // business: the shell owns consent and the feature registry, and decides
+      // which feature an app may report for from `frame`, never from `params`.
+      // Answered for a tool too, with a refusal, so it does not sit through the
+      // bridge's timeout for an answer that was never coming.
+      if (method === "veistra/track" || method === "veistra/feedback") {
+        const answer: FrameAnswer =
+          method === "veistra/track"
+            ? trackFromFrame(frame.appId, frame.isApp, params)
+            : feedbackFromFrame(frame.appId, frame.isApp);
+        if (answer.ok) respond({ id, result: null });
+        else {
+          respond({
+            id,
+            error: {
+              code: VeistraErrorCode.InvalidParams,
+              message: `${method}: ${answer.message}`,
+            },
+          });
+        }
         return;
       }
 

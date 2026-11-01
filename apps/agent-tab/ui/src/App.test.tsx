@@ -285,6 +285,27 @@ describe("the agent tab", () => {
     expect(prompt()).toHaveProperty("value", "");
   });
 
+  it("reports a sent prompt as a usage event, with its choices and never its text", async () => {
+    backend({ status: null, seq: 0, items: [] });
+    render(<App />);
+    await screen.findByText("No session");
+    fireEvent.change(prompt(), { target: { value: "the secret plan" } });
+    await act(async () => {
+      fireEvent.keyDown(prompt(), { key: "Enter" });
+    });
+    const reported = bridge.invoke.mock.calls.filter(([method]) => method === "veistra/track");
+    expect(reported).toEqual([
+      [
+        "veistra/track",
+        {
+          event: "prompt_sent",
+          props: { effort: "medium", ultracode: false, mode: null, images: 0 },
+        },
+      ],
+    ]);
+    expect(JSON.stringify(reported)).not.toContain("secret");
+  });
+
   it("shows a refusal and its hint in the tab's own words", async () => {
     backend(
       { status: null, seq: 0, items: [] },

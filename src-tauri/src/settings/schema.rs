@@ -54,6 +54,7 @@ static GROUPS: &[&Group] = &[
     &GITHUB,
     &CLOUD,
     &UPDATES,
+    &TELEMETRY,
     &MCP,
     &SKILLS,
     &DEVELOPER,
@@ -700,6 +701,77 @@ static UPDATES: Group = Group {
     settings: UPDATES_SETTINGS,
 };
 
+// --- usage data -------------------------------------------------------------
+//
+// Read by the frontend, not by Rust: `src/shell/telemetry/consent.ts` turns the
+// three values into what PostHog may do, and reacts to a change as it lands, so
+// all three are `Now`. Nothing here decides whether this *build* can send —
+// `telemetry::decide` does, and the panel above these rows says so when it
+// cannot. See `docs/telemetry.md`.
+//
+// `usageData` is a select rather than a toggle because "nobody has been asked"
+// is a third state, and the one every machine starts in. A toggle defaulting to
+// off could not tell "asked and declined" from "never asked", so the question
+// would either never be put or be put forever.
+
+static USAGE_DATA: &[SelectOption] = &[
+    SelectOption {
+        value: "ask",
+        label: "Ask me",
+        description: "Nothing is sent. Veistra asks once a window is open.",
+    },
+    SelectOption {
+        value: "on",
+        label: "Share",
+        description: "Anonymous usage events, and session recordings if the switch below is on.",
+    },
+    SelectOption {
+        value: "off",
+        label: "Don't share",
+        description: "Nothing is sent, and Veistra does not ask again.",
+    },
+];
+
+static TELEMETRY_SETTINGS: &[Setting] = &[
+    Setting {
+        key: "telemetry.usageData",
+        title: "Share usage data",
+        description: "Which parts of Veistra get used, and how, so the next release fixes what \
+                      gets in people's way. Anonymous: no name, no email, no file contents.",
+        control: Control::Select {
+            default: "ask",
+            options: USAGE_DATA,
+        },
+        applies: Applies::Now,
+    },
+    Setting {
+        key: "telemetry.sessionReplay",
+        title: "Include session recordings",
+        description: "The shell window's layout, clicks and timing, with every piece of text and \
+                      every field masked before it leaves. Panes showing an app are not recorded. \
+                      Only while usage data is shared.",
+        control: Control::Toggle { default: true },
+        applies: Applies::Now,
+    },
+    Setting {
+        key: "telemetry.feedbackPrompts",
+        title: "Ask me for feedback now and then",
+        description: "A small card in the corner after you have used something for a while — at \
+                      most one every few days, and never again once answered. Only while usage \
+                      data is shared. Help ▸ Send Feedback works either way.",
+        control: Control::Toggle { default: true },
+        applies: Applies::Now,
+    },
+];
+
+static TELEMETRY: Group = Group {
+    id: "telemetry",
+    title: "Usage data & feedback",
+    description: "What Veistra may tell Firelight about how it is used, and when it may ask.",
+    order: 55,
+    settings: TELEMETRY_SETTINGS,
+};
+
 // --- MCP --------------------------------------------------------------------
 //
 // The section with the servers in it. Those are not settings — they are a list
@@ -961,6 +1033,23 @@ mod tests {
             Some(json!(true)),
             "discovery is on by default, or nothing finds the servers"
         );
+    }
+
+    /// Consent starts unasked, so a fresh install sends nothing until a person
+    /// answers. The two switches under it may default on because neither does
+    /// anything while the answer is anything but "on".
+    #[test]
+    fn usage_data_is_unasked_until_somebody_answers() {
+        let registry = seeded();
+        assert_eq!(registry.get("telemetry.usageData"), Some(json!("ask")));
+        assert_eq!(registry.get("telemetry.sessionReplay"), Some(json!(true)));
+        assert_eq!(registry.get("telemetry.feedbackPrompts"), Some(json!(true)));
+        for refused in ["yes", "true", ""] {
+            assert!(
+                registry.set("telemetry.usageData", json!(refused)).is_err(),
+                "{refused:?} is not one of the three answers"
+            );
+        }
     }
 
     /// On by default. A build that shipped with this off would never tell

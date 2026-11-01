@@ -31,5 +31,11 @@ fn main() {
          processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
     );
 
+    // `telemetry.rs` bakes these in with `option_env!`, which cargo does not
+    // track on its own: without these lines, a build made after setting the key
+    // would reuse the object compiled before it and ship without one.
+    println!("cargo:rerun-if-env-changed=VEISTRA_POSTHOG_KEY");
+    println!("cargo:rerun-if-env-changed=VEISTRA_POSTHOG_HOST");
+
     tauri_build::build()
 }

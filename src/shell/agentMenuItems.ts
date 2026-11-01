@@ -43,6 +43,8 @@ export interface AgentMenuActions {
   split?: (instanceId: string, dir: SplitDir, before: boolean) => void;
   moveToNewWindow?: (instanceId: string) => void;
   openSettings?: () => void;
+  /** Open the feedback dialog about agent tabs. */
+  feedback?: () => void;
   /** Where an open tab sits; `null` when it is in no pane of this window. */
   scope?: (instanceId: string) => AgentScope | null;
   /** Open a saved session. */
@@ -52,7 +54,7 @@ export interface AgentMenuActions {
 
 const NO_EXPORT = "Exporting a transcript is not built yet.";
 const NO_REQUEST_ID = "The agent does not report a request id to copy.";
-const NO_FEEDBACK = "There is nowhere to send feedback from here yet.";
+const NO_FEEDBACK = "Feedback is not wired here.";
 const NO_FORK = "Forking waits on the agent's fork support (agent-tab parity, row 25).";
 const NO_REOPEN = "An agent tab has no other editor to reopen with.";
 const NO_KEEP = "Agent tabs are not previews, so there is nothing to keep open.";
@@ -129,7 +131,7 @@ function openItems(
     // Group 1: the chat itself.
     dead("Export Transcript", NO_EXPORT),
     dead("Copy Request ID", NO_REQUEST_ID),
-    dead("Give Feedback", NO_FEEDBACK),
+    live("Give Feedback", actions.feedback, NO_FEEDBACK),
     rename,
     dead("Fork Chat", NO_FORK),
     // Group 2: closing.
