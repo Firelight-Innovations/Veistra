@@ -137,6 +137,20 @@ impl Godot {
             .collect()
     }
 
+    /// The sessions whose run is still going: a finished game's window is
+    /// gone, and moving it would only fail (or, with its handle reused, move
+    /// some other program's window) on every step of a window drag.
+    pub fn live_sessions(&self) -> Vec<(String, Arc<session::Session>)> {
+        self.sessions()
+            .into_iter()
+            .filter(|(key, s)| {
+                self.runner
+                    .get(key)
+                    .is_some_and(|r| r.id == s.run_id && r.is_running())
+            })
+            .collect()
+    }
+
     pub fn pane(&self, key: &str) -> Option<live::Pane> {
         self.panes.lock_or_panic().get(key).cloned()
     }
@@ -207,6 +221,42 @@ mod tests {
         probe.setting = String::new();
         assert!(godot.executable(&probe, false, &check).found.is_none());
         assert_eq!(calls.get(), 2, "nothing to try, so nothing is asked");
+    }
+
+    #[test]
+    fn a_session_whose_run_is_gone_is_not_live() {
+        let godot = Godot::default();
+        godot.set_session("c1", Arc::new(session::Session::new(1, None, None)));
+        assert_eq!(godot.sessions().len(), 1);
+        assert!(godot.live_sessions().is_empty(), "no run, nothing to move");
+
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("game")).unwrap();
+        let run = godot
+            .runner
+            .start(
+                "c2",
+                runner::RunSpec {
+                    program: testing::fake_godot(dir.path(), false),
+                    project: dir.path().join("game"),
+                    scene: None,
+                    channel: None,
+                    window: None,
+                },
+            )
+            .unwrap();
+        godot.set_session("c2", Arc::new(session::Session::new(run.id, None, None)));
+        for _ in 0..400 {
+            if !run.is_running() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(!run.is_running());
+        assert!(
+            godot.live_sessions().is_empty(),
+            "a game that exited is not moved"
+        );
     }
 
     #[test]

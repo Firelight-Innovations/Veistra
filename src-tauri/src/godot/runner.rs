@@ -454,13 +454,30 @@ pub fn kill_tree(pid: u32) {
 }
 
 /// The folder holding a run's channel files, unique per run so a stale command
-/// from a previous game can never be read by the next one.
+/// from a previous game can never be read by the next one. Run ids start at 1
+/// on every launch and cluster ids are restored from disk, so the process id
+/// is in the name too: without it the first run after a relaunch read the
+/// last launch's telemetry, F7 included, and stopped itself.
 pub fn channel_dir(base: &Path, key: &str, id_hint: u64) -> PathBuf {
     let safe: String = key
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect();
-    base.join(format!("{safe}-{id_hint}"))
+    base.join(format!("{safe}-{}-{id_hint}", std::process::id()))
+}
+
+/// [`channel_dir`], emptied and made: a folder left by a process that had
+/// this id before is someone else's old run.
+pub fn fresh_channel(base: &Path, key: &str, id_hint: u64) -> std::io::Result<PathBuf> {
+    let dir = channel_dir(base, key, id_hint);
+    match std::fs::remove_dir_all(&dir) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            crate::veistra_log!("play: could not clear {}: {e}", dir.display());
+        }
+        _ => {}
+    }
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
 }
 
 impl Runner {
@@ -683,5 +700,31 @@ mod tests {
         bad.program = dir.path().join("nope");
         assert!(runner.start("c1", bad).is_err());
         assert!(runner.get("c1").is_none());
+    }
+
+    #[test]
+    fn a_channel_never_holds_what_an_earlier_launch_left() {
+        let dir = TempDir::new().unwrap();
+        let name = channel_dir(dir.path(), "cluster-1", 1);
+        assert!(
+            name.to_string_lossy()
+                .contains(&format!("-{}-", std::process::id())),
+            "a relaunch gets its own folder: {}",
+            name.display()
+        );
+        std::fs::create_dir_all(&name).unwrap();
+        std::fs::write(
+            name.join("telemetry.jsonl"),
+            "{\"t\":1,\"kind\":\"key\",\"key\":\"F7\"}\n",
+        )
+        .unwrap();
+        std::fs::write(name.join("res-1.json"), "{}").unwrap();
+        let fresh = fresh_channel(dir.path(), "cluster-1", 1).unwrap();
+        assert_eq!(fresh, name);
+        assert_eq!(
+            std::fs::read_dir(&fresh).unwrap().count(),
+            0,
+            "emptied first"
+        );
     }
 }

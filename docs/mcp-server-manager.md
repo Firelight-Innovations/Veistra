@@ -408,9 +408,14 @@ carries for the shell's own sake (geometry, band heights, restore bookkeeping).
 | `resolve_play_note` | `{id, summary, commit?}`: marks a note Fixed, check it, with the summary. Writes. It never closes the note; the person does, with Looks good or Still broken. |
 
 The play-note tools live here because the design put them here: they are about
-the environment the person is working in, like `project`. Their rules are in
-`src-tauri/src/godot/notes.rs`; a note is a comment with a `take` anchor
-(`docs/design-notes/viewer-comments.md`).
+the environment the person is working in, like `project`. `context` serves the same
+three, from `src-tauri/src/mcp/servers/play_notes.rs`, because an agent tab's session
+token opens `context` and not `workspace`, and Send may hand the notes to that agent.
+Each row and `packet.md` name the note's cluster; a call that names no cluster and asks
+about a note the person's cluster does not hold is answered from the cluster that does.
+Their rules are in `src-tauri/src/godot/notes.rs`; a note is a comment with a `take`
+anchor (`docs/design-notes/viewer-comments.md`). Both writes are refused on the
+read-only main checkout.
 
 The layout comes from the same `ShellState` snapshot `shell_snapshot` reads. Where
 focus is comes from `mcp::FocusState`, which each window's shell keeps current (see

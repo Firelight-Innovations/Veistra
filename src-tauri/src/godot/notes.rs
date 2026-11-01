@@ -68,6 +68,7 @@ fn row(ctx: &CallContext, c: &Comment) -> Option<Value> {
         .map(|root| root.join(packet).join("packet.md").display().to_string());
     Some(json!({
         "id": c.id,
+        "cluster": ctx.cluster_id,
         "n": n,
         "take": take,
         "status": c.status,

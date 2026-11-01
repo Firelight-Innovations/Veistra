@@ -116,7 +116,12 @@ pub fn play(ctx: &Ctx, method: &str, raw: Option<&Value>) -> Option<Result<Value
         return Some(answer);
     }
     Some(params(raw).and_then(|p| match method {
-        "play/state" => Ok(play_state_since(ctx, p.since, p.key_since)),
+        "play/state" => Ok(play_state_since(
+            ctx,
+            p.since,
+            p.key_since,
+            p.project.as_deref(),
+        )),
         "play/run" => play_run(ctx, &p),
         "play/stop" => stop_run(ctx).map(|_| play_state(ctx, 0)),
         "play/restart" => play_restart(ctx, &p),
@@ -288,12 +293,13 @@ fn spawn_detached(program: &Path, args: &[String], cwd: &Path) -> std::io::Resul
 // --- Play -------------------------------------------------------------------
 
 fn play_state(ctx: &Ctx, since: u64) -> Value {
-    play_state_since(ctx, since, u64::MAX)
+    play_state_since(ctx, since, u64::MAX, None)
 }
 
 /// The run, the log after `since`, and the session's keys after `key_since`.
-fn play_state_since(ctx: &Ctx, since: u64, key_since: u64) -> Value {
-    let live = super::live::state(ctx, key_since);
+/// `project` is the one the page has chosen, for Record's state.
+fn play_state_since(ctx: &Ctx, since: u64, key_since: u64, project: Option<&str>) -> Value {
+    let live = super::live::state(ctx, key_since, project);
     match ctx.godot.runner.get(&ctx.key) {
         Some(run) => json!({ "run": run.info(), "log": run.log_since(since), "live": live }),
         None => json!({ "run": Value::Null, "log": Value::Null, "live": live }),
@@ -323,13 +329,14 @@ fn channel_for(ctx: &Ctx, project: &GodotProject) -> Result<Option<PathBuf>, Rpc
     if addon::status(&project.dir) != addon::Installed::Yes {
         return Ok(None);
     }
-    let dir = super::runner::channel_dir(
-        &ctx.scratch.join("play"),
-        &ctx.key,
-        ctx.godot.runner.peek_next_id(),
-    );
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| fail(format!("could not create {}: {e}", dir.display())))?;
+    let base = ctx.scratch.join("play");
+    let dir = super::runner::fresh_channel(&base, &ctx.key, ctx.godot.runner.peek_next_id())
+        .map_err(|e| {
+            fail(format!(
+                "could not create a channel under {}: {e}",
+                base.display()
+            ))
+        })?;
     Ok(Some(dir))
 }
 
@@ -355,17 +362,7 @@ fn start_run(ctx: &Ctx, project: &GodotProject, scene: Option<String>) -> Result
     }
     let pane = ctx.godot.pane(&ctx.key);
     let owner = (ctx.owner)(pane.as_ref().and_then(|p| p.window.as_deref()));
-    let window = super::embed::SUPPORTED.then(|| {
-        let scale = owner.map_or(1.0, |o| o.scale);
-        let (width, height) = super::embed::launch_size(pane.as_ref().map(|p| p.rect), scale);
-        let (x, y) = WindowArgs::OFF_SCREEN;
-        WindowArgs {
-            width,
-            height,
-            x,
-            y,
-        }
-    });
+    let window = super::embed::SUPPORTED.then(|| launch_window(pane.as_ref(), owner));
     let channel = channel_for(ctx, project)?;
     let spec = RunSpec {
         program: found.for_logging().to_path_buf(),
@@ -381,13 +378,15 @@ fn start_run(ctx: &Ctx, project: &GodotProject, scene: Option<String>) -> Result
         .flatten();
     let session = std::sync::Arc::new(Session::new(run.id, channel, plan));
     if let Some(pane) = &pane {
-        session.embed.set_rect(pane.rect, pane.visible, None);
+        session.embed.set_rect(pane.last(), None);
     }
     ctx.godot.set_session(&ctx.key, session.clone());
     {
         let (session, run) = (session.clone(), run.clone());
-        run.clone()
-            .on_exit(Box::new(move || session.finish_take(&run)));
+        run.clone().on_exit(Box::new(move || {
+            session.finish_take(&run);
+            session.embed.forget();
+        }));
     }
     let owner_fn = ctx.owner.clone();
     let label = pane.and_then(|p| p.window);
@@ -395,6 +394,20 @@ fn start_run(ctx: &Ctx, project: &GodotProject, scene: Option<String>) -> Result
         super::session::attach(&session, &run, &|| owner_fn(label.as_deref()));
     });
     Ok(play_state(ctx, 0))
+}
+
+/// Where and how big a game starts: off screen, at the pane's size in
+/// physical pixels, from the page's `devicePixelRatio` when it sent one.
+fn launch_window(pane: Option<&super::live::Pane>, owner: Option<Owner>) -> WindowArgs {
+    let scale = super::embed::scale_for(pane.and_then(|p| p.dpr), owner.map_or(1.0, |o| o.scale));
+    let (width, height) = super::embed::launch_size(pane.map(|p| p.rect), scale);
+    let (x, y) = WindowArgs::OFF_SCREEN;
+    WindowArgs {
+        width,
+        height,
+        x,
+        y,
+    }
 }
 
 fn play_run(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
@@ -845,7 +858,7 @@ pub fn owner_of(app: &tauri::AppHandle, label: Option<&str>) -> Option<Owner> {
 pub fn reposition_all(app: &tauri::AppHandle) {
     use tauri::Manager;
     let godot = app.state::<Godot>();
-    for (key, session) in godot.sessions() {
+    for (key, session) in godot.live_sessions() {
         let label = godot.pane(&key).and_then(|p| p.window);
         if let Some(owner) = owner_of(app, label.as_deref()) {
             session.embed.reapply(&owner);
@@ -1398,6 +1411,45 @@ mod tests {
         assert_eq!(err.code, INVALID_PARAMS);
         let err = call(&c, "godot/preview-glb-bytes", json!({})).unwrap_err();
         assert!(err.message.contains("not been exported"), "{}", err.message);
+    }
+
+    #[test]
+    fn a_game_starts_at_the_pane_s_size_in_the_page_s_pixels() {
+        let pane = super::super::live::Pane {
+            rect: super::super::embed::CssRect {
+                x: 0.0,
+                y: 0.0,
+                w: 800.0,
+                h: 400.0,
+            },
+            visible: true,
+            window: None,
+            dpr: Some(1.25),
+        };
+        let owner = Owner {
+            hwnd: 1,
+            origin: (0, 0),
+            scale: 1.0,
+        };
+        let w = launch_window(Some(&pane), Some(owner));
+        assert_eq!(
+            (w.width, w.height),
+            (1000, 500),
+            "zoom 125 % on a 100 % monitor"
+        );
+        let no_ratio = super::super::live::Pane { dpr: None, ..pane };
+        let w = launch_window(
+            Some(&no_ratio),
+            Some(Owner {
+                scale: 1.5,
+                ..owner
+            }),
+        );
+        assert_eq!(
+            (w.width, w.height),
+            (1200, 600),
+            "the window's scale is the fallback"
+        );
     }
 
     #[test]

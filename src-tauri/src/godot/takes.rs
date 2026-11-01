@@ -22,6 +22,8 @@ use super::telemetry::{self, Line, SceneSpan};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 /// Takes kept per environment (open decision 7: ten).
 pub const KEEP: usize = 10;
@@ -162,7 +164,8 @@ pub struct Finish<'a> {
     pub video: VideoInfo,
     pub channel: Option<&'a Path>,
     pub log: &'a [LogLine],
-    /// Marks from the toolbar, in wall time. F8 marks come from telemetry.
+    /// Marks from the toolbar, in wall time. F8 marks come from telemetry;
+    /// one given here as well is still kept once.
     pub marks: &'a [u64],
 }
 
@@ -195,6 +198,7 @@ pub fn finish(f: &Finish) -> std::io::Result<Summary> {
         .map(|t| t - f.started_at)
         .collect();
     marks.sort_unstable();
+    marks.dedup();
 
     let mut counts = Counts::default();
     let mut log = String::new();
@@ -239,12 +243,24 @@ pub fn finish(f: &Finish) -> std::io::Result<Summary> {
     Ok(summary)
 }
 
+/// Written through a temporary file of its own, so two writes of one file at
+/// once each land whole rather than one renaming the other's half-written
+/// temporary.
 fn write_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
     let text = serde_json::to_string_pretty(value).map_err(std::io::Error::other)?;
-    let tmp = path.with_extension("json.tmp");
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("json.{}-{n}.tmp", std::process::id()));
     std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path)
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
 }
+
+/// Held across every read-change-write of a `notes.json`: the page saves
+/// drafts while Send stamps the notes it filed, and either could otherwise
+/// write over the other's change.
+static NOTES_LOCK: Mutex<()> = Mutex::new(());
 
 /// One take as the Take menu lists it.
 #[derive(Debug, Clone, Serialize)]
@@ -333,18 +349,67 @@ pub fn load_notes(takes: &Path, id: &str) -> Value {
 /// Replace a take's `notes.json`. The page owns the document's shape; this
 /// only checks it is an object with a `notes` array, so a bad write cannot
 /// leave the take's drafts unreadable.
+///
+/// A note already sent keeps its `commentId` and `packet` even when the page
+/// writes it without them: a save the page made from a copy older than Send
+/// would otherwise turn sent notes back into drafts, which offers to send
+/// them again and keeps the take from ever being retired.
 pub fn save_notes(takes: &Path, id: &str, notes: &Value) -> Result<(), String> {
+    let mut doc = notes.clone();
+    update_notes(takes, id, |old| {
+        keep_stamps(old, &mut doc);
+        Some(doc)
+    })
+}
+
+/// Read a take's `notes.json`, let `change` answer the document to write
+/// (`None` writes nothing), and write it, with no other notes write between.
+pub fn update_notes(
+    takes: &Path,
+    id: &str,
+    change: impl FnOnce(&Value) -> Option<Value>,
+) -> Result<(), String> {
     if !valid_id(id) {
         return Err(format!("`{id}` is not a take id"));
-    }
-    if !notes.get("notes").is_some_and(Value::is_array) {
-        return Err("notes.json needs a `notes` array".to_string());
     }
     let dir = takes.join(id);
     if !dir.join(SUMMARY).is_file() {
         return Err(format!("there is no take `{id}`"));
     }
-    write_json(&dir.join(NOTES), notes).map_err(|e| format!("could not save the notes: {e}"))
+    let _lock = NOTES_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(next) = change(&load_notes(takes, id)) else {
+        return Ok(());
+    };
+    if !next.get("notes").is_some_and(Value::is_array) {
+        return Err("notes.json needs a `notes` array".to_string());
+    }
+    write_json(&dir.join(NOTES), &next).map_err(|e| format!("could not save the notes: {e}"))
+}
+
+/// Copy Send's stamps from `old` onto the same notes in `new`.
+fn keep_stamps(old: &Value, new: &mut Value) {
+    let Some(old) = old["notes"].as_array() else {
+        return;
+    };
+    let Some(notes) = new.get_mut("notes").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for note in notes.iter_mut().filter(|n| n.is_object()) {
+        if note.get("commentId").and_then(Value::as_str).is_some() {
+            continue;
+        }
+        let sent = old
+            .iter()
+            .find(|o| o["n"] == note["n"] && o["commentId"].is_string());
+        if let Some(sent) = sent {
+            note["commentId"] = sent["commentId"].clone();
+            if !sent["packet"].is_null() {
+                note["packet"] = sent["packet"].clone();
+            }
+        }
+    }
 }
 
 /// Notes not sent yet: those without the comment id Send gives each one.
@@ -359,6 +424,11 @@ pub fn drafts(notes: &Value) -> usize {
         .unwrap_or(0)
 }
 
+/// Delete a take. The video goes first: it is the file another program (a
+/// player that opened it without sharing delete) is likely to hold, and
+/// failing on it before anything else is gone leaves the take whole and
+/// listed, so retention tries it again. Failing after `take.json` had gone
+/// would hide the folder from every later listing and leak the video.
 pub fn delete(takes: &Path, id: &str) -> Result<(), String> {
     if !valid_id(id) {
         return Err(format!("`{id}` is not a take id"));
@@ -367,7 +437,12 @@ pub fn delete(takes: &Path, id: &str) -> Result<(), String> {
     if !dir.is_dir() {
         return Err(format!("there is no take `{id}`"));
     }
-    std::fs::remove_dir_all(&dir).map_err(|e| format!("could not delete take `{id}`: {e}"))
+    let failed = |e: std::io::Error| format!("could not delete take `{id}`: {e}");
+    match std::fs::remove_file(dir.join(VIDEO)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(failed(e)),
+        _ => {}
+    }
+    std::fs::remove_dir_all(&dir).map_err(failed)
 }
 
 /// Keep the newest `keep` takes, plus any older one with drafts. Answers the
@@ -634,5 +709,80 @@ mod tests {
         assert!(delete(&takes, "2026-10-30-1402-ffff").is_err());
         delete(&takes, "2026-10-30-1402-0f3a").unwrap();
         assert!(list(&takes).is_empty());
+    }
+
+    #[test]
+    fn a_video_that_will_not_delete_leaves_the_take_whole_for_next_time() {
+        let dir = TempDir::new().unwrap();
+        let takes = dir.path().to_path_buf();
+        let id = "2026-10-30-1402-0f3a";
+        finish_one(&takes, id, 1_000_000, 1);
+        // A folder where the video should be: `remove_file` refuses it the
+        // way Windows refuses a file a player holds open.
+        std::fs::create_dir_all(takes.join(id).join(VIDEO).join("held")).unwrap();
+        assert!(delete(&takes, id).is_err());
+        assert!(
+            takes.join(id).join(SUMMARY).is_file(),
+            "take.json is still there"
+        );
+        assert_eq!(list(&takes).len(), 1, "so retention sees it again");
+    }
+
+    #[test]
+    fn a_mark_given_twice_is_kept_once() {
+        let dir = TempDir::new().unwrap();
+        let channel = dir.path().join("chan");
+        std::fs::create_dir_all(&channel).unwrap();
+        std::fs::write(
+            channel.join(telemetry::FILE),
+            "{\"t\":1500,\"kind\":\"mark\"}\n",
+        )
+        .unwrap();
+        let s = finish(&Finish {
+            dir: &dir.path().join("take"),
+            id: "2026-10-30-1402-0f3a",
+            number: 1,
+            project: ".",
+            environment: EnvInfo::default(),
+            godot: "4.5.1",
+            started_at: 1_000,
+            ended_at: 9_000,
+            video: VideoInfo::default(),
+            channel: Some(&channel),
+            log: &[],
+            marks: &[1_500, 4_000],
+        })
+        .unwrap();
+        assert_eq!(s.marks, vec![500, 3_000]);
+    }
+
+    #[test]
+    fn a_save_from_before_send_does_not_turn_sent_notes_back_into_drafts() {
+        let dir = TempDir::new().unwrap();
+        let takes = dir.path().to_path_buf();
+        let id = "2026-10-30-1402-0f3a";
+        finish_one(&takes, id, 1_000_000, 1);
+        let before = json!({ "version": 1, "notes": [{ "n": 1, "body": "door" }, { "n": 2, "body": "wall" }] });
+        save_notes(&takes, id, &before).unwrap();
+        update_notes(&takes, id, |doc| {
+            let mut doc = doc.clone();
+            doc["notes"][0]["commentId"] = json!("c1");
+            doc["notes"][0]["packet"] = json!("p1");
+            Some(doc)
+        })
+        .unwrap();
+        let stale = json!({ "version": 1, "notes": [{ "n": 1, "body": "door!" }, { "n": 2, "body": "wall!" }] });
+        save_notes(&takes, id, &stale).unwrap();
+        let now = load_notes(&takes, id);
+        assert_eq!(now["notes"][0]["commentId"], "c1");
+        assert_eq!(now["notes"][0]["packet"], "p1");
+        assert_eq!(now["notes"][0]["body"], "door!", "the newer words are kept");
+        assert_eq!(drafts(&now), 1, "only note 2 is a draft");
+        let leftovers: Vec<_> = std::fs::read_dir(takes.join(id))
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 }

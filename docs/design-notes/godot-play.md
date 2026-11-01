@@ -96,7 +96,8 @@ project holding v1 shows "Update capture".
 **Send** (`feedback.rs`) writes `.veistra/feedback/<take>-<n>/` with `packet.md` and per note
 `markup.png`, `markup.json`, `contact.png`, `frames/` and `context.json`, files each note as a
 comment with a `take` anchor, and the page attaches `packet.md` at the agent's prompt. Agents
-use `list_play_notes`, `start_play_note` and `resolve_play_note` on the workspace server.
+use `list_play_notes`, `start_play_note` and `resolve_play_note` on the workspace server, or
+on the context server from an agent tab.
 
 ### Decisions
 

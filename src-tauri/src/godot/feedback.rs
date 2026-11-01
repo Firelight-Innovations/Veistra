@@ -188,7 +188,15 @@ fn next_packet(feedback: &Path, take: &str) -> PathBuf {
 }
 
 /// What the agent reads first. The wording follows the AgentHandoff board.
-pub fn packet_md(summary: &Summary, notes: &[(&Note, &Value, &str)], project: &str) -> String {
+/// It names only the files Send wrote (a contact sheet is the person's
+/// choice), and the cluster the notes came from, which the note tools need
+/// once the person has moved on to another.
+pub fn packet_md(
+    summary: &Summary,
+    notes: &[(&Note, &Value, &str)],
+    project: &str,
+    cluster: Option<&str>,
+) -> String {
     let mut md = String::new();
     let count = notes.len();
     let _ = writeln!(md, "# Playtest feedback · Take {}\n", summary.number.max(1));
@@ -206,13 +214,31 @@ pub fn packet_md(summary: &Summary, notes: &[(&Note, &Value, &str)], project: &s
     }
     meta.push(clock(summary.duration_ms));
     let _ = writeln!(md, "{}\n", meta.join(" · "));
+    let sheets = notes
+        .iter()
+        .filter(|(n, _, _)| n.images.contact_png.is_some())
+        .count();
+    let motion = match sheets {
+        0 => "",
+        s if s == count => {
+            "then `contact.png` for the motion (one frame a second, the time printed on each), "
+        }
+        _ => {
+            "then `contact.png`, where a note has one, for the motion (one frame a second, the \
+              time printed on each), "
+        }
+    };
+    let pass = cluster
+        .map(|c| format!(" Pass `cluster: \"{c}\"` to both: these notes came from that cluster."))
+        .unwrap_or_default();
     let _ = writeln!(
         md,
-        "{count} {}. For each note, open `markup.png` first, then `contact.png` for the motion \
-         (one frame a second, the time printed on each), then read the note. Prefer the object \
-         path to the pixel position. When you start on a note, call `start_play_note` with its \
-         id; when it is fixed, call `resolve_play_note` with the id, what you changed, and the \
-         commit. The person checks the fix and closes the note.\n",
+        "{count} {}. For each note, open `markup.png` first, {motion}then read the note. Prefer \
+         the object path to the pixel position. When you start on a note, call \
+         `start_play_note` with its id; when it is fixed, call `resolve_play_note` with the id, \
+         what you changed, and the commit.{pass} Both are on the veistra-workspace server, and \
+         on veistra-context for an agent in an agent tab. The person checks the fix and closes \
+         the note.\n",
         if count == 1 { "note" } else { "notes" }
     );
     for (note, ctx, id) in notes {
@@ -296,13 +322,19 @@ pub fn packet_md(summary: &Summary, notes: &[(&Note, &Value, &str)], project: &s
             let at = clock(ctx["worstFrame"]["atMs"].as_u64().unwrap_or(0));
             row("Frame time", format!("worst {ms:.0} ms at {at}"));
         }
-        row(
-            "Files",
-            format!(
-                "`notes/{n}/markup.png` · `contact.png` · `frames/` · `context.json`",
-                n = note.n
-            ),
-        );
+        let images = &note.images;
+        let mut files = vec![format!("`notes/{}/markup.png`", note.n)];
+        if images.contact_png.is_some() {
+            files.push("`contact.png`".into());
+        }
+        if images.in_png.is_some() || images.note_png.is_some() || images.out_png.is_some() {
+            files.push("`frames/`".into());
+        }
+        if images.clip_mp4.is_some() {
+            files.push("`clip.mp4`".into());
+        }
+        files.push("`context.json`".into());
+        row("Files", files.join(" · "));
         if let Some(done) = note.done_when.as_deref().filter(|d| !d.trim().is_empty()) {
             row("Done when", done.trim().to_string());
         }
@@ -433,7 +465,7 @@ pub fn send(
         .zip(&ids)
         .map(|((n, c), (_, id))| (n, c, id.as_str()))
         .collect();
-    let md = packet_md(&summary, &rows, project_name);
+    let md = packet_md(&summary, &rows, project_name, ctx.cluster_id.as_deref());
     write(&packet.join("packet.md"), md.as_bytes())?;
 
     mark_sent(takes_dir, &req.take, &ids, &packet_rel);
@@ -447,18 +479,20 @@ pub fn send(
 /// Stamp each sent note in the take's `notes.json` with its comment, so the
 /// draft count drops and the take can be retired like any other.
 fn mark_sent(takes_dir: &Path, take: &str, ids: &[(u32, String)], packet: &str) {
-    let mut doc = takes::load_notes(takes_dir, take);
-    let Some(notes) = doc["notes"].as_array_mut() else {
-        return;
-    };
-    for note in notes.iter_mut() {
-        let n = note["n"].as_u64().unwrap_or(0) as u32;
-        if let Some((_, id)) = ids.iter().find(|(m, _)| *m == n) {
-            note["commentId"] = json!(id);
-            note["packet"] = json!(packet);
+    let stamped = takes::update_notes(takes_dir, take, |doc| {
+        let mut doc = doc.clone();
+        for note in doc["notes"].as_array_mut()?.iter_mut() {
+            let n = note["n"].as_u64().unwrap_or(0) as u32;
+            if let Some((_, id)) = ids.iter().find(|(m, _)| *m == n) {
+                note["commentId"] = json!(id);
+                note["packet"] = json!(packet);
+            }
         }
+        Some(doc)
+    });
+    if let Err(e) = stamped {
+        crate::veistra_log!("play: could not mark the sent notes in take {take}: {e}");
     }
-    let _ = takes::save_notes(takes_dir, take, &doc);
 }
 
 #[cfg(test)]
@@ -610,6 +644,12 @@ mod tests {
             md.contains("`Hallway/Enemy_02` (CharacterBody3D), world (14.2, 0.0, −6.8) at 1:42")
         );
         assert!(md.contains("resolve_play_note"));
+        assert!(
+            md.contains("`cluster: \"c1\"`"),
+            "the agent is told which cluster to ask"
+        );
+        assert!(md.contains("veistra-context"));
+        assert!(md.contains("then `contact.png` for the motion"));
         assert!(md.contains("tests/chase_wall.gd passes"));
         assert!(
             md.contains(&format!("`{}`", sent.comments[1].1)),
@@ -675,6 +715,34 @@ mod tests {
             }
         )
         .is_err());
+    }
+
+    #[test]
+    fn a_note_sent_without_a_contact_sheet_is_not_pointed_at_one() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().to_path_buf();
+        let (takes_dir, id) = take(&root);
+        let ctx = CallContext {
+            cluster_id: Some("c1".into()),
+            project: Some(root.clone()),
+        };
+        let mut bare = note(1, 41_000, None, "The door light flickers");
+        bare.images.contact_png = None;
+        let sent = send(
+            &ctx,
+            &takes_dir,
+            "Anomaly",
+            &Request {
+                take: id,
+                notes: vec![bare],
+            },
+        )
+        .unwrap();
+        let packet = root.join(&sent.packet);
+        assert!(!packet.join("notes/1/contact.png").exists());
+        let md = std::fs::read_to_string(packet.join("packet.md")).unwrap();
+        assert!(!md.contains("contact.png"), "{md}");
+        assert!(md.contains("`notes/1/markup.png` · `frames/` · `context.json`"));
     }
 
     #[test]

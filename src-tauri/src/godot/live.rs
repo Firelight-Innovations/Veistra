@@ -6,7 +6,7 @@
 //! `play/*` here. The split is by what the method touches: those four drive
 //! the process, these drive the session around it ([`super::session`]).
 
-use super::embed::{CssRect, Owner, State as EmbedState};
+use super::embed::{CssRect, Last, Owner, State as EmbedState};
 use super::feedback;
 use super::record;
 use super::rpc::{fail, pick_project_for, Ctx};
@@ -16,7 +16,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use veistra_rpc::{RpcError, INVALID_PARAMS};
@@ -27,6 +27,18 @@ pub struct Pane {
     pub rect: CssRect,
     pub visible: bool,
     pub window: Option<String>,
+    /// The Play page's `devicePixelRatio`, monitor scale times View zoom.
+    pub dpr: Option<f64>,
+}
+
+impl Pane {
+    pub fn last(&self) -> Last {
+        Last {
+            rect: self.rect,
+            visible: self.visible,
+            dpr: self.dpr,
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -39,6 +51,7 @@ struct P {
     h: f64,
     visible: bool,
     window: Option<String>,
+    dpr: Option<f64>,
     on: bool,
     id: Option<String>,
     take: Option<String>,
@@ -98,45 +111,78 @@ fn owner(ctx: &Ctx, window: Option<&str>) -> Option<Owner> {
 
 // --- the pane's box ----------------------------------------------------------
 
+/// The pane's box. Leaving the live view (review, or the pane going away)
+/// sends `visible: false` with any box, 0 x 0 included; the box it had is
+/// kept then, so the next launch is still sized to the pane.
 fn embed_rect(ctx: &Ctx, p: &P) -> Result<Value, RpcError> {
     if ![p.x, p.y, p.w, p.h].iter().all(|v| v.is_finite()) || p.w < 0.0 || p.h < 0.0 {
         return Err(RpcError::new(INVALID_PARAMS, "the box needs x, y, w and h"));
     }
-    let rect = CssRect {
-        x: p.x,
-        y: p.y,
-        w: p.w,
-        h: p.h,
+    let asked = Last {
+        rect: CssRect {
+            x: p.x,
+            y: p.y,
+            w: p.w,
+            h: p.h,
+        },
+        visible: p.visible,
+        dpr: p.dpr.filter(|d| d.is_finite() && *d > 0.0),
     };
+    let last = Last::then(ctx.godot.pane(&ctx.key).map(|old| old.last()), asked);
     ctx.godot.set_pane(
         &ctx.key,
         Pane {
-            rect,
-            visible: p.visible,
+            rect: last.rect,
+            visible: last.visible,
             window: p.window.clone(),
+            dpr: last.dpr,
         },
     );
     if let Some(s) = session(ctx) {
         s.embed
-            .set_rect(rect, p.visible, owner(ctx, p.window.as_deref()).as_ref());
+            .set_rect(asked, owner(ctx, p.window.as_deref()).as_ref());
     }
     Ok(json!({ "ok": true }))
 }
 
+/// Pop out ends a take going: the recorder captures the whole window, and a
+/// decorated one would put its title bar in the video.
 fn pop_out(ctx: &Ctx) -> Result<Value, RpcError> {
     let s = live_session(ctx)?;
     let window = ctx.godot.pane(&ctx.key).and_then(|p| p.window);
     s.embed
         .pop_out(owner(ctx, window.as_deref()).as_ref())
         .map_err(fail)?;
+    if let Some(run) = ctx.godot.runner.get(&ctx.key) {
+        s.finish_take(&run);
+    }
     Ok(json!({ "embed": s.embed.state() }))
 }
 
+/// Dock puts the game back in the pane, and with Record on starts a new take
+/// of the rest of the run.
 fn dock(ctx: &Ctx) -> Result<Value, RpcError> {
     let s = live_session(ctx)?;
     let window = ctx.godot.pane(&ctx.key).and_then(|p| p.window);
     let o = owner(ctx, window.as_deref()).ok_or_else(|| fail("the Veistra window is not known"))?;
     s.embed.dock(&o).map_err(fail)?;
+    if let (Some(run), Some(root)) = (ctx.godot.runner.get(&ctx.key), ctx.root.as_ref()) {
+        let rel = run
+            .spec
+            .project
+            .strip_prefix(root)
+            .map(|r| r.to_string_lossy().replace('\\', "/"))
+            .ok()
+            .filter(|r| !r.is_empty())
+            .unwrap_or_else(|| ".".to_string());
+        let godot = ctx.godot.version_for_takes();
+        if let Some(plan) = plan_for(ctx, &run.spec.project, &rel, &godot) {
+            s.plan(plan);
+            if let Some(hwnd) = s.embed.hwnd() {
+                s.begin_take(hwnd);
+            }
+        }
+    }
     Ok(json!({ "embed": s.embed.state() }))
 }
 
@@ -468,7 +514,7 @@ pub fn play_shown(snapshot: &crate::shell_state::ShellSnapshot, key: &str) -> bo
 pub fn sync_visibility(app: &tauri::AppHandle, snapshot: &crate::shell_state::ShellSnapshot) {
     use tauri::Manager;
     let godot = app.state::<super::Godot>();
-    for (key, session) in godot.sessions() {
+    for (key, session) in godot.live_sessions() {
         if !session.embed.set_shown(play_shown(snapshot, &key)) {
             continue;
         }
@@ -479,14 +525,53 @@ pub fn sync_visibility(app: &tauri::AppHandle, snapshot: &crate::shell_state::Sh
     }
 }
 
-/// The `live` part of `play/state`.
-pub fn state(ctx: &Ctx, key_since: u64) -> Value {
+/// `root/rel` when `rel` is a plain relative folder (`.` for the root) that
+/// holds a `project.godot`. Reads one file, never the environment.
+pub fn project_at(root: &Path, rel: &str) -> Option<PathBuf> {
+    let rel = Path::new(rel);
+    let plain = rel
+        .components()
+        .all(|c| matches!(c, Component::Normal(_) | Component::CurDir));
+    let dir = root.join(rel);
+    (plain && dir.join("project.godot").is_file()).then_some(dir)
+}
+
+/// The Godot project `play/state` judges Record against: the one running,
+/// else the one the page has chosen (`rel`), else the one that ran last.
+/// `play/state` is polled twice a second, so this never looks for projects:
+/// a walk of the environment, and the scenes of a Godot 4.4 project whose
+/// main scene is a `uid://`, ran on every poll before.
+pub fn record_project(
+    root: Option<&Path>,
+    rel: Option<&str>,
+    running: Option<&Path>,
+    ran: Option<&Path>,
+) -> Option<PathBuf> {
+    if let Some(dir) = running {
+        return Some(dir.to_path_buf());
+    }
+    match rel {
+        Some(rel) => project_at(root?, rel),
+        None => ran.map(Path::to_path_buf),
+    }
+}
+
+/// The `live` part of `play/state`. `project` is the page's chosen project,
+/// as `godot/status` names it.
+pub fn state(ctx: &Ctx, key_since: u64, project: Option<&str>) -> Value {
     let run = ctx.godot.runner.get(&ctx.key);
     let s = run
         .as_ref()
         .and_then(|r| ctx.godot.session(&ctx.key).filter(|s| s.run_id == r.id));
-    let project = pick_project_for(ctx, None).ok();
-    let blocked = project.as_ref().and_then(|p| record_blocked(ctx, &p.dir));
+    let dir = record_project(
+        ctx.root.as_deref(),
+        project,
+        run.as_ref()
+            .filter(|r| r.is_running())
+            .map(|r| r.spec.project.as_path()),
+        run.as_ref().map(|r| r.spec.project.as_path()),
+    );
+    let blocked = dir.as_ref().and_then(|d| record_blocked(ctx, d));
     let record = json!({
         "on": record_on(ctx),
         "blocked": blocked,
@@ -582,6 +667,114 @@ mod tests {
             !play_shown(&snapshot("c1", "play"), "c9"),
             "no such cluster"
         );
+    }
+
+    struct World {
+        dir: tempfile::TempDir,
+        godot: super::super::Godot,
+    }
+
+    fn world() -> World {
+        let dir = tempfile::TempDir::new().unwrap();
+        for rel in ["game", "tool"] {
+            std::fs::create_dir_all(dir.path().join(rel)).unwrap();
+            std::fs::write(
+                dir.path().join(rel).join("project.godot"),
+                "config_version=5\n",
+            )
+            .unwrap();
+        }
+        World {
+            dir,
+            godot: super::super::Godot::default(),
+        }
+    }
+
+    fn ctx(w: &World) -> Ctx<'_> {
+        Ctx {
+            godot: &w.godot,
+            key: "c1".into(),
+            root: Some(w.dir.path().to_path_buf()),
+            read_only: false,
+            probe: super::super::detect::Probe::default(),
+            check: &|_| Err("no engine here".into()),
+            cache_root: w.dir.path().join("appdata"),
+            scratch: w.dir.path().join("scratch"),
+            owner: Arc::new(|_| None),
+            allow_asset: &|_| {},
+        }
+    }
+
+    #[test]
+    fn record_is_judged_against_the_project_the_page_chose_and_only_that() {
+        let w = world();
+        let c = ctx(&w);
+        let blocked = |project: Option<&str>| state(&c, 0, project)["record"]["blocked"].clone();
+        assert!(
+            blocked(Some("tool")).is_string(),
+            "the addon is missing there"
+        );
+        assert_eq!(
+            blocked(None),
+            Value::Null,
+            "before the page has chosen, nothing is looked for"
+        );
+        for bad in ["../tool", "nope", "/etc"] {
+            assert_eq!(blocked(Some(bad)), Value::Null, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_project_is_a_plain_folder_under_the_root_that_holds_project_godot() {
+        let w = world();
+        let root = w.dir.path();
+        assert_eq!(project_at(root, "game"), Some(root.join("game")));
+        assert_eq!(project_at(root, "./tool"), Some(root.join("./tool")));
+        assert_eq!(project_at(root, "."), None, "no project.godot at the root");
+        std::fs::write(root.join("project.godot"), "").unwrap();
+        assert_eq!(project_at(root, "."), Some(root.join(".")));
+        assert_eq!(project_at(root, "game/.."), None);
+        let outside = root.join("game").display().to_string();
+        assert_eq!(project_at(root, &outside), None, "an absolute path");
+        let running = root.join("game");
+        assert_eq!(
+            record_project(Some(root), Some("tool"), Some(&running), None),
+            Some(running.clone()),
+            "the game running is the one being recorded"
+        );
+        assert_eq!(
+            record_project(Some(root), None, None, Some(&running)),
+            Some(running)
+        );
+        assert_eq!(record_project(Some(root), None, None, None), None);
+    }
+
+    #[test]
+    fn the_box_keeps_the_page_s_pixel_ratio_and_a_hide_keeps_the_box() {
+        let w = world();
+        let c = ctx(&w);
+        let rect = json!({ "x": 10, "y": 20, "w": 800, "h": 400, "visible": true, "window": "main", "dpr": 1.25 });
+        call(&c, "play/embed-rect", Some(&rect)).unwrap().unwrap();
+        let pane = w.godot.pane("c1").unwrap();
+        assert_eq!((pane.rect.w, pane.dpr), (800.0, Some(1.25)));
+        let hide = json!({ "x": 0, "y": 0, "w": 0, "h": 0, "visible": false });
+        call(&c, "play/embed-rect", Some(&hide)).unwrap().unwrap();
+        let pane = w.godot.pane("c1").unwrap();
+        assert!(!pane.visible);
+        assert_eq!(
+            (pane.rect.w, pane.dpr),
+            (800.0, Some(1.25)),
+            "kept for the next launch"
+        );
+        let zero = json!({ "x": 0, "y": 0, "w": 10, "h": 10, "visible": true, "dpr": 0 });
+        call(&c, "play/embed-rect", Some(&zero)).unwrap().unwrap();
+        assert_eq!(
+            w.godot.pane("c1").unwrap().dpr,
+            None,
+            "an unusable ratio is not kept"
+        );
+        let bad = json!({ "x": 0, "y": 0, "w": -1, "h": 0, "visible": false });
+        assert!(call(&c, "play/embed-rect", Some(&bad)).unwrap().is_err());
     }
 
     #[test]

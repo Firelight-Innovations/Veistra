@@ -15,9 +15,12 @@
 //! when it reaches this process. The encoder writes frame times relative to
 //! the first frame, so video time plus that stamp is wall time, the clock the
 //! addon's telemetry and the log share.
+//!
+//! **Older Windows still records**: see [`Gate`].
 
 use serde::Serialize;
 use std::path::Path;
+use std::time::Duration;
 
 /// 3.5 Mbit/s: two minutes is 52.5 MB. Read only by the Windows recorder.
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -33,6 +36,42 @@ pub struct Stopped {
     pub frames: u64,
     pub width: u32,
     pub height: u32,
+}
+
+/// Lets frames through at no more than one per `every`, for a capture
+/// session that cannot be told a minimum interval itself.
+///
+/// Hiding the cursor and the yellow border, and capping the frame rate, are
+/// properties Windows 10 and early Windows 11 lack, and asking for one the
+/// session does not have fails the whole capture. Each is asked for only
+/// where it exists; without the cap, this drops frames to [`FPS`] instead.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Debug, Clone)]
+pub struct Gate {
+    every: Duration,
+    due: Option<Duration>,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+impl Gate {
+    pub fn new(every: Duration) -> Self {
+        Self { every, due: None }
+    }
+
+    /// Whether the frame captured at `at` is kept. A frame up to a quarter
+    /// interval early still counts, so a 60 Hz game's frames, which land
+    /// either side of each 30 Hz slot, keep 30 a second rather than 20; the
+    /// next slot follows the last one, not the frame, so that jitter never
+    /// drifts the rate, unless the game stalled for a whole interval.
+    pub fn admit(&mut self, at: Duration) -> bool {
+        let due = *self.due.get_or_insert(at);
+        if at + self.every / 4 < due {
+            return false;
+        }
+        let next = due + self.every;
+        self.due = Some(if at >= next { at + self.every } else { next });
+        true
+    }
 }
 
 /// Why recording cannot start here, or `None` when it can.
@@ -68,7 +107,7 @@ impl Recorder {
 
 #[cfg(windows)]
 mod sys {
-    use super::{Stopped, BITRATE, FPS};
+    use super::{Gate, Stopped, BITRATE, FPS};
     use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
@@ -79,7 +118,7 @@ mod sys {
         ImageFormat, VideoEncoder, VideoSettingsBuilder, VideoSettingsSubType,
     };
     use windows_capture::frame::Frame;
-    use windows_capture::graphics_capture_api::InternalCaptureControl;
+    use windows_capture::graphics_capture_api::{GraphicsCaptureApi, InternalCaptureControl};
     use windows_capture::settings::{
         ColorFormat, CursorCaptureSettings, DirtyRegionSettings, DrawBorderSettings,
         MinimumUpdateIntervalSettings, SecondaryWindowSettings, Settings,
@@ -104,12 +143,14 @@ mod sys {
         width: u32,
         height: u32,
         shared: Arc<Shared>,
+        gate: Option<Gate>,
     }
 
     struct Capture {
         encoder: Option<VideoEncoder>,
         shared: Arc<Shared>,
         last_copy: Option<Instant>,
+        gate: Option<Gate>,
     }
 
     impl GraphicsCaptureApiHandler for Capture {
@@ -132,6 +173,7 @@ mod sys {
                 encoder: Some(encoder),
                 shared: f.shared,
                 last_copy: None,
+                gate: f.gate,
             })
         }
 
@@ -140,6 +182,13 @@ mod sys {
             frame: &mut Frame,
             _control: InternalCaptureControl,
         ) -> Result<(), Self::Error> {
+            if let Some(gate) = self.gate.as_mut() {
+                // `SystemRelativeTime` counts in 100 ns ticks.
+                let ticks = u64::try_from(frame.timestamp()?.Duration).unwrap_or(0);
+                if !gate.admit(Duration::from_nanos(ticks.saturating_mul(100))) {
+                    return Ok(());
+                }
+            }
             let _ = self.shared.first_frame_ms.compare_exchange(
                 0,
                 crate::godot::runner::now_ms(),
@@ -200,12 +249,29 @@ mod sys {
         pub fn start(hwnd: isize, path: &Path) -> Result<Self, String> {
             let (width, height) = client_size(hwnd)?;
             let shared = Arc::new(Shared::default());
+            let every = Duration::from_secs(1) / FPS;
+            let can = |q: fn() -> Result<bool, windows_capture::graphics_capture_api::Error>| {
+                q().unwrap_or(false)
+            };
+            let capped = can(GraphicsCaptureApi::is_minimum_update_interval_supported);
             let settings = Settings::new(
                 Window::from_raw_hwnd(hwnd as *mut std::ffi::c_void),
-                CursorCaptureSettings::WithoutCursor,
-                DrawBorderSettings::WithoutBorder,
+                if can(GraphicsCaptureApi::is_cursor_settings_supported) {
+                    CursorCaptureSettings::WithoutCursor
+                } else {
+                    CursorCaptureSettings::Default
+                },
+                if can(GraphicsCaptureApi::is_border_settings_supported) {
+                    DrawBorderSettings::WithoutBorder
+                } else {
+                    DrawBorderSettings::Default
+                },
                 SecondaryWindowSettings::Default,
-                MinimumUpdateIntervalSettings::Custom(Duration::from_millis(1000 / u64::from(FPS))),
+                if capped {
+                    MinimumUpdateIntervalSettings::Custom(every)
+                } else {
+                    MinimumUpdateIntervalSettings::Default
+                },
                 DirtyRegionSettings::Default,
                 ColorFormat::Bgra8,
                 Flags {
@@ -213,6 +279,7 @@ mod sys {
                     width,
                     height,
                     shared: shared.clone(),
+                    gate: (!capped).then(|| Gate::new(every)),
                 },
             );
             let control = Capture::start_free_threaded(settings)
@@ -317,6 +384,33 @@ mod tests {
     fn without_a_recorder_rec_says_why_and_starting_is_refused() {
         assert!(unavailable().is_some_and(|w| w.contains("Windows")));
         assert!(Recorder::start(0, Path::new("take.mp4")).is_err());
+    }
+
+    fn kept(fps_in: u64, seconds: u64) -> usize {
+        let mut gate = Gate::new(Duration::from_secs(1) / FPS);
+        let step = 1_000_000_000 / fps_in;
+        (0..fps_in * seconds)
+            .filter(|i| gate.admit(Duration::from_nanos(i * step)))
+            .count()
+    }
+
+    #[test]
+    fn without_a_capped_session_frames_are_kept_at_thirty_a_second() {
+        assert!((29..=31).contains(&kept(60, 1)), "{}", kept(60, 1));
+        assert!((29..=31).contains(&kept(144, 1)), "{}", kept(144, 1));
+        assert!(
+            (299..=301).contains(&kept(60, 10)),
+            "no drift: {}",
+            kept(60, 10)
+        );
+        assert_eq!(kept(30, 1), 30, "a 30 Hz game loses nothing");
+        assert_eq!(kept(20, 1), 20);
+        let mut gate = Gate::new(Duration::from_millis(33));
+        let ms = Duration::from_millis;
+        assert!(gate.admit(ms(0)));
+        assert!(gate.admit(ms(1_000)), "after a stall");
+        assert!(!gate.admit(ms(1_016)), "and no burst after it");
+        assert!(gate.admit(ms(1_033)));
     }
 
     #[test]

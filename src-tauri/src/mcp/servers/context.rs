@@ -10,7 +10,8 @@
 //! plain files are still better read with the agent's own tools.
 //!
 //! Every call answers from one cluster: the one named in `cluster`, else the
-//! one the person is working in.
+//! one the person is working in. The play-note tools are here as well as on
+//! `workspace` ([`super::play_notes`] says why).
 
 use super::{workspace, McpResource};
 use crate::apps::CallContext;
@@ -223,6 +224,11 @@ const TOOLS: &[McpTool] = &[
                       picture. The same as reading veistra://canvas/<canvas>#frame=<node>.",
         schema: node_schema,
     },
+    // An agent tab's session reaches this server and not `workspace`, and
+    // Send may hand it the notes; see `play_notes`.
+    super::play_notes::TOOLS[0],
+    super::play_notes::TOOLS[1],
+    super::play_notes::TOOLS[2],
 ];
 
 /// The selection, published so a client can subscribe to it.
@@ -357,6 +363,9 @@ fn strings(args: &Map<String, Value>, key: &str) -> Result<Option<Vec<String>>, 
 }
 
 fn call(app: &AppHandle, tool: &str, params: Option<Value>) -> Result<ToolAnswer, RpcError> {
+    if super::play_notes::serves(tool) {
+        return super::play_notes::call(app, tool, &params);
+    }
     let args = match params {
         Some(Value::Object(map)) => map,
         None | Some(Value::Null) => Map::new(),
@@ -595,6 +604,21 @@ mod tests {
             (tool.schema)()["properties"]["component"]["enum"],
             json!(catalogue::NAMES)
         );
+    }
+
+    #[test]
+    fn an_agent_tab_s_session_can_work_through_its_play_notes() {
+        // A session token opens this server and no other that has them.
+        assert!(crate::mcp::session::SERVER_IDS.contains(&ID));
+        let names: Vec<&str> = TOOLS.iter().map(|t| t.name).collect();
+        for tool in ["list_play_notes", "start_play_note", "resolve_play_note"] {
+            assert!(names.contains(&tool), "{tool}");
+            assert_eq!(
+                super::super::read_only_hint(ID, tool),
+                Some(tool == "list_play_notes"),
+                "{tool}"
+            );
+        }
     }
 
     fn args(v: Value) -> Map<String, Value> {
