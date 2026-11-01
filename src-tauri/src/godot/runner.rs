@@ -136,12 +136,37 @@ pub struct RunSpec {
     pub scene: Option<String>,
     /// The folder the Veistra capture addon listens in, when it is installed.
     pub channel: Option<PathBuf>,
+    /// The window's size and where it first appears, when Play is going to
+    /// place it over its pane.
+    pub window: Option<WindowArgs>,
+}
+
+/// `--windowed --resolution <w>x<h> --position <x>,<y>`: sized to the pane,
+/// and first shown off screen so it does not flash before it is placed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowArgs {
+    pub width: u32,
+    pub height: u32,
+    pub x: i32,
+    pub y: i32,
+}
+
+impl WindowArgs {
+    /// Far enough left and up to be on no monitor anyone has.
+    pub const OFF_SCREEN: (i32, i32) = (-32000, -32000);
 }
 
 impl RunSpec {
-    /// `godot --path <project> [scene] [-- --veistra-dir=<dir>]`
+    /// `godot --path <project> [window args] [scene] [-- --veistra-dir=<dir>]`
     pub fn args(&self) -> Vec<String> {
         let mut args = vec!["--path".to_string(), self.project.display().to_string()];
+        if let Some(w) = &self.window {
+            args.push("--windowed".to_string());
+            args.push("--resolution".to_string());
+            args.push(format!("{}x{}", w.width, w.height));
+            args.push("--position".to_string());
+            args.push(format!("{},{}", w.x, w.y));
+        }
         if let Some(scene) = &self.scene {
             args.push(scene.clone());
         }
@@ -164,7 +189,11 @@ pub struct Run {
     log: Mutex<Log>,
     stop_requested: AtomicBool,
     pub paused: AtomicBool,
+    on_exit: Mutex<Option<ExitHook>>,
 }
+
+/// What to do once a run has ended, set after it starts.
+type ExitHook = Box<dyn FnOnce() + Send>;
 
 /// A run as the pane draws it.
 #[derive(Debug, Clone, Serialize)]
@@ -242,6 +271,22 @@ impl Run {
         };
         drop(state);
         *self.ended.lock_or_panic() = Some(now_ms());
+        let hook = self.on_exit.lock_or_panic().take();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    /// Run `hook` once the run has ended, on the thread that saw it end; at
+    /// once, here, if it already has. Replaces a hook set before.
+    pub fn on_exit(&self, hook: ExitHook) {
+        let mut slot = self.on_exit.lock_or_panic();
+        if self.is_running() {
+            *slot = Some(hook);
+            return;
+        }
+        drop(slot);
+        hook();
     }
 }
 
@@ -291,6 +336,7 @@ impl Runner {
             log: Mutex::new(Log::default()),
             stop_requested: AtomicBool::new(false),
             paused: AtomicBool::new(false),
+            on_exit: Mutex::new(None),
         });
         run.note(format!(
             "$ {} {}",
@@ -438,6 +484,7 @@ mod tests {
             project,
             scene: scene.map(str::to_string),
             channel: None,
+            window: None,
         }
     }
 
@@ -479,10 +526,60 @@ mod tests {
             project: PathBuf::from("/p"),
             scene: Some("res://a.tscn".to_string()),
             channel: Some(PathBuf::from("/tmp/c")),
+            window: None,
         };
         assert_eq!(
             spec.args(),
             vec!["--path", "/p", "res://a.tscn", "--", "--veistra-dir=/tmp/c"]
+        );
+    }
+
+    #[test]
+    fn window_args_are_engine_args_before_the_scene_and_the_separator() {
+        let spec = RunSpec {
+            program: PathBuf::from("godot"),
+            project: PathBuf::from("/p"),
+            scene: Some("res://a.tscn".to_string()),
+            channel: Some(PathBuf::from("/tmp/c")),
+            window: Some(WindowArgs {
+                width: 960,
+                height: 540,
+                x: -32000,
+                y: -32000,
+            }),
+        };
+        assert_eq!(
+            spec.args(),
+            vec![
+                "--path",
+                "/p",
+                "--windowed",
+                "--resolution",
+                "960x540",
+                "--position",
+                "-32000,-32000",
+                "res://a.tscn",
+                "--",
+                "--veistra-dir=/tmp/c"
+            ]
+        );
+    }
+
+    #[test]
+    fn an_exit_hook_runs_once_the_game_ends_or_at_once_if_it_has() {
+        let dir = TempDir::new().unwrap();
+        let runner = Runner::default();
+        let run = runner.start("c1", spec(&dir, false, None)).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let early = tx.clone();
+        run.on_exit(Box::new(move || early.send("ended").unwrap()));
+        assert_eq!(rx.recv_timeout(Duration::from_secs(6)), Ok("ended"));
+        wait_until("exit", || !run.is_running());
+        run.on_exit(Box::new(move || tx.send("late").unwrap()));
+        assert_eq!(
+            rx.try_recv(),
+            Ok("late"),
+            "a hook set after the end runs at once"
         );
     }
 

@@ -25,10 +25,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use veistra_rpc::{RpcError, INTERNAL_ERROR, INVALID_PARAMS};
 
-/// Where a comment points. Exactly the three anchors
-/// `docs/VEISTRA-UX-REWORK.md` §3.4 names — one enum rather than three optional
-/// fields on [`Comment`], so a comment can never be read back pointing at two
-/// things at once or at nothing.
+/// Where a comment points: the three anchors `docs/VEISTRA-UX-REWORK.md` §3.4
+/// names, plus a note on a recorded take. One enum rather than optional fields
+/// on [`Comment`], so a comment can never be read back pointing at two things
+/// at once or at nothing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Anchor {
@@ -49,6 +49,27 @@ pub enum Anchor {
         #[serde(default)]
         screenshot: bool,
     },
+    /// Play: one note on a recorded take, written by Send. `n` is the note's
+    /// number in its take, never reused; the times are take milliseconds, with
+    /// `in_ms`/`out_ms` present for a range. `packet` is the feedback folder
+    /// relative to the environment, so an agent can read its `packet.md`.
+    /// `scene` and `node_path` are there so the Scene and Blender views can show
+    /// the note on the node or part it is about.
+    #[serde(rename_all = "camelCase")]
+    Take {
+        take: String,
+        n: u32,
+        at_ms: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        in_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        out_ms: Option<u64>,
+        packet: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scene: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node_path: Option<String>,
+    },
 }
 
 /// Whose turn a comment reports, and who wrote a [`Resolution`].
@@ -63,20 +84,74 @@ pub enum Author {
     Agent,
 }
 
+/// Where a comment is in the fix loop (`play-scene-blender-views` §10).
+///
+/// An agent never closes a comment: its resolve lands on [`Status::Fixed`],
+/// which asks the person to check, and only the person moves it to
+/// [`Status::Resolved`] ("Looks good") or back to [`Status::Open`] ("Still
+/// broken"). The alternative, letting an agent's word close the comment,
+/// is what this design was written to stop: the person who saw the problem
+/// is the one who can say it is gone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Status {
     Open,
+    /// An agent said it has started (`start_play_note`).
+    Working,
+    /// An agent says it is fixed; the person has not checked yet.
+    Fixed,
     Resolved,
 }
 
-/// What closed a comment: the note whoever resolved it left, and when.
+impl Status {
+    /// Still work for an agent: open, or being worked on.
+    pub fn is_active(self) -> bool {
+        matches!(self, Status::Open | Status::Working)
+    }
+
+    /// The word the wire format uses.
+    pub fn name(self) -> &'static str {
+        match self {
+            Status::Open => "open",
+            Status::Working => "working",
+            Status::Fixed => "fixed",
+            Status::Resolved => "resolved",
+        }
+    }
+}
+
+/// What closed a comment, or what the agent said when it marked it fixed: the
+/// note, who wrote it, when, and the commit it names when there is one.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Resolution {
     pub note: String,
     pub by: Author,
     pub at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+}
+
+/// One message in a comment's thread after the first: an agent's earlier fix
+/// note kept when the person says Still broken, and the person's reply.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Reply {
+    pub by: Author,
+    pub body: String,
+    pub at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+}
+
+/// The person's answer to a fixed comment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Verdict {
+    /// Looks good: resolved.
+    Good,
+    /// Still broken: open again, with the reply.
+    Broken,
 }
 
 /// One comment, and the whole of one `.veistra/comments/<id>.json` file.
@@ -90,6 +165,8 @@ pub struct Comment {
     pub status: Status,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution: Option<Resolution>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replies: Vec<Reply>,
     pub created: u64,
     pub updated: u64,
 }
@@ -183,6 +260,7 @@ pub fn create(context: &CallContext, draft: Draft) -> Result<Comment, RpcError> 
         body: draft.body,
         status: Status::Open,
         resolution: None,
+        replies: Vec::new(),
         created: at,
         updated: at,
     };
@@ -190,43 +268,139 @@ pub fn create(context: &CallContext, draft: Draft) -> Result<Comment, RpcError> 
     Ok(comment)
 }
 
-/// Close a comment with a note, recorded as `by`'s. `INVALID_PARAMS` when `id`
-/// names nothing in this environment, which is the caller's mistake to see and
-/// fix rather than a server error.
+/// One comment by id. `INVALID_PARAMS` when `id` names nothing here.
+pub fn get(context: &CallContext, id: &str) -> Result<Comment, RpcError> {
+    let dir = comments_dir(context)?;
+    read_comment_file(&comment_file(&dir, id)).map_err(|_| {
+        RpcError::new(
+            INVALID_PARAMS,
+            format!("no comment `{id}` in this environment"),
+        )
+    })
+}
+
+/// Read, change and write one comment back, stamping `updated`.
+fn change(
+    context: &CallContext,
+    id: &str,
+    edit: impl FnOnce(&mut Comment, u64) -> Result<(), RpcError>,
+) -> Result<Comment, RpcError> {
+    let mut comment = get(context, id)?;
+    let at = monotonic_ms();
+    edit(&mut comment, at)?;
+    comment.updated = at;
+    write_comment_file(&comment_file(&comments_dir(context)?, id), &comment)?;
+    Ok(comment)
+}
+
+/// Close a comment with a note, recorded as `by`'s: the person's closes it,
+/// an agent's marks it [`Status::Fixed`] for the person to check (see
+/// [`Status`]). `INVALID_PARAMS` when `id` names nothing in this environment,
+/// which is the caller's mistake to see and fix rather than a server error.
 pub fn resolve(
     context: &CallContext,
     id: &str,
     note: String,
     by: Author,
 ) -> Result<Comment, RpcError> {
-    let dir = comments_dir(context)?;
-    let path = comment_file(&dir, id);
-    let mut comment = read_comment_file(&path).map_err(|_| {
-        RpcError::new(
+    resolve_with_commit(context, id, note, None, by)
+}
+
+/// [`resolve`], naming the commit the fix is in.
+pub fn resolve_with_commit(
+    context: &CallContext,
+    id: &str,
+    note: String,
+    commit: Option<String>,
+    by: Author,
+) -> Result<Comment, RpcError> {
+    change(context, id, |comment, at| {
+        comment.status = match by {
+            Author::Agent => Status::Fixed,
+            Author::User => Status::Resolved,
+        };
+        comment.resolution = Some(Resolution {
+            note,
+            by,
+            at,
+            commit,
+        });
+        Ok(())
+    })
+}
+
+/// An agent says it has started on a comment. Only an open comment can be
+/// started; starting one already being worked on changes nothing.
+pub fn start(context: &CallContext, id: &str) -> Result<Comment, RpcError> {
+    change(context, id, |comment, _| match comment.status {
+        Status::Open | Status::Working => {
+            comment.status = Status::Working;
+            Ok(())
+        }
+        other => Err(RpcError::new(
             INVALID_PARAMS,
-            format!("no comment `{id}` in this environment"),
-        )
-    })?;
+            format!(
+                "comment `{id}` is {}, so there is nothing to start",
+                other.name()
+            ),
+        )),
+    })
+}
 
-    let at = monotonic_ms();
-    comment.status = Status::Resolved;
-    comment.resolution = Some(Resolution { note, by, at });
-    comment.updated = at;
-
-    write_comment_file(&path, &comment)?;
-    Ok(comment)
+/// The person's answer to a fixed comment. Looks good resolves it. Still
+/// broken opens it again: the agent's fix note moves into the thread, so the
+/// next attempt sees what was tried, and the person's reply follows it.
+pub fn verdict(
+    context: &CallContext,
+    id: &str,
+    verdict: Verdict,
+    reply: Option<String>,
+) -> Result<Comment, RpcError> {
+    change(context, id, |comment, at| {
+        if comment.status == Status::Resolved {
+            return Err(RpcError::new(
+                INVALID_PARAMS,
+                format!("comment `{id}` is already resolved"),
+            ));
+        }
+        match verdict {
+            Verdict::Good => comment.status = Status::Resolved,
+            Verdict::Broken => {
+                if let Some(fix) = comment.resolution.take() {
+                    comment.replies.push(Reply {
+                        by: fix.by,
+                        body: fix.note,
+                        at: fix.at,
+                        commit: fix.commit,
+                    });
+                }
+                let body = reply
+                    .filter(|r| !r.trim().is_empty())
+                    .unwrap_or_else(|| "Still broken.".to_string());
+                comment.replies.push(Reply {
+                    by: Author::User,
+                    body,
+                    at,
+                    commit: None,
+                });
+                comment.status = Status::Open;
+            }
+        }
+        Ok(())
+    })
 }
 
 // --- the RPC surface --------------------------------------------------------
 
-/// The three methods every viewer app shares: `comments/list`,
-/// `comments/create`, `comments/resolve`. Every one of `godot_viewer::call`,
+/// The methods every viewer app shares: `comments/list`, `comments/create`,
+/// `comments/resolve`, and `comments/verdict` for Looks good and Still broken
+/// on a fixed comment. Every one of `godot_viewer::call`,
 /// `blender_viewer::call` and `play::call` tries this first, on the same
 /// prefix-dispatch shape `files::call` uses for `trash::call` — one comment
 /// store, reached identically from whichever viewer's frame the request came
 /// from, because a comment belongs to the *environment* the call resolved to
 /// ([`CallContext::project`]), not to which viewer happened to be open when it
-/// was written. `None` when `method` is not one of the three, so a viewer's own
+/// was written. `None` when `method` is not one of them, so a viewer's own
 /// `call` falls through to its own methods.
 pub fn call(
     context: &CallContext,
@@ -237,6 +411,7 @@ pub fn call(
         "comments/list" => list(context).and_then(|comments| to_value(&comments)),
         "comments/create" => create_from_params(context, params).and_then(|c| to_value(&c)),
         "comments/resolve" => resolve_from_params(context, params).and_then(|c| to_value(&c)),
+        "comments/verdict" => verdict_from_params(context, params).and_then(|c| to_value(&c)),
         _ => return None,
     })
 }
@@ -284,6 +459,20 @@ struct ResolveParams {
 fn resolve_from_params(context: &CallContext, params: Option<&Value>) -> Result<Comment, RpcError> {
     let params: ResolveParams = parse_params(params)?;
     resolve(context, &params.id, params.note, Author::User)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VerdictParams {
+    id: String,
+    verdict: Verdict,
+    #[serde(default)]
+    reply: Option<String>,
+}
+
+fn verdict_from_params(context: &CallContext, params: Option<&Value>) -> Result<Comment, RpcError> {
+    let params: VerdictParams = parse_params(params)?;
+    verdict(context, &params.id, params.verdict, params.reply)
 }
 
 fn parse_params<T: serde::de::DeserializeOwned>(params: Option<&Value>) -> Result<T, RpcError> {
@@ -489,7 +678,7 @@ mod tests {
     }
 
     #[test]
-    fn resolving_closes_a_comment_with_a_note_and_persists_it() {
+    fn the_person_resolving_closes_a_comment_with_a_note_and_persists_it() {
         let env = TempDir::new().expect("tempdir");
         let comment = create(&context(env.path()), node_draft("tighten this")).expect("create");
 
@@ -497,7 +686,7 @@ mod tests {
             &context(env.path()),
             &comment.id,
             "done — tightened".to_string(),
-            Author::Agent,
+            Author::User,
         )
         .expect("resolve");
         assert_eq!(resolved.status, Status::Resolved);
@@ -507,11 +696,152 @@ mod tests {
         );
         assert_eq!(
             resolved.resolution.as_ref().map(|r| r.by),
-            Some(Author::Agent)
+            Some(Author::User)
         );
 
         let reread = list(&context(env.path())).expect("list");
         assert_eq!(reread[0].status, Status::Resolved);
+    }
+
+    #[test]
+    fn an_agent_resolving_marks_a_comment_fixed_for_the_person_to_check() {
+        let env = TempDir::new().expect("tempdir");
+        let ctx = context(env.path());
+        let comment = create(&ctx, node_draft("tighten this")).expect("create");
+
+        let fixed = resolve_with_commit(
+            &ctx,
+            &comment.id,
+            "tightened the gap".to_string(),
+            Some("3f2a1c9".to_string()),
+            Author::Agent,
+        )
+        .expect("resolve");
+        assert_eq!(fixed.status, Status::Fixed);
+        assert!(
+            !fixed.status.is_active(),
+            "fixed is no longer the agent's work"
+        );
+        let note = fixed.resolution.expect("a resolution");
+        assert_eq!(note.by, Author::Agent);
+        assert_eq!(note.commit.as_deref(), Some("3f2a1c9"));
+        assert_eq!(list(&ctx).expect("list")[0].status, Status::Fixed);
+    }
+
+    #[test]
+    fn start_moves_an_open_comment_to_working_and_refuses_a_fixed_one() {
+        let env = TempDir::new().expect("tempdir");
+        let ctx = context(env.path());
+        let comment = create(&ctx, node_draft("x")).expect("create");
+        assert_eq!(
+            start(&ctx, &comment.id).expect("start").status,
+            Status::Working
+        );
+        assert_eq!(
+            start(&ctx, &comment.id).expect("again").status,
+            Status::Working,
+            "starting twice changes nothing"
+        );
+        resolve(&ctx, &comment.id, "done".into(), Author::Agent).expect("fix");
+        let err = start(&ctx, &comment.id).expect_err("fixed");
+        assert!(err.message.contains("fixed"));
+    }
+
+    #[test]
+    fn looks_good_resolves_and_still_broken_reopens_keeping_the_thread() {
+        let env = TempDir::new().expect("tempdir");
+        let ctx = context(env.path());
+        let a = create(&ctx, node_draft("a")).expect("create");
+        let b = create(&ctx, node_draft("b")).expect("create");
+        for id in [&a.id, &b.id] {
+            resolve(&ctx, id, "rebaked the nav mesh".into(), Author::Agent).expect("fix");
+        }
+
+        let good = verdict(&ctx, &a.id, Verdict::Good, None).expect("good");
+        assert_eq!(good.status, Status::Resolved);
+        assert_eq!(
+            good.resolution.map(|r| r.note),
+            Some("rebaked the nav mesh".into()),
+            "the agent's note stays as what resolved it"
+        );
+
+        let broken = verdict(
+            &ctx,
+            &b.id,
+            Verdict::Broken,
+            Some("it still clips at the door".into()),
+        )
+        .expect("broken");
+        assert_eq!(broken.status, Status::Open);
+        assert!(broken.resolution.is_none());
+        let thread: Vec<_> = broken
+            .replies
+            .iter()
+            .map(|r| (r.by, r.body.as_str()))
+            .collect();
+        assert_eq!(
+            thread,
+            vec![
+                (Author::Agent, "rebaked the nav mesh"),
+                (Author::User, "it still clips at the door")
+            ]
+        );
+        assert!(
+            verdict(&ctx, &a.id, Verdict::Broken, None).is_err(),
+            "resolved stays resolved"
+        );
+    }
+
+    #[test]
+    fn a_take_anchor_round_trips_with_its_range_and_target() {
+        let env = TempDir::new().expect("tempdir");
+        let ctx = context(env.path());
+        let anchor = Anchor::Take {
+            take: "2026-10-30-1402-0f3a".into(),
+            n: 2,
+            at_ms: 102_180,
+            in_ms: Some(98_000),
+            out_ms: Some(106_000),
+            packet: ".veistra/feedback/2026-10-30-1402-0f3a-1".into(),
+            scene: Some("res://levels/hallway.tscn".into()),
+            node_path: Some("Hallway/Enemy_02".into()),
+        };
+        let made = create(
+            &ctx,
+            Draft {
+                anchor: anchor.clone(),
+                body: "walks into the wall".into(),
+                screenshot_png: Some(vec![1, 2, 3]),
+            },
+        )
+        .expect("create");
+        assert_eq!(
+            made.anchor, anchor,
+            "a take note keeps no screenshot of its own"
+        );
+        let json = serde_json::to_value(&made.anchor).expect("json");
+        assert_eq!(json["kind"], "take");
+        assert_eq!(json["atMs"], 102_180);
+        assert_eq!(json["nodePath"], "Hallway/Enemy_02");
+        assert_eq!(list(&ctx).expect("list")[0], made);
+    }
+
+    #[test]
+    fn verdict_over_the_dispatcher_takes_good_or_broken() {
+        let env = TempDir::new().expect("tempdir");
+        let ctx = context(env.path());
+        let c = create(&ctx, node_draft("x")).expect("create");
+        resolve(&ctx, &c.id, "done".into(), Author::Agent).expect("fix");
+        let bad = serde_json::json!({ "id": c.id, "verdict": "maybe" });
+        assert!(matches!(
+            call(&ctx, "comments/verdict", Some(&bad)),
+            Some(Err(_))
+        ));
+        let good = serde_json::json!({ "id": c.id, "verdict": "good" });
+        let answer = call(&ctx, "comments/verdict", Some(&good))
+            .expect("handled")
+            .expect("ok");
+        assert_eq!(answer["status"], "resolved");
     }
 
     #[test]
@@ -597,10 +927,17 @@ mod tests {
 
     #[test]
     fn statuses_and_anchor_kinds_serialize_as_the_words_the_frontend_expects() {
-        assert_eq!(
-            serde_json::to_string(&Status::Resolved).ok(),
-            Some("\"resolved\"".to_string())
-        );
+        for status in [
+            Status::Open,
+            Status::Working,
+            Status::Fixed,
+            Status::Resolved,
+        ] {
+            assert_eq!(
+                serde_json::to_string(&status).ok(),
+                Some(format!("\"{}\"", status.name()))
+            );
+        }
         assert_eq!(
             serde_json::to_value(Anchor::Node {
                 path: "A/B".to_string()

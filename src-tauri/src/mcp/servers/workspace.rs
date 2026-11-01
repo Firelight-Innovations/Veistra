@@ -1,9 +1,11 @@
 //! Where the person is working, for any agent connected to Veistra.
-//! An agent in a terminal pane cannot see the window around it; these three tools say which
-//! pane has focus, how panes are arranged, and which project each cluster is on.
+//! An agent in a terminal pane cannot see the window around it; three tools say which
+//! pane has focus, how panes are arranged, and which project each cluster is on. Three
+//! more are the agent's half of Play's fix loop: the notes the person sent from a
+//! recorded take, and the two writes that report on one (`list_play_notes`,
+//! `start_play_note`, `resolve_play_note`; logic in `godot::notes`).
 //!
-//!
-//! **Read-only, and on in every build.** Unlike [`super::debug`] there is no
+//! **On in every build, and read-only but for the play notes.** Unlike [`super::debug`] there is no
 //! developer gate, because nothing here reaches past what the person can see on
 //! screen: no input, no `eval`, no failures buffer, no window geometry. What
 //! `shell_snapshot` carries that this leaves out (geometry, band heights,
@@ -30,7 +32,8 @@ pub static SERVER: McpServer = McpServer {
     id: ID,
     name: "Workspace",
     description: "Where the person is working: which pane has focus, how the panes are \
-                  arranged, and which project each cluster is on. Read-only.",
+                  arranged, and which project each cluster is on; and the playtest notes the \
+                  person sent from Play, with the two calls that report on one.",
     tools: TOOLS,
     call,
     dev_only: false,
@@ -64,7 +67,7 @@ fn focus_answer(app: &AppHandle) -> Value {
 
 static TOOLS: &[McpTool] = &TOOL_LIST;
 
-const TOOL_LIST: [McpTool; 3] = [
+const TOOL_LIST: [McpTool; 6] = [
     McpTool {
         name: "focus",
         description: "What the person is looking at right now: the focused pane, the app and \
@@ -88,13 +91,158 @@ const TOOL_LIST: [McpTool; 3] = [
                       the branch. Also says which cluster is active.",
         schema: no_params,
     },
+    McpTool {
+        name: "list_play_notes",
+        description: "The playtest notes the person sent you from Play: each note's id, \
+                      status, take, time, scene and object, and its packet.md, which holds the \
+                      marked-up frame, a contact sheet of the motion and the scene data. Open \
+                      ones unless you ask. Read packet.md before you start.",
+        schema: list_notes_schema,
+    },
+    McpTool {
+        name: "start_play_note",
+        description: "Say you have started on a play note, so the person sees Agent working on \
+                      it. Takes the note's id from list_play_notes.",
+        schema: id_schema,
+    },
+    McpTool {
+        name: "resolve_play_note",
+        description: "Report a play note fixed: what you changed, and the commit. The note \
+                      shows Fixed, check it; the person plays again and closes it or sends it \
+                      back as still broken. It does not close the note itself.",
+        schema: resolve_note_schema,
+    },
 ];
 
 fn no_params() -> Value {
     json!({ "type": "object", "properties": {}, "additionalProperties": false })
 }
 
-fn call(app: &AppHandle, tool: &str, _params: Option<Value>) -> Result<ToolAnswer, RpcError> {
+fn cluster_prop() -> Value {
+    json!({
+        "type": "string",
+        "description": "The cluster to answer from. Omit it for the one the person is working in.",
+    })
+}
+
+fn list_notes_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "status": {
+                "type": "string", "enum": ["open", "fixed", "all"],
+                "description": "open (the default) is open or being worked on; fixed waits for the person.",
+            },
+            "cluster": cluster_prop(),
+        },
+        "additionalProperties": false,
+    })
+}
+
+fn id_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "id": { "type": "string", "description": "From list_play_notes." },
+            "cluster": cluster_prop(),
+        },
+        "required": ["id"],
+        "additionalProperties": false,
+    })
+}
+
+fn resolve_note_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "id": { "type": "string", "description": "From list_play_notes." },
+            "summary": { "type": "string", "description": "What you changed, in a sentence or two." },
+            "commit": { "type": "string", "description": "The commit the fix is in." },
+            "cluster": cluster_prop(),
+        },
+        "required": ["id", "summary"],
+        "additionalProperties": false,
+    })
+}
+
+/// A string argument, refused when present and not a string.
+fn arg<'a>(params: &'a Option<Value>, key: &str) -> Result<Option<&'a str>, RpcError> {
+    match params.as_ref().and_then(|p| p.get(key)) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s)),
+        Some(_) => Err(RpcError::new(
+            veistra_rpc::INVALID_PARAMS,
+            format!("`{key}` is a string"),
+        )),
+    }
+}
+
+fn required<'a>(params: &'a Option<Value>, key: &str) -> Result<&'a str, RpcError> {
+    arg(params, key)?
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| RpcError::new(veistra_rpc::INVALID_PARAMS, format!("`{key}` is required")))
+}
+
+/// The cluster a play-note call is about: the one named, else the one in use.
+fn note_context(
+    app: &AppHandle,
+    params: &Option<Value>,
+) -> Result<crate::apps::CallContext, RpcError> {
+    let cluster = match arg(params, "cluster")?.filter(|c| !c.is_empty()) {
+        Some(c) => c.to_string(),
+        None => {
+            let snapshot = app.state::<ShellState>().snapshot();
+            active_cluster(&snapshot, &page_contexts(app))
+                .map(|(_, c)| c)
+                .ok_or_else(|| {
+                    RpcError::new(
+                        INTERNAL_ERROR,
+                        "there is no cluster to answer from; name one with `cluster`",
+                    )
+                })?
+        }
+    };
+    Ok(crate::apps::CallContext::resolve(app, None, Some(&cluster)))
+}
+
+fn note_answer(result: Result<Value, String>) -> Result<ToolAnswer, RpcError> {
+    result
+        .map(Into::into)
+        .map_err(|e| RpcError::new(veistra_rpc::INVALID_PARAMS, e))
+}
+
+fn play_notes(app: &AppHandle, tool: &str, params: &Option<Value>) -> Result<ToolAnswer, RpcError> {
+    use crate::godot::notes;
+    let ctx = note_context(app, params)?;
+    match tool {
+        "list_play_notes" => {
+            let wanted = notes::Wanted::parse(arg(params, "status")?)
+                .map_err(|e| RpcError::new(veistra_rpc::INVALID_PARAMS, e))?;
+            note_answer(notes::list(&ctx, wanted))
+        }
+        "start_play_note" => note_answer(notes::start(&ctx, required(params, "id")?)),
+        _ => {
+            if let Some(cluster) = ctx.cluster_id.as_deref() {
+                crate::environments::guard_cluster_write(app, cluster, "comments/resolve")
+                    .map_err(|e| RpcError::new(veistra_rpc::INVALID_PARAMS, e.to_string()))?;
+            }
+            note_answer(notes::resolve(
+                &ctx,
+                required(params, "id")?,
+                required(params, "summary")?,
+                arg(params, "commit")?,
+            ))
+        }
+    }
+}
+
+fn call(app: &AppHandle, tool: &str, params: Option<Value>) -> Result<ToolAnswer, RpcError> {
+    if matches!(
+        tool,
+        "list_play_notes" | "start_play_note" | "resolve_play_note"
+    ) {
+        return play_notes(app, tool, &params);
+    }
     let snapshot = app.state::<ShellState>().snapshot();
     match tool {
         "focus" => Ok(focus_answer(app).into()),
@@ -734,15 +882,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_server_is_ordinary_and_read_only() {
+    fn the_server_is_ordinary_and_only_the_play_note_reports_write() {
         assert!(!SERVER.dev_only, "workspace ships to everyone");
         let names: Vec<&str> = SERVER.tools.iter().map(|t| t.name).collect();
-        assert_eq!(names, vec!["focus", "layout", "project"]);
+        assert_eq!(
+            names,
+            vec![
+                "focus",
+                "layout",
+                "project",
+                "list_play_notes",
+                "start_play_note",
+                "resolve_play_note"
+            ]
+        );
         for tool in SERVER.tools {
+            let writes = matches!(tool.name, "start_play_note" | "resolve_play_note");
             assert_eq!(
                 super::super::read_only_hint("workspace", tool.name),
-                Some(true),
-                "{} must be advertised read-only",
+                Some(!writes),
+                "{} is advertised as it behaves",
                 tool.name
             );
             let schema = (tool.schema)();

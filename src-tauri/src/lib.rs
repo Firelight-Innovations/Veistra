@@ -293,6 +293,9 @@ pub fn run() {
                     if window.label() == app.state::<plane_webview::PlaneWebview>().owner() {
                         plane_webview::sync_visibility(app, &app.state::<ShellState>().snapshot());
                     }
+                    // A game in a Play pane is an owned window, which stays
+                    // above its owner but does not move with it.
+                    godot::rpc::reposition_all(app);
                 }
                 // A window has been asked to close — by our own titlebar's ×,
                 // by Alt+F4, by the taskbar, or by the OS shutting down

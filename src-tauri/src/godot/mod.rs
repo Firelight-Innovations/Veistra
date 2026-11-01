@@ -1,32 +1,51 @@
 //! Godot integration: finding the engine, running a project, capturing a frame,
-//! and reading a scene's tree.
+//! recording a run, and reading a scene's tree.
 //!
 //! `docs/VEISTRA-UX-REWORK.md` §3.1 is the rule everything here obeys: **Godot is
 //! never embedded in the webview.** It runs as its own native process - the
 //! editor in its own window when someone opens it, the game in its own window
 //! when someone plays it, and a windowless `--headless` process when the viewer
-//! reads a scene. Veistra holds the process handles, the logs and the results;
-//! it does not draw the engine.
-//!
-//! * [`detect`] - the executable and the projects inside an environment.
-//! * [`runner`] - a game run as a child process, with a bounded classified log.
-//! * [`addon`]  - the opt-in capture script and its file channel.
-//! * [`scene`]  - the viewer's headless tree read, render and cache.
-//! * [`preview`] - a scene exported to glTF for the viewer's interactive 3D view.
-//! * [`rpc`]    - the methods `play` and `godot-viewer` answer.
+//! reads a scene. Play places that window over its pane ([`embed`]), the way
+//! Godot's own editor shows a running game, but the game is still its own
+//! process: Veistra holds the handles, the logs and the results, and does not
+//! draw the engine.
 
+/// The opt-in capture script and its file channel.
 pub mod addon;
+/// The executable and the projects inside an environment.
 pub mod detect;
+/// The game's window placed over Play's pane (Windows).
+pub mod embed;
+/// Send's packet: `packet.md`, pictures, context, comments.
+pub mod feedback;
+/// Play's methods for the pane, Record, takes and Send.
+pub mod live;
+/// Play notes as the workspace MCP server shows them to agents.
+pub mod notes;
+/// A scene exported to glTF for the viewer's interactive 3D view.
 pub mod preview;
+/// A run recorded to `take.mp4` (Windows).
+pub mod record;
+/// The methods `play` and `godot-viewer` answer.
 pub mod rpc;
+/// A game run as a child process, with a bounded classified log.
 pub mod runner;
+/// The viewer's headless tree read, render and cache.
 pub mod scene;
+/// One run's window, take, marks and keys.
+pub mod session;
+/// Recorded runs on disk, their summary, drafts and retention.
+pub mod takes;
+/// What capture addon v2 writes while a game runs.
+pub mod telemetry;
 #[cfg(test)]
 mod testing;
 
 use crate::sync::MutexExt;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::sync::Mutex;
 
 /// The settings section, registered from `apps::settings_groups`.
@@ -63,6 +82,10 @@ pub struct Godot {
     pub jobs: scene::Jobs,
     resolved: Mutex<Option<(String, detect::Found)>>,
     next_command: AtomicU64,
+    /// Each cluster's latest run's session: its window, take and marks.
+    sessions: Mutex<HashMap<String, Arc<session::Session>>>,
+    /// Each cluster's Play pane box, kept between runs.
+    panes: Mutex<HashMap<String, live::Pane>>,
 }
 
 impl Godot {
@@ -96,12 +119,53 @@ impl Godot {
         resolution
     }
 
+    pub fn session(&self, key: &str) -> Option<Arc<session::Session>> {
+        self.sessions.lock_or_panic().get(key).cloned()
+    }
+
+    pub fn set_session(&self, key: &str, session: Arc<session::Session>) {
+        self.sessions
+            .lock_or_panic()
+            .insert(key.to_string(), session);
+    }
+
+    pub fn sessions(&self) -> Vec<(String, Arc<session::Session>)> {
+        self.sessions
+            .lock_or_panic()
+            .iter()
+            .map(|(k, s)| (k.clone(), s.clone()))
+            .collect()
+    }
+
+    pub fn pane(&self, key: &str) -> Option<live::Pane> {
+        self.panes.lock_or_panic().get(key).cloned()
+    }
+
+    pub fn set_pane(&self, key: &str, pane: live::Pane) {
+        self.panes.lock_or_panic().insert(key.to_string(), pane);
+    }
+
+    /// The engine version a take records: the last executable found.
+    pub fn version_for_takes(&self) -> String {
+        self.resolved
+            .lock_or_panic()
+            .as_ref()
+            .map(|(_, f)| f.version.clone())
+            .unwrap_or_default()
+    }
+
     pub fn next_command_id(&self) -> u64 {
         self.next_command.fetch_add(1, Ordering::SeqCst) + 1
     }
 
-    /// Called at application exit: no game outlives the window that started it.
+    /// Called at application exit: no game outlives the window that started
+    /// it, and a take being recorded is saved first.
     pub fn shutdown(&self) {
+        for (key, session) in self.sessions() {
+            if let Some(run) = self.runner.get(&key).filter(|r| r.id == session.run_id) {
+                session.finish_take(&run);
+            }
+        }
         self.runner.stop_all();
     }
 }

@@ -18,9 +18,11 @@
 
 use super::addon;
 use super::detect::{self, Found, GodotProject, Probe, Resolution};
+use super::embed::Owner;
 use super::preview;
-use super::runner::{RunSpec, Runner};
+use super::runner::{RunSpec, Runner, WindowArgs};
 use super::scene::{self, Refresh};
+use super::session::Session;
 use super::{scratch_root, Godot};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
@@ -35,6 +37,11 @@ const READ_ONLY: i32 = -32003;
 
 pub type Check<'a> = &'a dyn Fn(&Path) -> Result<String, String>;
 
+/// Where a Veistra window is, by label (`None` for the one the pane is in
+/// when it has not said): what [`super::embed`] places a game against. Shared
+/// with the thread that waits for the game's window, hence `Arc`.
+pub type OwnerFn = std::sync::Arc<dyn Fn(Option<&str>) -> Option<Owner> + Send + Sync>;
+
 pub struct Ctx<'a> {
     pub godot: &'a Godot,
     /// The cluster id; runs and viewer jobs are kept per cluster.
@@ -48,6 +55,10 @@ pub struct Ctx<'a> {
     /// `.veistra/`, which main may not be written to.
     pub cache_root: PathBuf,
     pub scratch: PathBuf,
+    pub owner: OwnerFn,
+    /// Lets the page load files under this folder (a take's video) through
+    /// the asset protocol.
+    pub allow_asset: &'a dyn Fn(&Path),
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -59,6 +70,8 @@ struct Params {
     refresh: bool,
     render: bool,
     paused: bool,
+    /// `play/state`: the last key event the pane has acted on.
+    key_since: u64,
     /// Who is asking, `"human"` or `"agent"`. Required by the preview.
     actor: Option<String>,
     /// Export again even if the cached glb is current, or a failure is remembered.
@@ -77,7 +90,7 @@ fn params(raw: Option<&Value>) -> Result<Params, RpcError> {
     }
 }
 
-fn fail(message: impl Into<String>) -> RpcError {
+pub(super) fn fail(message: impl Into<String>) -> RpcError {
     RpcError::new(INTERNAL_ERROR, message.into())
 }
 
@@ -99,27 +112,23 @@ pub fn play(ctx: &Ctx, method: &str, raw: Option<&Value>) -> Option<Result<Value
     if let Some(answer) = common(ctx, method, raw) {
         return Some(answer);
     }
-    Some(params(raw).and_then(|p| {
-        match method {
-            "play/state" => Ok(play_state(ctx, p.since)),
-            "play/run" => play_run(ctx, &p),
-            "play/stop" => ctx
-                .godot
-                .runner
-                .stop(&ctx.key)
-                .map_err(fail)
-                .map(|_| play_state(ctx, 0)),
-            "play/restart" => play_restart(ctx, &p),
-            "play/pause" => play_pause(ctx, &p),
-            "play/capture" => play_capture(ctx),
-            "play/addon-status" => addon_status(ctx, &p),
-            "play/addon-install" => addon_change(ctx, &p, true),
-            "play/addon-remove" => addon_change(ctx, &p, false),
-            _ => Err(RpcError::new(
-                METHOD_NOT_FOUND,
-                format!("no such method: {method}"),
-            )),
-        }
+    if let Some(answer) = super::live::call(ctx, method, raw) {
+        return Some(answer);
+    }
+    Some(params(raw).and_then(|p| match method {
+        "play/state" => Ok(play_state_since(ctx, p.since, p.key_since)),
+        "play/run" => play_run(ctx, &p),
+        "play/stop" => stop_run(ctx).map(|_| play_state(ctx, 0)),
+        "play/restart" => play_restart(ctx, &p),
+        "play/pause" => play_pause(ctx, &p),
+        "play/capture" => play_capture(ctx),
+        "play/addon-status" => addon_status(ctx, &p),
+        "play/addon-install" => addon_change(ctx, &p, true),
+        "play/addon-remove" => addon_change(ctx, &p, false),
+        _ => Err(RpcError::new(
+            METHOD_NOT_FOUND,
+            format!("no such method: {method}"),
+        )),
     }))
 }
 
@@ -156,11 +165,16 @@ fn projects(ctx: &Ctx) -> Result<Vec<GodotProject>, RpcError> {
 }
 
 fn pick_project(ctx: &Ctx, p: &Params) -> Result<GodotProject, RpcError> {
+    pick_project_for(ctx, p.project.as_deref())
+}
+
+/// The Godot project `rel` names, or the environment's first.
+pub(super) fn pick_project_for(ctx: &Ctx, rel: Option<&str>) -> Result<GodotProject, RpcError> {
     let all = projects(ctx)?;
-    match &p.project {
+    match rel {
         Some(rel) => all
             .into_iter()
-            .find(|g| &g.rel == rel)
+            .find(|g| g.rel == rel)
             .ok_or_else(|| RpcError::new(INVALID_PARAMS, format!("no Godot project at `{rel}`"))),
         None => all.into_iter().next().ok_or_else(|| {
             fail("no project.godot found in this environment (looked four folders deep)")
@@ -274,10 +288,29 @@ fn spawn_detached(program: &Path, args: &[String], cwd: &Path) -> std::io::Resul
 // --- Play -------------------------------------------------------------------
 
 fn play_state(ctx: &Ctx, since: u64) -> Value {
+    play_state_since(ctx, since, u64::MAX)
+}
+
+/// The run, the log after `since`, and the session's keys after `key_since`.
+fn play_state_since(ctx: &Ctx, since: u64, key_since: u64) -> Value {
+    let live = super::live::state(ctx, key_since);
     match ctx.godot.runner.get(&ctx.key) {
-        Some(run) => json!({ "run": run.info(), "log": run.log_since(since) }),
-        None => json!({ "run": Value::Null, "log": Value::Null }),
+        Some(run) => json!({ "run": run.info(), "log": run.log_since(since), "live": live }),
+        None => json!({ "run": Value::Null, "log": Value::Null, "live": live }),
     }
+}
+
+/// Stop: the take first, so its last frames are of a live window and the
+/// review can open the moment this answers, then the game.
+fn stop_run(ctx: &Ctx) -> Result<bool, RpcError> {
+    if let (Some(run), Some(session)) =
+        (ctx.godot.runner.get(&ctx.key), ctx.godot.session(&ctx.key))
+    {
+        if session.run_id == run.id {
+            session.finish_take(&run);
+        }
+    }
+    ctx.godot.runner.stop(&ctx.key).map_err(fail)
 }
 
 fn valid_scene(scene: &str) -> bool {
@@ -320,13 +353,47 @@ fn start_run(ctx: &Ctx, project: &GodotProject, scene: Option<String>) -> Result
             "This project has no main scene. Set one in Project Settings > Application > Run, or choose a scene to play.",
         ));
     }
+    let pane = ctx.godot.pane(&ctx.key);
+    let owner = (ctx.owner)(pane.as_ref().and_then(|p| p.window.as_deref()));
+    let window = super::embed::SUPPORTED.then(|| {
+        let scale = owner.map_or(1.0, |o| o.scale);
+        let (width, height) = super::embed::launch_size(pane.as_ref().map(|p| p.rect), scale);
+        let (x, y) = WindowArgs::OFF_SCREEN;
+        WindowArgs {
+            width,
+            height,
+            x,
+            y,
+        }
+    });
+    let channel = channel_for(ctx, project)?;
     let spec = RunSpec {
         program: found.for_logging().to_path_buf(),
         project: project.dir.clone(),
         scene,
-        channel: channel_for(ctx, project)?,
+        channel: channel.clone(),
+        window,
     };
-    ctx.godot.runner.start(&ctx.key, spec).map_err(fail)?;
+    let run = ctx.godot.runner.start(&ctx.key, spec).map_err(fail)?;
+    let plan = channel
+        .is_some()
+        .then(|| super::live::plan_for(ctx, &project.dir, &project.rel, &found.version))
+        .flatten();
+    let session = std::sync::Arc::new(Session::new(run.id, channel, plan));
+    if let Some(pane) = &pane {
+        session.embed.set_rect(pane.rect, pane.visible, None);
+    }
+    ctx.godot.set_session(&ctx.key, session.clone());
+    {
+        let (session, run) = (session.clone(), run.clone());
+        run.clone()
+            .on_exit(Box::new(move || session.finish_take(&run)));
+    }
+    let owner_fn = ctx.owner.clone();
+    let label = pane.and_then(|p| p.window);
+    std::thread::spawn(move || {
+        super::session::attach(&session, &run, &|| owner_fn(label.as_deref()));
+    });
     Ok(play_state(ctx, 0))
 }
 
@@ -339,7 +406,7 @@ fn play_run(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
 /// fresh, so a capture addon installed since the last run is picked up.
 fn play_restart(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
     let previous = ctx.godot.runner.get(&ctx.key).map(|r| r.spec.clone());
-    ctx.godot.runner.stop(&ctx.key).map_err(fail)?;
+    stop_run(ctx)?;
     let project = match &previous {
         Some(spec) => projects(ctx)?
             .into_iter()
@@ -732,6 +799,13 @@ pub fn with_live<R>(
         .unwrap_or_else(|_| scratch_root());
     let check = |p: &Path| detect::ask_version(p, Duration::from_secs(10));
     let godot = app.state::<Godot>();
+    let handle = app.clone();
+    let owner: OwnerFn = std::sync::Arc::new(move |label| owner_of(&handle, label));
+    let allow_asset = |dir: &Path| {
+        if let Err(e) = app.asset_protocol_scope().allow_directory(dir, true) {
+            crate::veistra_log!("play: could not serve {}: {e}", dir.display());
+        }
+    };
     let ctx = Ctx {
         godot: &godot,
         key,
@@ -741,8 +815,42 @@ pub fn with_live<R>(
         check: &check,
         cache_root,
         scratch: scratch_root(),
+        owner,
+        allow_asset: &allow_asset,
     };
     f(&ctx)
+}
+
+/// The Veistra window `label` names (`main` when none), as the embedder
+/// needs it: its handle, where its WebView starts on the screen, and its
+/// scale. `None` off Windows, or for a window that is gone.
+pub fn owner_of(app: &tauri::AppHandle, label: Option<&str>) -> Option<Owner> {
+    use tauri::Manager;
+    let window = app.get_webview_window(label.unwrap_or("main"))?;
+    let origin = window.inner_position().ok()?;
+    let scale = window.scale_factor().ok()?;
+    #[cfg(windows)]
+    let hwnd = window.hwnd().ok()?.0 as isize;
+    #[cfg(not(windows))]
+    let hwnd = 0;
+    super::embed::SUPPORTED.then_some(Owner {
+        hwnd,
+        origin: (origin.x, origin.y),
+        scale,
+    })
+}
+
+/// Put every embedded game back over its pane: the Veistra window moved, and
+/// an owned window does not move with its owner.
+pub fn reposition_all(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    let godot = app.state::<Godot>();
+    for (key, session) in godot.sessions() {
+        let label = godot.pane(&key).and_then(|p| p.window);
+        if let Some(owner) = owner_of(app, label.as_deref()) {
+            session.embed.reapply(&owner);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -798,6 +906,8 @@ mod tests {
             check,
             cache_root: w.scratch.join("appdata"),
             scratch: w.scratch.clone(),
+            owner: std::sync::Arc::new(|_| None),
+            allow_asset: &|_| {},
         }
     }
 

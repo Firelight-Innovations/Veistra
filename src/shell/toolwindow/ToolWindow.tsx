@@ -83,6 +83,7 @@ import {
   type OsFileDragMessage,
 } from "../toolWindowRegistry";
 import { sameWindowRect, windowRectOfPane, type WindowRect } from "./surfaceRect";
+import { watchOverlays } from "../overlayWatch";
 import "./toolwindow.css";
 
 /**
@@ -105,7 +106,15 @@ const FILES_APP = "files";
  * the point to turn this into a declared capability on `ToolPresentation`
  * instead of growing a hardcoded list here.
  */
-const NEEDS_WINDOW_RECT = new Set(["projects"]);
+const NEEDS_WINDOW_RECT = new Set(["projects", "play"]);
+
+/**
+ * Apps told where the shell's overlays are (`veistra/overlays`), because what
+ * they place over their pane would cover them: Play's game window
+ * (`overlayWatch.ts` has why). Only these, and only while one is mounted, so
+ * no other window pays for the watch.
+ */
+const NEEDS_OVERLAYS = new Set(["play"]);
 
 /**
  * The tool window — the container every docked tool mounts into, plus its boot
@@ -628,6 +637,24 @@ const ToolWindow = forwardRef<
       sendEventWhenReady(instanceId, "veistra/window-rect", { ...next, window: windowLabel() });
     }
   }, [rects, tree, instances, sendEventWhenReady]);
+
+  // Overlay boxes for the apps that place native windows over their pane.
+  // Sent to ready frames only: a frame that is not ready has no game yet, and
+  // it asks for nothing older than its first report.
+  const overlayTargets = [...instances.values()]
+    .filter((i) => NEEDS_OVERLAYS.has(i.appId))
+    .map((i) => i.id)
+    .sort()
+    .join(" ");
+  useEffect(() => {
+    if (overlayTargets === "") return;
+    const ids = overlayTargets.split(" ");
+    return watchOverlays((rects) => {
+      for (const id of ids) {
+        if (readyIdsRef.current.has(id)) deliverEvent(id, "veistra/overlays", { rects });
+      }
+    });
+  }, [overlayTargets, deliverEvent]);
 
   // The page's own window rect, for a page app that needs one. Its box is not
   // a pane, so it is read off the host element and followed with a

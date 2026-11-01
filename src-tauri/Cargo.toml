@@ -47,7 +47,12 @@ tauri-build = { version = "2", features = [] }
 # on unilaterally; approved. §11's fallback (a separate `WebviewWindow`,
 # docked beside the main one) stays named in `plane_webview.rs`'s module doc
 # as what to switch to if that ever changes.
-tauri = { version = "2", features = ["unstable"] }
+#
+# `protocol-asset` serves a Play take's video and data to its review page
+# (`asset://`), with byte ranges so the `<video>` seeks. Nothing is in its scope
+# at start; `godot::rpc::with_live` adds a take folder when the page asks for
+# it, so no other file is reachable.
+tauri = { version = "2", features = ["unstable", "protocol-asset"] }
 tauri-plugin-opener = "2"
 
 # One Veistra process per machine, and the reason is Explorer's context menu.
@@ -308,6 +313,14 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+# Play's recorder (`src/godot/record.rs`): Windows Graphics Capture and Media
+# Foundation's hardware H.264 encoder, writing a take's MP4. MIT, which
+# `deny.toml` already allows. It brings `windows` 0.62 beside the 0.61 that
+# webview2-com uses; the recorder is the only caller, and writing Graphics
+# Capture and the transcoder against 0.61 by hand is the alternative this
+# avoids, as the design (§5.2) chose.
+windows-capture = "2.0.1"
 
 [dev-dependencies]
 # Generates the agent tab's `veistra-show.generated.ts` from `refs::catalogue`,

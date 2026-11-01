@@ -24,7 +24,16 @@ const SCRIPT_RES_PATH: &str = "res://addons/veistra/veistra_capture.gd";
 
 /// Where the version marker on the script's first line says it is from, so a
 /// project holding an older copy can be told to update.
-const VERSION_MARKER: &str = "# veistra-capture v1";
+const VERSION_MARKER: &str = "# veistra-capture v2";
+
+/// The addon version a running game reported in its `hello.json`: 2 writes
+/// telemetry and handles F7, F8 and Ctrl Shift M; 1 (or no answer yet) only
+/// captures and pauses. `None` until the game has written the file.
+pub fn running_version(dir: &Path) -> Option<u32> {
+    let text = std::fs::read_to_string(dir.join("hello.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    Some(v["version"].as_u64().map_or(1, |n| n as u32))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -218,15 +227,35 @@ pub struct Reply {
     pub paused: bool,
     pub png: Option<Vec<u8>>,
     pub size: Option<(u64, u64)>,
+    /// Wall-clock milliseconds when the game answered (v2 only).
+    pub t: Option<u64>,
+    /// `pick`'s answer: `{nodePath, type, worldPoint, source}`, or null.
+    pub hit: Option<serde_json::Value>,
 }
 
 /// Send `action` to the game listening in `dir` and wait for its answer.
 /// The command file is written and then renamed into place, so the game never
 /// reads half of one.
 pub fn send(dir: &Path, id: u64, action: &str, wait: Duration) -> Result<Reply, String> {
+    send_with(dir, id, action, serde_json::Value::Null, wait)
+}
+
+/// [`send`] with fields beside `id` and `action`, such as `pick`'s `x` and `y`.
+pub fn send_with(
+    dir: &Path,
+    id: u64,
+    action: &str,
+    extra: serde_json::Value,
+    wait: Duration,
+) -> Result<Reply, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
     let tmp = dir.join("cmd.json.tmp");
-    let cmd = serde_json::json!({ "id": id, "action": action });
+    let mut cmd = serde_json::json!({ "id": id, "action": action });
+    if let (Some(into), serde_json::Value::Object(more)) = (cmd.as_object_mut(), extra) {
+        for (k, v) in more {
+            into.entry(k).or_insert(v);
+        }
+    }
     std::fs::write(&tmp, cmd.to_string()).map_err(|e| format!("could not write a command: {e}"))?;
     std::fs::rename(&tmp, dir.join("cmd.json"))
         .map_err(|e| format!("could not send a command: {e}"))?;
@@ -277,6 +306,8 @@ fn parse_reply(dir: &Path, text: &str) -> Result<Reply, String> {
         paused: v["paused"].as_bool().unwrap_or(false),
         png,
         size,
+        t: v["t"].as_f64().map(|t| t.max(0.0) as u64),
+        hit: v.get("hit").filter(|h| !h.is_null()).cloned(),
     })
 }
 
@@ -428,6 +459,63 @@ mod tests {
         assert_eq!(reply.time, 12.5);
         assert_eq!(reply.size, Some((4, 3)));
         assert_eq!(reply.png, Some(vec![0x89, b'P', b'N', b'G']));
+    }
+
+    #[test]
+    fn a_pick_carries_its_point_and_brings_back_what_was_hit() {
+        let dir = TempDir::new().unwrap();
+        let game = dir.path().to_path_buf();
+        let responder = std::thread::spawn(move || {
+            let cmd = game.join("cmd.json");
+            for _ in 0..200 {
+                if let Ok(text) = std::fs::read_to_string(&cmd) {
+                    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    assert_eq!(
+                        (v["action"].as_str(), v["x"].as_i64()),
+                        (Some("pick"), Some(640))
+                    );
+                    assert_eq!(v["id"], 3, "an extra field never replaces the id");
+                    std::fs::remove_file(&cmd).unwrap();
+                    std::fs::write(
+                        game.join("res-3.json"),
+                        r#"{"id":3,"ok":true,"t":1793398962180,"hit":{"nodePath":"Hallway/Enemy_02","type":"CharacterBody3D","worldPoint":[14.2,0,-6.8],"source":"ray"}}"#,
+                    )
+                    .unwrap();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            panic!("no command arrived");
+        });
+        let extra = serde_json::json!({ "x": 640, "y": 360, "id": 99 });
+        let reply = send_with(dir.path(), 3, "pick", extra, Duration::from_secs(5)).unwrap();
+        responder.join().unwrap();
+        assert_eq!(reply.t, Some(1_793_398_962_180));
+        assert_eq!(reply.hit.unwrap()["nodePath"], "Hallway/Enemy_02");
+    }
+
+    #[test]
+    fn the_running_version_comes_from_hello_and_v1_wrote_none() {
+        let dir = TempDir::new().unwrap();
+        assert_eq!(running_version(dir.path()), None);
+        std::fs::write(dir.path().join("hello.json"), r#"{"pid":1}"#).unwrap();
+        assert_eq!(running_version(dir.path()), Some(1));
+        std::fs::write(dir.path().join("hello.json"), r#"{"pid":1,"version":2}"#).unwrap();
+        assert_eq!(running_version(dir.path()), Some(2));
+    }
+
+    #[test]
+    fn a_project_holding_the_v1_script_is_offered_the_update() {
+        let dir = project(PROJECT);
+        install(dir.path()).unwrap();
+        std::fs::write(
+            script_path(dir.path()),
+            "# veistra-capture v1\nextends Node\n",
+        )
+        .unwrap();
+        assert_eq!(status(dir.path()), Installed::Partial);
+        install(dir.path()).unwrap();
+        assert_eq!(status(dir.path()), Installed::Yes);
     }
 
     #[test]

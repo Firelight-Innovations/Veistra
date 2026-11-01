@@ -273,11 +273,7 @@ fn viewer_comments(ctx: &CallContext, q: &Query) -> Vec<Hit> {
             let at = anchor_label(&c.anchor);
             let title = first_line(&c.body);
             let score = q.score(&title, &format!("{at} {}", c.body))?;
-            let status = if c.status == crate::comments::Status::Open {
-                "open"
-            } else {
-                "resolved"
-            };
+            let status = c.status.name();
             let r = Ref::Comment { id: c.id };
             Some(hit(
                 &r,
@@ -296,6 +292,7 @@ pub(super) fn anchor_label(anchor: &crate::comments::Anchor) -> String {
         Anchor::Node { path } => format!("node {path}"),
         Anchor::Mesh { part, material } => format!("mesh {part} ({material})"),
         Anchor::Scene { scene, time, .. } => format!("{scene} at {time:.1}s"),
+        Anchor::Take { take, n, .. } => format!("take {take} note {n}"),
     }
 }
 

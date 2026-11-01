@@ -307,7 +307,7 @@ fn matcher(root: &Path, dir: &Path) -> Option<Gitignore> {
 /// worktree, which is what a cluster usually is, `.git` is a file naming the
 /// worktree's own git dir. That dir's `commondir` names the shared one, which
 /// holds `info/exclude`.
-fn exclude_file(root: &Path) -> Option<PathBuf> {
+pub(crate) fn exclude_file(root: &Path) -> Option<PathBuf> {
     use std::io::Read as _;
     let dot_git = root.join(".git");
     if dot_git.is_dir() {
