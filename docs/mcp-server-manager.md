@@ -392,17 +392,25 @@ same `VEISTRA_MCP_PORT` and `VEISTRA_MCP_TOKEN` as every other route; `mcp-endpo
 serves the same endpoint to an agent outside Veistra, at `/mcp/canvas`,
 `/mcp/workspace` and `/mcp/context`.
 
-### `workspace` (read-only)
+### `workspace`
 
-Tells an agent where the person is working. Nothing here writes, and it leaves out
-what `shell_snapshot` carries for the shell's own sake (geometry, band heights,
-restore bookkeeping).
+Tells an agent where the person is working, and carries the agent's half of Play's
+fix loop. The first four tools only read; it leaves out what `shell_snapshot`
+carries for the shell's own sake (geometry, band heights, restore bookkeeping).
 
 | Tool | Answers |
 |---|---|
 | `focus` | The focused pane: window, cluster, pane, app, instance id, title, and the file and selection the app reports. Also `visible`, every app showing in the active cluster, because focus is usually in the agent's own terminal. Falls back to each pane's active tab when no page answers. |
 | `layout` | Windows, clusters, nested panes and their tabs (app, instance, title, file where known), the active tab per pane, and each cluster's terminals. |
 | `project` | Per cluster: the project folder, the folder files are read from (a worktree's, when set), the environment kind and branch, and which cluster is active. |
+| `list_play_notes` | The notes the person sent from a recorded Play take: id, status, take, time, scene, object, and the packet's `packet.md`. Open or working ones unless `status` says `fixed` or `all`. |
+| `start_play_note` | Marks a note Agent working. Writes. |
+| `resolve_play_note` | `{id, summary, commit?}`: marks a note Fixed, check it, with the summary. Writes. It never closes the note; the person does, with Looks good or Still broken. |
+
+The play-note tools live here because the design put them here: they are about
+the environment the person is working in, like `project`. Their rules are in
+`src-tauri/src/godot/notes.rs`; a note is a comment with a `take` anchor
+(`docs/design-notes/viewer-comments.md`).
 
 The layout comes from the same `ShellState` snapshot `shell_snapshot` reads. Where
 focus is comes from `mcp::FocusState`, which each window's shell keeps current (see

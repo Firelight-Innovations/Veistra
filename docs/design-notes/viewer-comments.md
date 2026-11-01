@@ -37,14 +37,31 @@ a `git checkout`, another clone of the same worktree, an agent editing it
 directly — so there is no cache here to go stale. Every call reads or writes
 the file it needs and nothing else.
 
+## The fix loop: open, working, fixed, resolved
+
+A comment moves through four statuses. An agent can start one (`working`) and
+report it done (`fixed`, with its note and commit), through the context server's
+`resolve_comment` or, for Play's notes, the workspace server's
+`start_play_note` and `resolve_play_note`. An agent never closes a comment:
+`fixed` asks the person to check, and only the person moves it to `resolved`
+(Looks good) or back to `open` (Still broken, `comments/verdict`). Still broken
+keeps the thread: the agent's fix note moves into `replies`, followed by the
+person's reply, so the next attempt sees what was tried.
+
+The rejected alternative was letting an agent's resolve close the comment, as
+it did before. The person who saw the problem is the one who can say it is
+gone, and a closed comment drops out of every list where that check would
+happen.
+
+Play's notes are comments with a `take` anchor: the take, the note's number,
+its time or range, the feedback packet's folder, and the scene and node when
+known, so the Scene and Blender views can show a note on its node or part.
+
 ## What's not wired up yet
 
-Only `Author::User` is reachable today — nothing yet reads `.veistra/comments/`
-into an agent's turn, which is why every comment panel's "Send to agent now"
-is visibly disabled with a tooltip saying so, rather than removed. `Author` has
-an `Agent` variant anyway, because the file format is the one thing that must
-not need to change shape the day that reading does exist — the same argument
-`design_comments::Author` was written under.
+Nothing reads `.veistra/comments/` into an agent's turn by itself: an agent
+finds them with `list_comments` or `list_play_notes`. Play's Send is the one
+place that also types a reference at the agent's prompt (`packet.md`).
 
 `Anchor::Scene.screenshot` is likewise always `false` in this build: none of
 the three viewers has a real frame to capture from yet (see each app's own
