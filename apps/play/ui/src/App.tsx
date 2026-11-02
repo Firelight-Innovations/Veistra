@@ -333,9 +333,9 @@ export default function App() {
   }, []);
 
   const start = useCallback(
-    (scene?: string) =>
+    (scene?: string, projectRel?: string) =>
       guarded(async () => {
-        const s = await run(chosenRel, scene);
+        const s = await run(projectRel ?? chosenRel, scene);
         setInfo(s.run);
         setLive(s.live ?? null);
         setShot(null);
@@ -345,12 +345,18 @@ export default function App() {
     [chosenRel, guarded],
   );
 
-  // Play scene, from the Godot viewer: it opens this app with the scene.
+  // Play scene, from the Godot viewer: it opens this app with the scene and
+  // the project the viewer has chosen. A `res://` path means nothing without
+  // its project, so in an environment holding several, running it against
+  // whichever project this pane last picked would play the wrong game.
   useEffect(
     () =>
       on(OPENED_EVENT, (p) => {
-        const scene = (p as { scene?: unknown } | null)?.scene;
-        if (typeof scene === "string" && scene.startsWith("res://")) void start(scene);
+        const { scene, project: rel } = (p ?? {}) as { scene?: unknown; project?: unknown };
+        if (typeof scene !== "string" || !scene.startsWith("res://")) return;
+        const projectRel = typeof rel === "string" && rel !== "" ? rel : undefined;
+        if (projectRel !== undefined) setProject(projectRel);
+        void start(scene, projectRel);
       }),
     [start],
   );

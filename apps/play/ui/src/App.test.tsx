@@ -274,6 +274,29 @@ function placeBox() {
   events.get("veistra/overlays")?.({ rects: [] });
 }
 
+describe("Play scene from the Godot viewer", () => {
+  it("runs the scene in the project the viewer chose, not this pane's own pick", async () => {
+    liveBackend();
+    render(<App />);
+    await screen.findByText("Playing");
+    events.get("veistra:opened")?.({ scene: "res://levels/hallway.tscn", project: "games/b" });
+    await waitFor(() => expect(calls("play/run")).toHaveLength(1));
+    expect(calls("play/run")[0][1]).toMatchObject({
+      project: "games/b",
+      scene: "res://levels/hallway.tscn",
+    });
+  });
+
+  it("ignores an open that names no res:// scene", async () => {
+    liveBackend();
+    render(<App />);
+    await screen.findByText("Playing");
+    events.get("veistra:opened")?.({ scene: "C:/elsewhere.tscn", project: "games/b" });
+    events.get("veistra:opened")?.(null);
+    expect(calls("play/run")).toHaveLength(0);
+  });
+});
+
 describe("Play live view", () => {
   beforeEach(() => {
     URL.createObjectURL = vi.fn(() => "blob:frame");
