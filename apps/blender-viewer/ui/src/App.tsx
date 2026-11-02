@@ -1,8 +1,13 @@
+/**
+ * The Blender Viewer: a headless export of a `.blend` (the `.glb` in 3D, its
+ * renders, its parts) with comments and markup. The header is the shared
+ * `ViewerToolbar`, so it reads like Godot Scene and Play: mode, file,
+ * freshness, actions, leave.
+ */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { reportPainted } from "@veistra/bridge";
 import {
   Box,
-  Clock,
   Copy,
   List,
   ExternalLink,
@@ -17,11 +22,12 @@ import {
   createComment,
   listComments,
   resolveComment,
+  verdictComment,
   type Comment,
 } from "../../../shared/comments";
-import { formatRenderAge } from "../../../shared/age";
 import { SegmentedControl } from "../../../shared/SegmentedControl";
 import { SendButton, SendFooter, useSendAction } from "../../../shared/SendFooter";
+import { ToolbarButton, ViewerToolbar } from "../../../shared/ViewerToolbar";
 import {
   cancelExport,
   detectBlender,
@@ -35,6 +41,7 @@ import {
   type BlenderViewerState,
 } from "./rpc";
 import ModelPreview from "./ModelPreview";
+import { exportChip, hasExport } from "./chip";
 import { footerIsCompact } from "./layout";
 import { reconcileBlend, selectionWasDropped } from "./selection";
 import {
@@ -51,7 +58,33 @@ import { AUTO_SEND_KEY, BLENDER_TARGET, TIP_KEY } from "../../../shared/markupFl
 import { MarkupBar, MarkupTip, PreviousMarkup } from "../../../shared/MarkupPanels";
 import "./App.css";
 
-type Mode = "model" | "renders" | "wire";
+/**
+ * The Components board draws Model · Renders · Compare. Compare is left out
+ * rather than drawn dead: it compares export versions, and versions are not
+ * kept yet (P1). It arrives with them.
+ */
+type Mode = "model" | "renders";
+
+const MODES: readonly { value: Mode; label: string }[] = [
+  { value: "model", label: "Model" },
+  { value: "renders", label: "Renders" },
+];
+
+/**
+ * How Model mode looks at the model, in the Actions slot. The board draws
+ * Solid · Material · Wire as shadings of one live view. What exists is the
+ * live glTF view, drawn with its materials, and Blender's wireframe pass, a
+ * still from the export. Wire was a third mode, but it was always a way of
+ * looking at the model (the parts list stayed beside it), so it moves here,
+ * and the switch names what each option shows, as Godot's 3D · Render does.
+ * Solid needs a shading override in the 3D view and arrives with one.
+ */
+type ModelView = "3d" | "wire";
+
+const MODEL_VIEWS: readonly { value: ModelView; label: string }[] = [
+  { value: "3d", label: "3D" },
+  { value: "wire", label: "Wire" },
+];
 
 const AUTO_KEY = "blender-viewer.auto-export";
 const POLL_IDLE_MS = 3000;
@@ -108,6 +141,7 @@ function message(err: unknown): string {
 
 export default function App() {
   const [mode, setMode] = useState<Mode>("model");
+  const [modelView, setModelView] = useState<ModelView>("3d");
   const [state, setState] = useState<BlenderViewerState | null>(null);
   const [blend, setBlend] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -249,7 +283,13 @@ export default function App() {
     }
   };
 
-  const openCount = useMemo(() => comments.filter((c) => c.status === "open").length, [comments]);
+  // Every comment not yet resolved, as the panel and Play count them: one an
+  // agent is working on, or has fixed and left for the person to check, still
+  // waits on someone.
+  const openCount = useMemo(
+    () => comments.filter((c) => c.status !== "resolved").length,
+    [comments],
+  );
 
   const postComment = async () => {
     if (!selected || !draft.trim()) return;
@@ -331,8 +371,7 @@ export default function App() {
   }
 
   const job = state.job;
-  const hasExport = state.model !== null || state.renders.length > 0 || state.parts.length > 0;
-  const renderedAt = state.exportedAt ?? null;
+  const exported = hasExport(state);
   const wire = state.renders.find((r) => r.id === "wire");
   const hero =
     state.renders.find((r) => r.id === "three-quarter") ??
@@ -343,47 +382,63 @@ export default function App() {
 
   return (
     <div className="bv" ref={setRoot}>
-      <header className="bv__header">
-        <span className="bv__badge">BLENDER VIEWER</span>
-        {state.blends.length > 1 ? (
-          <select
-            className="bv__select"
-            aria-label=".blend file"
-            value={blend ?? ""}
-            onChange={(e) => {
-              setBlend(e.target.value);
-              setSelected(null);
+      {/* Mark up is not here: it sits on the 3D view's own bar
+          (`apps/shared/MarkupScene.tsx`), which knows when the model can be
+          drawn on and says why not when it is stale. Export, Auto and Copy
+          .glb path stay in the footer beside the sends they feed. */}
+      <ViewerToolbar
+        label="Blender"
+        mode={{ value: mode, options: MODES, onChange: setMode }}
+        subject={
+          state.blends.length > 1 ? (
+            <select
+              className="k-vtb__select"
+              aria-label=".blend file"
+              value={blend ?? ""}
+              onChange={(e) => {
+                setBlend(e.target.value);
+                setSelected(null);
+              }}
+            >
+              {state.blends.map((b) => (
+                <option key={b.path} value={b.path}>
+                  {b.rel}
+                </option>
+              ))}
+            </select>
+          ) : (
+            state.rel && <span className="bv__file">{state.rel}</span>
+          )
+        }
+        status={exportChip(state)}
+        actions={
+          mode === "model" && exported ? (
+            <SegmentedControl
+              aria-label="Model view"
+              value={modelView}
+              onChange={setModelView}
+              options={MODEL_VIEWS}
+            />
+          ) : null
+        }
+        leave={
+          <ToolbarButton
+            icon={<ExternalLink size={14} strokeWidth={1.5} aria-hidden="true" />}
+            label="Open in Blender"
+            disabled={!blend || !state.blender.found}
+            title={
+              state.blender.found
+                ? `Open ${state.rel ?? "the file"} in Blender ${state.blender.version ?? ""}`
+                : "Blender was not found — set it up first"
+            }
+            onClick={() => {
+              if (!blend) return;
+              setError(null);
+              openInBlender(blend).catch((err: unknown) => setError(message(err)));
             }}
-          >
-            {state.blends.map((b) => (
-              <option key={b.path} value={b.path}>
-                {b.rel}
-              </option>
-            ))}
-          </select>
-        ) : (
-          state.rel && <span className="bv__file">{state.rel}</span>
-        )}
-        <SegmentedControl
-          aria-label="View"
-          value={mode}
-          onChange={setMode}
-          options={[
-            { value: "model", label: "Model" },
-            { value: "renders", label: "Renders" },
-            { value: "wire", label: "Wire" },
-          ]}
-        />
-        <span className="bv__age">
-          <Clock size={12} strokeWidth={1.5} aria-hidden="true" />
-          {formatRenderAge(renderedAt)}
-        </span>
-        {state.stale && hasExport && (
-          <span className="k-badge k-badge--warning" title="The .blend changed after this export">
-            .blend changed since
-          </span>
-        )}
-      </header>
+          />
+        }
+      />
 
       {!state.blender.found && (
         <section className="bv__setup" aria-label="Blender not found">
@@ -469,7 +524,7 @@ export default function App() {
           <p className="bv__hint bv__empty">
             No <code>.blend</code> files in this environment. Save one here and it will appear.
           </p>
-        ) : !hasExport ? (
+        ) : !exported ? (
           <div className="bv__empty bv__empty--export">
             <p className="bv__hint">
               <code>{state.rel}</code> has not been exported yet.
@@ -519,7 +574,7 @@ export default function App() {
               ))}
             </div>
           </main>
-        ) : mode === "wire" ? (
+        ) : modelView === "wire" ? (
           <main className="bv__viewport">
             {wire && images.wire ? (
               <figure className="bv__hero">
@@ -607,7 +662,7 @@ export default function App() {
           </main>
         )}
 
-        {state.project && state.blends.length > 0 && hasExport && mode !== "renders" && (
+        {state.project && state.blends.length > 0 && exported && mode !== "renders" && (
           <aside className="bv__parts">
             <div className="bv__parts-heading">
               <Package size={13} strokeWidth={1.5} aria-hidden="true" />
@@ -687,6 +742,10 @@ export default function App() {
               await resolveComment(id, note);
               await refreshComments();
             }}
+            onVerdict={async (id, verdict, reply) => {
+              await verdictComment(id, verdict, reply);
+              await refreshComments();
+            }}
             emptyHint="No comments on this model yet. Select a part and leave one."
           />
         )}
@@ -717,7 +776,7 @@ export default function App() {
                 }
               >
                 <RefreshCw size={13} strokeWidth={1.5} aria-hidden="true" />
-                {hasExport ? "Re-export" : "Export"}
+                {exported ? "Re-export" : "Export"}
               </button>
             )}
             <label className="bv__auto" title="Re-export when the .blend is saved">
@@ -742,24 +801,6 @@ export default function App() {
                 onClick={copyGlb}
               />
             )}
-            <button
-              type="button"
-              className="bv__footer-btn"
-              disabled={!blend || !state.blender.found}
-              onClick={() => {
-                if (!blend) return;
-                setError(null);
-                openInBlender(blend).catch((err: unknown) => setError(message(err)));
-              }}
-              title={
-                state.blender.found
-                  ? `Open ${state.rel ?? "the file"} in Blender ${state.blender.version ?? ""}`
-                  : "Blender was not found — set it up first"
-              }
-            >
-              <ExternalLink size={13} strokeWidth={1.5} aria-hidden="true" />
-              Open in Blender
-            </button>
           </>
         }
       >
@@ -774,7 +815,7 @@ export default function App() {
             onClick={() => void send("parts", "parts", () => putParts(state))}
           />
         )}
-        {mode === "model" && markup && (
+        {mode === "model" && modelView === "3d" && markup && (
           <SendButton
             label="Send markup"
             sent={sent === "markup"}

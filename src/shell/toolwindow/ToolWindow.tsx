@@ -79,6 +79,7 @@ import { windowLabel } from "../state/shellState";
 import { currentTheme, onThemeChange, type ThemeChangedPayload } from "../themeBroadcast";
 import ToolMount from "./ToolMount";
 import { sameOrder, stableOrder } from "./stableOrder";
+import { PendingEvents } from "./pendingEvents";
 import EmptyState from "./EmptyState";
 import NoClustersState from "./NoClustersState";
 import {
@@ -87,6 +88,7 @@ import {
   type OsFileDragMessage,
 } from "../toolWindowRegistry";
 import { sameWindowRect, windowRectOfPane, type WindowRect } from "./surfaceRect";
+import { watchOverlays } from "../overlayWatch";
 import "./toolwindow.css";
 
 /**
@@ -109,7 +111,18 @@ const FILES_APP = "files";
  * the point to turn this into a declared capability on `ToolPresentation`
  * instead of growing a hardcoded list here.
  */
-const NEEDS_WINDOW_RECT = new Set(["projects"]);
+const NEEDS_WINDOW_RECT = new Set(["projects", "play"]);
+
+/** The event that carries `NEEDS_WINDOW_RECT`'s rect; a newer one makes a queued older one wrong. */
+const WINDOW_RECT_EVENT = "veistra/window-rect";
+
+/**
+ * Apps told where the shell's overlays are (`veistra/overlays`), because what
+ * they place over their pane would cover them: Play's game window
+ * (`overlayWatch.ts` has why). Only these, and only while one is mounted, so
+ * no other window pays for the watch.
+ */
+const NEEDS_OVERLAYS = new Set(["play"]);
 
 /**
  * The tool window — the container every docked tool mounts into, plus its boot
@@ -547,9 +560,9 @@ const ToolWindow = forwardRef<
   deliverRef.current = deliverEvent;
 
   /**
-   * Events waiting on a frame that has not said hello yet, keyed by instance —
-   * at most one per instance, since a second request for the same frame
-   * supersedes the first rather than queuing behind it.
+   * Events waiting on a frame that has not said hello yet, every one of them in
+   * the order it was sent (`pendingEvents.ts` has why a single slot per
+   * instance was not enough).
    *
    * The gap this covers is real, not theoretical: `openInstance` (see
    * `state/shellState.ts`) resolves with an id the moment Rust has minted
@@ -558,29 +571,33 @@ const ToolWindow = forwardRef<
    * immediately would be posting to a frame whose `origin` is still `null` —
    * silently absorbed by `deliverEvent`'s own guard, and gone for good.
    *
-   * Nothing ever prunes an entry whose instance closes before its frame
-   * becomes ready — a small, bounded leak (one object per abandoned open)
-   * rather than a cancellation path this has no signal to drive.
+   * Nothing ever prunes the events of an instance that closes before its frame
+   * becomes ready — a small leak (what one abandoned open was told) rather than
+   * a cancellation path this has no signal to drive.
    */
-  const pendingEvents = useRef<Map<string, { event: string; payload: unknown }>>(new Map());
+  const pendingEvents = useRef(new PendingEvents([WINDOW_RECT_EVENT]));
 
   const sendEventWhenReady = useCallback(
     (instanceId: string, event: string, payload: unknown) => {
-      if (readyIdsRef.current.has(instanceId)) {
-        deliverEvent(instanceId, event, payload);
+      if (!readyIdsRef.current.has(instanceId)) {
+        pendingEvents.current.add(instanceId, event, payload);
         return;
       }
-      pendingEvents.current.set(instanceId, { event, payload });
+      // The ref says ready from the render on, the flush below only once that
+      // render commits, so anything still queued goes first rather than after
+      // this newer event.
+      for (const queued of pendingEvents.current.take(instanceId)) {
+        deliverEvent(instanceId, queued.event, queued.payload);
+      }
+      deliverEvent(instanceId, event, payload);
     },
     [deliverEvent],
   );
 
   // Flush whatever was waiting the moment its frame joins `readyIds`.
   useEffect(() => {
-    for (const [instanceId, msg] of pendingEvents.current) {
-      if (!readyIds.has(instanceId)) continue;
-      pendingEvents.current.delete(instanceId);
-      deliverEvent(instanceId, msg.event, msg.payload);
+    for (const [instanceId, queue] of pendingEvents.current.takeReady(readyIds)) {
+      for (const { event, payload } of queue) deliverEvent(instanceId, event, payload);
     }
   }, [readyIds, deliverEvent]);
 
@@ -629,9 +646,27 @@ const ToolWindow = forwardRef<
       const prev = lastWindowRect.current.get(instanceId);
       if (prev && sameWindowRect(prev, next)) continue;
       lastWindowRect.current.set(instanceId, next);
-      sendEventWhenReady(instanceId, "veistra/window-rect", { ...next, window: windowLabel() });
+      sendEventWhenReady(instanceId, WINDOW_RECT_EVENT, { ...next, window: windowLabel() });
     }
   }, [rects, tree, instances, sendEventWhenReady]);
+
+  // Overlay boxes for the apps that place native windows over their pane.
+  // Sent to ready frames only: a frame that is not ready has no game yet, and
+  // it asks for nothing older than its first report.
+  const overlayTargets = [...instances.values()]
+    .filter((i) => NEEDS_OVERLAYS.has(i.appId))
+    .map((i) => i.id)
+    .sort()
+    .join(" ");
+  useEffect(() => {
+    if (overlayTargets === "") return;
+    const ids = overlayTargets.split(" ");
+    return watchOverlays((rects) => {
+      for (const id of ids) {
+        if (readyIdsRef.current.has(id)) deliverEvent(id, "veistra/overlays", { rects });
+      }
+    });
+  }, [overlayTargets, deliverEvent]);
 
   // The page's own window rect, for a page app that needs one. Its box is not
   // a pane, so it is read off the host element and followed with a
@@ -652,7 +687,7 @@ const ToolWindow = forwardRef<
       const prev = lastWindowRect.current.get(pageInstanceId);
       if (prev && sameWindowRect(prev, next)) return;
       lastWindowRect.current.set(pageInstanceId, next);
-      sendEventWhenReady(pageInstanceId, "veistra/window-rect", { ...next, window: windowLabel() });
+      sendEventWhenReady(pageInstanceId, WINDOW_RECT_EVENT, { ...next, window: windowLabel() });
     };
     send();
     const observer = new ResizeObserver(send);

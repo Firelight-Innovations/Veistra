@@ -18,7 +18,8 @@ template and a build step before the first frame, changes what the game is (WebG
 no native extensions), and would make "Play" mean a different program from the one that ships.
 A native run needs nothing but the engine, and what it shows is what the player gets.
 
-Cost: the frame is not in the pane. That is what Capture is for.
+Cost: the frame is not in the pane. That is what Capture was for, until the game moved into
+the pane: see "The game in the pane", below.
 
 ## Finding the engine
 
@@ -58,6 +59,64 @@ removable.
   no network. A reply may not name a file outside its own folder.
 - Without the addon, Capture and Pause are disabled and say why. Nothing is faked.
 
+## The game in the pane, takes, notes (design v0.1, 2026-10-30)
+
+The "Play, Scene and Blender views" design (canvas "Veistra — Play, Scene and Blender views")
+moves the game into the pane, records runs as takes, and closes the loop with an agent. The
+native run above still holds: the game is its own process, and a crash in it never takes
+Veistra down.
+
+**The game in the pane** (`embed.rs`, Windows). After spawn, the game's window is found by
+process (the game and its children, since `_console.exe` starts the real executable), its
+caption and borders removed, `WS_EX_TOOLWINDOW` set, and made owned by the Veistra window. The
+pane sends `play/embed-rect` with its game box in window CSS pixels; Rust adds the window's
+client origin and scale. The game is launched with `--windowed --resolution <pane size>
+--position -32000,-32000` so it never flashes in the wrong place. Rust hides it whenever its
+cluster is off screen or Play is not the active tab (`live::sync_visibility`, from the shell
+state, beside the Plane webview's). With no embedder (macOS, Linux) or no window within 10 s,
+the game keeps its own window and the live strip says so.
+
+**Airspace.** The game paints above the WebView. The shell reports its open overlays (menus,
+popovers, dialogs, the palette, the drag ghost, and a takeover or expanded page that covers the
+whole tool window) to Play as `veistra/overlays` (`src/shell/overlayWatch.ts`), and Play hides
+the game and shows its last frame while one covers the box.
+
+**Takes** (`record.rs`, `takes.rs`, `session.rs`). Record is per project, per computer, off by
+default, and needs addon v2 and Windows. A take is `.veistra/takes/<utc minute>-<4 hex>/` with
+`take.mp4`, `telemetry.jsonl`, `log.jsonl`, `take.json` and `notes.json`; the last ten are kept,
+plus any with drafts, and `.git/info/exclude` keeps them out of git. On read-only main they go
+under the app's data instead. Time zero is the first video frame's wall-clock time; telemetry
+and the log carry wall time, so every lane lines up on one clock.
+
+**Addon v2** writes a tick ten times a second (scene, camera, player, frame time, viewport,
+tracked node boxes), marks for F8, and keys F7 and Ctrl Shift M, which it handles so the game
+never sees them. `pick` casts a ray through a point. The marker is `# veistra-capture v2`, so a
+project holding v1 shows "Update capture".
+
+**Send** (`feedback.rs`) writes `.veistra/feedback/<take>-<n>/` with `packet.md` and per note
+`markup.png`, `markup.json`, `contact.png`, `frames/` and `context.json`, files each note as a
+comment with a `take` anchor, and the page attaches `packet.md` at the agent's prompt. Agents
+use `list_play_notes`, `start_play_note` and `resolve_play_note` on the workspace server, or
+on the context server from an agent tab.
+
+### Decisions
+
+| Decision | Chosen | Why, and what was rejected |
+|---|---|---|
+| R1 child window or R2 owned popup | R2, pending the Day 1 spike | Graphics Capture records the game window alone, never Veistra's UI. R1 (`SetParent`) is not built; the spike is where `CreateForWindow` on a child window gets tried. |
+| One Godot app or two | Two, with the shared toolbar | Scene · Play switches between the apps (`veistra/open`). Folding Play into the Godot app (open decision 1) is left for the owner; it is a move, not a rewrite. |
+| Record default | Off | Takes cost disk (open decision 2's recommendation). |
+| Tracked nodes | The design's default | `veistra_track` when it has members, else bodies and visible meshes in view, nearest 64. |
+| Video clip in the packet | Not built | The agent reads the contact sheet; the checkbox is shown disabled with why. |
+| Retention | Ten takes | Open decision 7. |
+| Video size | The window's, not 720p | `windows-capture` crops or pads, it does not scale. The bitrate is fixed at 3.5 Mbit/s, under 60 MB for two minutes. A D3D11 scaling pass is the follow-up. |
+
+### Not verified on a real machine
+
+Built and tested on Linux with unit tests and a Windows type-check; the Win32 embedder, the
+recorder and the GDScript have not run. The acceptance list in section 13 of the design needs
+a Windows 11 pass on the demo game and on Anomaly.
+
 ## The Godot Viewer
 
 `scene.rs`. Refresh runs `godot --headless --path P -s dump_scene.gd -- --out F --scene S`,
@@ -76,8 +135,8 @@ appears briefly. The frame is cached beside the tree and stamped separately.
 ## Read-only main (#163)
 
 Running and viewing read the project, so they work on main. Writing does not:
-`godot/open-editor`, `play/addon-install` and `play/addon-remove` are in `WRITE_METHODS` and are
-refused on main before a handler runs. The viewer's cache goes under the app-local data folder
+`godot/open-editor`, `play/addon-install`, `play/addon-remove`, `play/send` and
+`comments/verdict` are in `WRITE_METHODS` and are refused on main before a handler runs. The viewer's cache goes under the app-local data folder
 for main and under `<env>/.veistra/godot-viewer/` for a worktree; run channels are always in temp.
 
 What Veistra cannot prevent: Godot writes `<project>/.godot/` (import cache) whenever it loads a

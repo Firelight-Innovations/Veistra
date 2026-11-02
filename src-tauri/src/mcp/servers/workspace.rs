@@ -1,9 +1,12 @@
 //! Where the person is working, for any agent connected to Veistra.
-//! An agent in a terminal pane cannot see the window around it; these three tools say which
-//! pane has focus, how panes are arranged, and which project each cluster is on.
+//! An agent in a terminal pane cannot see the window around it; three tools say which
+//! pane has focus, how panes are arranged, and which project each cluster is on. Three
+//! more are the agent's half of Play's fix loop: the notes the person sent from a
+//! recorded take, and the two writes that report on one (`list_play_notes`,
+//! `start_play_note`, `resolve_play_note`; served from [`super::play_notes`],
+//! which `context` shares).
 //!
-//!
-//! **Read-only, and on in every build.** Unlike [`super::debug`] there is no
+//! **On in every build, and read-only but for the play notes.** Unlike [`super::debug`] there is no
 //! developer gate, because nothing here reaches past what the person can see on
 //! screen: no input, no `eval`, no failures buffer, no window geometry. What
 //! `shell_snapshot` carries that this leaves out (geometry, band heights,
@@ -30,7 +33,8 @@ pub static SERVER: McpServer = McpServer {
     id: ID,
     name: "Workspace",
     description: "Where the person is working: which pane has focus, how the panes are \
-                  arranged, and which project each cluster is on. Read-only.",
+                  arranged, and which project each cluster is on; and the playtest notes the \
+                  person sent from Play, with the two calls that report on one.",
     tools: TOOLS,
     call,
     dev_only: false,
@@ -64,7 +68,7 @@ fn focus_answer(app: &AppHandle) -> Value {
 
 static TOOLS: &[McpTool] = &TOOL_LIST;
 
-const TOOL_LIST: [McpTool; 3] = [
+const TOOL_LIST: [McpTool; 6] = [
     McpTool {
         name: "focus",
         description: "What the person is looking at right now: the focused pane, the app and \
@@ -88,13 +92,19 @@ const TOOL_LIST: [McpTool; 3] = [
                       the branch. Also says which cluster is active.",
         schema: no_params,
     },
+    super::play_notes::TOOLS[0],
+    super::play_notes::TOOLS[1],
+    super::play_notes::TOOLS[2],
 ];
 
 fn no_params() -> Value {
     json!({ "type": "object", "properties": {}, "additionalProperties": false })
 }
 
-fn call(app: &AppHandle, tool: &str, _params: Option<Value>) -> Result<ToolAnswer, RpcError> {
+fn call(app: &AppHandle, tool: &str, params: Option<Value>) -> Result<ToolAnswer, RpcError> {
+    if super::play_notes::serves(tool) {
+        return super::play_notes::call(app, tool, &params);
+    }
     let snapshot = app.state::<ShellState>().snapshot();
     match tool {
         "focus" => Ok(focus_answer(app).into()),
@@ -734,15 +744,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_server_is_ordinary_and_read_only() {
+    fn the_server_is_ordinary_and_only_the_play_note_reports_write() {
         assert!(!SERVER.dev_only, "workspace ships to everyone");
         let names: Vec<&str> = SERVER.tools.iter().map(|t| t.name).collect();
-        assert_eq!(names, vec!["focus", "layout", "project"]);
+        assert_eq!(
+            names,
+            vec![
+                "focus",
+                "layout",
+                "project",
+                "list_play_notes",
+                "start_play_note",
+                "resolve_play_note"
+            ]
+        );
         for tool in SERVER.tools {
+            let writes = matches!(tool.name, "start_play_note" | "resolve_play_note");
             assert_eq!(
                 super::super::read_only_hint("workspace", tool.name),
-                Some(true),
-                "{} must be advertised read-only",
+                Some(!writes),
+                "{} is advertised as it behaves",
                 tool.name
             );
             let schema = (tool.schema)();

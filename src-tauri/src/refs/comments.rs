@@ -109,9 +109,8 @@ fn listing(mut rows: Vec<Value>, problems: Vec<String>) -> Value {
 }
 
 fn viewer_rows(all: Vec<crate::comments::Comment>, wanted: Wanted) -> Vec<Value> {
-    use crate::comments::Status;
     all.into_iter()
-        .filter(|c| wanted.takes(c.status == Status::Open))
+        .filter(|c| wanted.takes(c.status.is_active()))
         .map(|c| {
             let r = Ref::Comment { id: c.id.clone() };
             row(
@@ -228,14 +227,17 @@ fn design_rows(_app: &AppHandle, _wanted: Wanted) -> Vec<Value> {
     Vec::new()
 }
 
-/// Close the comment `r` names with the agent's `note`. One already resolved
-/// is left as it is, so a note the person wrote is never replaced, and a
+/// Close the comment `r` names with the agent's `note`. A viewer comment is
+/// marked fixed rather than resolved, for the person to check (see
+/// `comments::Status`). One already fixed or resolved is left as it is, so a
+/// note the person wrote is never replaced, and a
 /// viewer comment on a read-only main is refused like any other write there.
 pub fn resolve(app: &AppHandle, ctx: &CallContext, r: &Ref, note: &str) -> Result<Value, String> {
     live::check(app, ctx, r)?;
     let root = live::root_of(ctx)?;
     let settled =
         || format!("`{r}` is already resolved, so its note stands; `read` it to see what was said");
+    let mut status = "resolved";
     match r {
         Ref::Comment { id } => {
             if let Some(cluster) = ctx.cluster_id.as_deref() {
@@ -243,11 +245,16 @@ pub fn resolve(app: &AppHandle, ctx: &CallContext, r: &Ref, note: &str) -> Resul
                     .map_err(|e| e.to_string())?;
             }
             let record = super::resolve::viewer_record(root, id)?;
-            if record.status == crate::comments::Status::Resolved {
-                return Err(settled());
+            if !record.status.is_active() {
+                return Err(format!(
+                    "`{r}` is already {}, so its note stands; `read` it to see what was said",
+                    record.status.name()
+                ));
             }
             let by = crate::comments::Author::Agent;
-            crate::comments::resolve(ctx, id, note.to_string(), by).map_err(|e| e.message)?;
+            let done =
+                crate::comments::resolve(ctx, id, note.to_string(), by).map_err(|e| e.message)?;
+            status = done.status.name();
         }
         Ref::Canvas {
             id,
@@ -270,7 +277,7 @@ pub fn resolve(app: &AppHandle, ctx: &CallContext, r: &Ref, note: &str) -> Resul
             ))
         }
     }
-    Ok(json!({ "uri": r.to_string(), "status": "resolved", "note": note }))
+    Ok(json!({ "uri": r.to_string(), "status": status, "note": note }))
 }
 
 /// Resolve a Design Mode comment. `Err(None)` means it was resolved already.

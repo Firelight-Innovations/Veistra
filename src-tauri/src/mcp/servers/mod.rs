@@ -26,6 +26,7 @@ pub mod debug;
 #[cfg(feature = "design-mode")]
 pub mod design;
 pub mod echo;
+pub mod play_notes;
 pub mod ui;
 pub mod workspace;
 
@@ -80,6 +81,9 @@ pub fn read_only_hint(server: &str, tool: &str) -> Option<bool> {
         ("agent", "shell_snapshot" | "recent_errors" | "boot_status") => true,
         ("agent", "app_call" | "open_app" | "set_project") => false,
         ("workspace", "focus" | "layout" | "project") => true,
+        ("workspace" | context::ID, tool) if play_notes::serves(tool) => {
+            return play_notes::read_only(tool)
+        }
         ("canvas", tool) => return canvas::read_only(tool),
         (context::ID, tool) => return context::read_only(tool),
         _ => return None,
@@ -178,7 +182,9 @@ pub fn instructions(id: &str) -> Option<&'static str> {
              veistra://context/<id> and veistra://selection. `search_context` finds them by name, \
              `read` reads one, and `show` puts up to eight in front of the person beside your \
              reply. `list_comments` has what they asked of you; `resolve_comment` closes one. Call `get_selection` when they \
-             say \"this\". Secrets and gitignored files are withheld and say so.",
+             say \"this\". Secrets and gitignored files are withheld and say so. Notes sent from \
+             Play come with a packet.md: `list_play_notes` lists them, `start_play_note` says you \
+             are on one and `resolve_play_note` reports it fixed.",
         ),
         "debug" => Some(
             "Read-only views of a running Veistra: its shell layout, recent errors and boot \

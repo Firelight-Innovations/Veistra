@@ -45,7 +45,7 @@ apps/
   schematify/ui/          Schematify's frontend
   godot-viewer/ui/        Godot Viewer's frontend: the scene an agent's headless Godot run last produced
   blender-viewer/ui/      Blender Viewer's frontend: the .glb an agent's headless Blender export last produced
-  play/ui/                Play's frontend: run the environment's debug build and capture a comment on it
+  play/ui/                Play's frontend: the game in the pane, recorded takes, review and notes for an agent
   canvas/ui/              Canvas's frontend: Excalidraw design canvases, one JSON file each in the checkout
 ```
 
@@ -438,15 +438,13 @@ Blender: a Model/Renders/Wire switch, an honest placeholder in place of a real
 `docs/VEISTRA-UX-REWORK.md` §3.2), a parts list, a renders strip. Same story as
 the Godot Viewer on emptiness and "Open in Blender".
 
-**Play** (`play/state`) — runs the environment's debug build in a pane and
-lets you comment on what you see: pause/restart/stop, a frame area, a debug
-overlay, and Capture & comment on `F5`/`Ctrl+Shift+C` — bound on the app's own
-root element, not `window`, so it never fires while a different pane has
-focus. `state()` never reports a running build in this build of the app; the
-transport controls stay disabled outside "Preview with sample data" (below)
-because there is no RPC yet that actually starts, pauses or stops a run, and a
-capture never carries a real screenshot for the same reason — see
-`apps/play/ui/src/rpc.ts`.
+**Play** (`play/state`) — runs the environment's game in a pane: on Windows
+the game's own window is placed over the pane's game box, elsewhere it keeps
+its own window and the pane shows its log. With Record on, a run is kept as a
+take; review shows it on a timeline where notes are written, marked up and
+sent to the agent as a feedback packet. Keys are bound on the app's own root
+element, not `window`, so they never fire while a different pane has focus.
+`docs/design-notes/godot-play.md` has the whole of it.
 
 All three show an honest empty state everywhere they have nothing to show,
 rather than fabricating a render, a part list or a frame. Each has a single

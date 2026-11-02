@@ -681,6 +681,8 @@ impl ShellState {
         // see `plane_webview::sync_visibility`'s own doc for the other call
         // site, the one this can't reach: a resize with nothing else changed.
         crate::plane_webview::sync_visibility(app, &updated);
+        // A game placed over a Play pane hides with that pane.
+        crate::godot::live::sync_visibility(app, &updated);
         // A closed agent tab takes its agent with it; see `apps::agent_tab`.
         crate::apps::agent_tab::sync_sessions(app, &updated);
         crate::shell_store::persist(app, &updated);
