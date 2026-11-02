@@ -74,6 +74,14 @@ describe("the capture addon", () => {
     expect(body).toContain('"content": [int(content.position.x)');
   });
 
+  it("takes that box from the engine's own window transform, not a copy of its stretch rules", () => {
+    const body = code(fn("_content_box"));
+    expect(body).toContain("win.get_final_transform() * Rect2(Vector2.ZERO, visible)");
+    // The copy this replaced read the stretch settings and got integer
+    // stretch wrong for aspect ignore, small windows and scale factors.
+    expect(body).not.toMatch(/content_scale_|floorf|minf/);
+  });
+
   it("scales a pick from the capture's pixels into the visible rect before casting", () => {
     const body = fn("_pick");
     const scaled = body.indexOf("var at := on_capture * visible / shot");
@@ -85,8 +93,7 @@ describe("the capture addon", () => {
   it("uses nothing Godot 4.0 lacks", () => {
     // Vector2.min and max do not exist in 4.0; minf and maxf are global.
     expect(code(script)).not.toMatch(/\.(min|max)\(/);
-    // Integer stretch arrived in 4.2, so its property is only read by name.
-    expect(script).toContain('win.get("content_scale_stretch")');
-    expect(code(script)).not.toMatch(/\.content_scale_stretch|CONTENT_SCALE_STRETCH/);
+    // Integer stretch arrived in 4.2; nothing here names it.
+    expect(code(script)).not.toMatch(/content_scale_stretch|CONTENT_SCALE_STRETCH/);
   });
 });

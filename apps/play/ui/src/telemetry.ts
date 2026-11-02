@@ -27,8 +27,9 @@ export interface Tick {
   window?: [number, number];
   /**
    * Where that window shows the viewport, as x, y, width, height in window
-   * pixels. Outside it are the bars a stretch setting that keeps the
-   * viewport's aspect leaves.
+   * pixels, from the engine's own window transform. Outside it are the bars
+   * stretch leaves. Under integer stretch it can be larger than the window,
+   * drawn from the window's edge on the axis it overflows.
    */
   content?: [number, number, number, number];
   nodes: TrackedNode[];
@@ -108,8 +109,8 @@ export function nearestTick(ticks: readonly Tick[], wallMs: number, withinMs = 1
  * the window and then in the box the window shows the viewport in; a point
  * on a bar lands outside the viewport. A tick without that box, from an
  * addon build before it was reported, is read as the viewport fitted into
- * the window at its own aspect and centred, which is what Godot draws for
- * every stretch setting except aspect "ignore".
+ * the window at its own aspect and centred, which is what Godot draws unless
+ * the aspect is "ignore" or the stretch is integer.
  */
 export function toViewport(tick: Tick, x: number, y: number, shown: Size): [number, number] {
   const [vw, vh] = tick.viewport ?? [shown.width, shown.height];

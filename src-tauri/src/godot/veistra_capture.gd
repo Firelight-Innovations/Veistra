@@ -22,7 +22,7 @@
 # never sees them. Every other key goes to the game.
 #
 # Written for Godot 4.0 through 4.5. Nothing calls Vector2.min or max, which
-# 4.0 lacks, and the one newer property is read by name (_content_box).
+# 4.0 lacks, or reads a property newer than 4.0.
 extends Node
 
 const TICK_SEC := 0.1
@@ -237,27 +237,16 @@ func _tick() -> void:
 
 # Where the window shows the viewport, in window pixels. A recording is the
 # whole window, bars and all, so the page maps a pin through this box into
-# the viewport pixels node boxes are measured in. Godot draws the visible
-# rect as large as it fits, centred, at its own aspect, which leaves bars
-# wherever that aspect is not the window's (expand has already grown the
-# rect to match; keep_width and keep_height grow it one way only). Aspect
-# "ignore" stretches it to fill instead, and integer stretch rounds the
-# scale down to a whole number.
+# the viewport pixels node boxes are measured in. The box is the visible rect
+# put through the window's final transform, the one Godot inverts to bring a
+# click in window pixels into the viewport: Window overrides it to add the
+# bars' offset to the stretch, so it lands where the engine draws for every
+# mode, aspect, scale factor and integer stretch. Working the box out here
+# from those settings was tried first and got integer stretch wrong three
+# ways; the engine's own transform cannot drift from what it draws.
 func _content_box(win: Window, visible: Vector2) -> Rect2:
-	var full := Vector2(win.size)
-	var whole := Rect2(Vector2.ZERO, full)
-	if visible.x <= 0.0 or visible.y <= 0.0 or win.content_scale_mode == Window.CONTENT_SCALE_MODE_DISABLED:
-		return whole
-	if win.content_scale_aspect == Window.CONTENT_SCALE_ASPECT_IGNORE:
-		return whole
-	var fit := minf(full.x / visible.x, full.y / visible.y)
-	# Integer stretch is 4.2's. Read by name, so 4.0 and 4.1 get null rather
-	# than a script that does not compile.
-	var stretch = win.get("content_scale_stretch")
-	if typeof(stretch) == TYPE_INT and stretch == 1:
-		fit = maxf(1.0, floorf(fit))
-	var drawn := (visible * fit).floor()
-	return Rect2(((full - drawn) / 2.0).round(), drawn)
+	var box: Rect2 = win.get_final_transform() * Rect2(Vector2.ZERO, visible)
+	return Rect2(box.position.round(), box.size.round())
 
 # The group when it has members; otherwise physics bodies and visible meshes
 # (or their 2D counterparts). Each one's box is read here, so that a tick

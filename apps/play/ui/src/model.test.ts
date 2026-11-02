@@ -137,10 +137,38 @@ describe("telemetry", () => {
     expect(toViewport(wide, 700, 300, { width: 1400, height: 600 })).toEqual([320, 180]);
   });
 
-  it("stretch both ways when the window says the viewport fills it, as aspect ignore does", () => {
+  it("stretch both ways when the window says the viewport fills it, as fractional aspect ignore does", () => {
     const tick = letterboxed(',"window":[1000,700],"content":[0,0,1000,700]');
     const [, py] = toViewport(tick, 500, 100, { width: 1000, height: 700 });
     expect(py).toBeCloseTo((100 / 700) * 360);
+  });
+
+  // Integer stretch draws the base at a whole-number scale, so the same base
+  // in the same window is drawn at 1x with bars on all four sides, under
+  // aspect ignore as much as keep, and at any content scale factor.
+  it("map a pin through bars on both axes, as integer stretch leaves", () => {
+    const tick = letterboxed(',"window":[1000,700],"content":[180,170,640,360]');
+    expect(toViewport(tick, 200, 200, { width: 1000, height: 700 })).toEqual([20, 30]);
+    // Shown at half size, the same pin lands on the same viewport point.
+    const half = { width: 500, height: 350 };
+    expect(toViewport(tick, 100, 100, half)).toEqual([20, 30]);
+    expect(recordedTarget(tick, 100, 100, half)?.nodePath).toBe("L/Room");
+    // Window (100, 350) is on the left bar and (500, 100) on the top one,
+    // though the room fills the viewport.
+    expect(recordedTarget(tick, 50, 175, half)).toBeNull();
+    expect(recordedTarget(tick, 250, 50, half)).toBeNull();
+  });
+
+  it("map a pin through a box larger than the window, drawn from its edge", () => {
+    // Godot's default base, 1152x648, in a 1000x700 window under integer
+    // stretch: 1x is the least it draws, from x 0, so the right side is cut.
+    const [tick] = parseTicks(
+      '{"t":1,"kind":"tick","scene":"","viewport":[1152,648],"window":[1000,700],"content":[0,26,1152,648],"nodes":[]}',
+    );
+    expect(tick.content).toEqual([0, 26, 1152, 648]);
+    const [px, py] = toViewport(tick, 200, 200, { width: 1000, height: 700 });
+    expect(px).toBeCloseTo(200);
+    expect(py).toBeCloseTo(174);
   });
 
   it("fit the viewport into the window at its own aspect when a tick does not say", () => {
