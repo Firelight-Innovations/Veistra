@@ -160,8 +160,14 @@ export interface Rect {
   h: number;
 }
 
-export const getState = (since: number, keySince = 0) =>
-  invoke<PlayState>("play/state", { since, keySince });
+/**
+ * `project` is the pane's chosen project as `godot/status` names it, undefined
+ * until that has loaded. The backend judges Record against it when no game is
+ * running, so the answer is about this project and not one found by walking
+ * the environment on every poll.
+ */
+export const getState = (since: number, keySince = 0, project?: string) =>
+  invoke<PlayState>("play/state", { since, keySince, project });
 export const run = (project?: string, scene?: string) =>
   invoke<PlayState>("play/run", { project, scene });
 export const stop = () => invoke<PlayState>("play/stop");
@@ -175,8 +181,13 @@ export const installAddon = (project?: string) =>
 export const removeAddon = (project?: string) =>
   invoke<AddonStatus>("play/addon-remove", { project });
 
-export const embedRect = (r: Rect, visible: boolean, window?: string) =>
-  invoke<{ ok: boolean }>("play/embed-rect", { ...r, visible, window });
+/**
+ * `dpr` is this page's `devicePixelRatio`, the monitor scale times the
+ * WebView's zoom. It is what turns these CSS pixels into the window's physical
+ * ones; the window's own scale factor misses the zoom.
+ */
+export const embedRect = (r: Rect, visible: boolean, window: string | undefined, dpr: number) =>
+  invoke<{ ok: boolean }>("play/embed-rect", { ...r, visible, window, dpr });
 export const setRecord = (on: boolean, project?: string) =>
   invoke<{ on: boolean }>("play/record", { on, project });
 export const mark = () => invoke<{ t: number; marks: number[] }>("play/mark");

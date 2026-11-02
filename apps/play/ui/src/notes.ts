@@ -109,6 +109,26 @@ export function isDraft(note: NoteDraft): boolean {
   return !note.commentId;
 }
 
+/**
+ * Send's stamps on the page's copy, the same ones `play/send` writes into
+ * `notes.json`: each sent note's comment, and the packet it went in. Notes Send
+ * did not file, and edits made while it ran, are left as they are.
+ */
+export function markSent(
+  doc: NotesDoc,
+  comments: readonly (readonly [number, string])[],
+  packet: string,
+): NotesDoc {
+  const ids = new Map(comments);
+  return {
+    ...doc,
+    notes: doc.notes.map((note) => {
+      const commentId = ids.get(note.n);
+      return commentId ? { ...note, commentId, packet } : note;
+    }),
+  };
+}
+
 /** Drafts with words: what Send sends. */
 export function sendable(doc: NotesDoc): NoteDraft[] {
   return doc.notes.filter((n) => isDraft(n) && n.body.trim() !== "");

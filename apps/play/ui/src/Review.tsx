@@ -6,7 +6,10 @@
  * be read back. Three video elements share the file and never fight: the one
  * the person watches, one that makes the filmstrip, and one that makes Send's
  * pictures. Drafts are written to the take's `notes.json` as the person
- * types, a moment after they stop, so a note survives a reload.
+ * types, a moment after they stop, so a note survives a reload; Send and
+ * leaving the take write them at once. The page's writes go one after
+ * another, and none runs while Send does, so an older copy never lands on
+ * top of the stamps Send writes.
  *
  * Send (§9) is in the page because the pictures are: each note's frame, its
  * in and out frames, and its contact sheet are drawn here and handed to
@@ -27,6 +30,7 @@ import { reviewAction, isTyping } from "./keys";
 import {
   addNote,
   dismissMark,
+  markSent,
   normalize,
   pendingMarks,
   removeNote,
@@ -53,6 +57,8 @@ const STATUS_POLL_MS = 2_000;
 
 /** A note made by live mark up during the run, folded into the take when it opens. */
 export interface LiveNote {
+  /** The take that was recording; only that take's review folds the note in. */
+  take: string;
   atMs: number;
   body: string;
   markup: NoteDraft["markup"];
@@ -64,7 +70,8 @@ export interface ReviewProps {
   takeId: string;
   readOnly: boolean;
   liveNotes: LiveNote[];
-  onLiveNotesTaken: () => void;
+  /** This take's live notes are in its notes now; the caller lets go of them. */
+  onLiveNotesTaken: (take: string) => void;
   onPlayScene: (scene?: string) => void;
   onProblem: (message: string | null) => void;
   onDeleted: () => void;
@@ -101,28 +108,101 @@ export default function Review(props: ReviewProps) {
   const [marking, setMarking] = useState<{ url: string; n: number } | null>(null);
   const [thumbs, setThumbs] = useState<string[]>([]);
   const [sending, setSending] = useState(false);
+  const [options, setOptions] = useState<SendOptions>({ contact: true });
   const [aspect, setAspect] = useState(16 / 9);
   const video = useVideoRef();
   const grabber = useVideoRef();
+  const root = useRef<HTMLDivElement | null>(null);
+  /** The newest notes, ahead of the render: a write must never take an older copy. */
+  const docRef = useRef<NotesDoc | null>(null);
   const dirty = useRef(false);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  /** The page's writes of `notes.json`, chained so they land in the order asked. */
+  const saving = useRef<Promise<unknown>>(Promise.resolve());
+  const sendingNow = useRef(false);
   const liveTaken = useRef(false);
 
   const take = detail?.take ?? null;
   const duration = take?.durationMs ?? 0;
   const fps = take?.video.fps || 30;
 
+  const commit = useCallback((next: NotesDoc | null) => {
+    docRef.current = next;
+    setDoc(next);
+  }, []);
+
+  const keepFailed = useCallback(
+    (e: unknown) => onProblem(`Couldn't keep the notes: ${errorText(e)}`),
+    [onProblem],
+  );
+
+  /**
+   * Write the newest notes now, after any write already on its way, and
+   * settle once every write asked for so far has landed. Safe to call when
+   * nothing changed: it only waits. A write that fails leaves the notes
+   * dirty, so the next flush tries again.
+   */
+  const flush = useCallback(() => {
+    clearTimeout(saveTimer.current);
+    saveTimer.current = undefined;
+    const d = docRef.current;
+    if (d && dirty.current) {
+      dirty.current = false;
+      saving.current = saving.current
+        .catch(() => undefined)
+        .then(() => saveNotes(takeId, d))
+        .catch((e: unknown) => {
+          dirty.current = true;
+          throw e;
+        });
+    }
+    return saving.current;
+  }, [takeId]);
+
+  /** A change the person made: kept now, written a moment after the last one. */
+  const edit = useCallback(
+    (next: NotesDoc) => {
+      dirty.current = true;
+      commit(next);
+      clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(() => {
+        saveTimer.current = undefined;
+        // A Send under way writes the notes itself when it finishes.
+        if (!sendingNow.current) flush().catch(keepFailed);
+      }, SAVE_AFTER_MS);
+    },
+    [commit, flush, keepFailed],
+  );
+
+  const change = useCallback(
+    (fn: (d: NotesDoc) => NotesDoc) => {
+      const d = docRef.current;
+      if (d) edit(fn(d));
+    },
+    [edit],
+  );
+
+  // Leaving the take (Back to live, another take, Play again) writes what
+  // the debounce has not yet.
+  useEffect(
+    () => () => {
+      if (!sendingNow.current) flush().catch(keepFailed);
+    },
+    [flush, keepFailed],
+  );
+
   // Load the take, its notes, telemetry and log.
   useEffect(() => {
     let live = true;
     setDetail(null);
-    setDoc(null);
+    commit(null);
     setSelected(null);
     setThumbs([]);
     getTake(takeId)
       .then(async (d) => {
         if (!live) return;
         setDetail(d);
-        setDoc(normalize(d.notes));
+        commit(normalize(d.notes));
         const [tele, logText] = await Promise.all([text(d.urls.telemetry), text(d.urls.log)]);
         if (!live) return;
         setTicks(parseTicks(tele));
@@ -132,15 +212,17 @@ export default function Review(props: ReviewProps) {
     return () => {
       live = false;
     };
-  }, [takeId, onProblem]);
+  }, [takeId, onProblem, commit]);
 
-  // Notes made by live mark up during the run join the take once it opens.
+  // Notes made by live mark up during this take's run join it once it opens.
+  // They are written at once: the caller has let go of its copy.
   const { liveNotes, onLiveNotesTaken } = props;
   useEffect(() => {
-    if (!doc || liveTaken.current || liveNotes.length === 0) return;
+    const mine = liveNotes.filter((n) => n.take === takeId);
+    if (!doc || liveTaken.current || mine.length === 0) return;
     liveTaken.current = true;
     let next = doc;
-    for (const n of liveNotes) {
+    for (const n of mine) {
       next = addNote(next, Math.min(Math.max(0, n.atMs), duration), null, {
         body: n.body,
         markup: n.markup,
@@ -148,27 +230,20 @@ export default function Review(props: ReviewProps) {
         target: n.target,
       }).doc;
     }
-    dirty.current = true;
-    setDoc(next);
-    onLiveNotesTaken();
-  }, [doc, liveNotes, onLiveNotesTaken, duration]);
+    edit(next);
+    onLiveNotesTaken(takeId);
+    flush().catch(keepFailed);
+  }, [doc, liveNotes, onLiveNotesTaken, duration, takeId, edit, flush, keepFailed]);
 
-  // Drafts to disk, a moment after the last change.
+  // Review's keys work as soon as it opens. Focus is taken only from the pane
+  // itself (F7 there) or from nothing (the button that opened review is
+  // gone); a control that has it, the Take menu among them, keeps it.
+  const ready = detail !== null && doc !== null;
   useEffect(() => {
-    if (!doc || !dirty.current) return;
-    const timer = setTimeout(() => {
-      dirty.current = false;
-      saveNotes(takeId, doc).catch((e: unknown) =>
-        onProblem(`Couldn't keep the notes: ${errorText(e)}`),
-      );
-    }, SAVE_AFTER_MS);
-    return () => clearTimeout(timer);
-  }, [doc, takeId, onProblem]);
-
-  const change = useCallback((fn: (d: NotesDoc) => NotesDoc) => {
-    dirty.current = true;
-    setDoc((d) => (d ? fn(d) : d));
-  }, []);
+    const el = root.current;
+    const active = document.activeElement;
+    if (ready && el && (!active || active.contains(el))) el.focus({ preventScroll: true });
+  }, [ready]);
 
   // The notes Send filed, polled while any of them could still change.
   const refreshComments = useCallback(async () => {
@@ -276,21 +351,21 @@ export default function Review(props: ReviewProps) {
 
   const newNote = useCallback(
     (extra: Partial<NoteDraft> = {}, at = playhead) => {
-      if (!doc) return;
+      const d = docRef.current;
+      if (!d) return;
       const r =
         range.inMs !== null && range.outMs !== null && range.outMs > range.inMs
           ? { inMs: range.inMs, outMs: range.outMs }
           : null;
       const atMs = r && (at < r.inMs || at > r.outMs) ? (r.inMs + r.outMs) / 2 : at;
-      const made = addNote(doc, atMs, r, extra);
-      dirty.current = true;
-      setDoc(made.doc);
+      const made = addNote(d, atMs, r, extra);
+      edit(made.doc);
       setSelected(made.note.n);
       setRange({ inMs: null, outMs: null });
       pause();
       return made.note;
     },
-    [doc, playhead, range, pause],
+    [playhead, range, pause, edit],
   );
 
   const tickAt = useCallback(
@@ -353,15 +428,21 @@ export default function Review(props: ReviewProps) {
     [marking, doc, tickAt, change, endMarkup],
   );
 
+  const { onNotice } = props;
   const send = useCallback(
     async (options: SendOptions) => {
       const v = grabber.current;
-      if (!doc || !take || !v || sending) return;
-      const notes = sendable(doc);
+      const d = docRef.current;
+      if (!d || !take || !v || sendingNow.current) return;
+      const notes = sendable(d);
       if (notes.length === 0) return;
+      // From here until `finally` no write of the notes starts but Send's own.
+      sendingNow.current = true;
       setSending(true);
       onProblem(null);
       try {
+        // What is sent is on disk first: `play/send` stamps the notes it finds there.
+        await flush();
         const payload = [];
         for (const note of notes) {
           const frame = await blobBase64(await grab(v, note.atMs));
@@ -392,11 +473,10 @@ export default function Review(props: ReviewProps) {
             },
           });
         }
-        if (dirty.current) {
-          dirty.current = false;
-          await saveNotes(takeId, doc);
-        }
         const sent = await sendNotes(takeId, payload);
+        // The page's copy is stamped the same way rather than read back from
+        // disk, which would drop anything typed while Send ran.
+        commit(markSent(docRef.current ?? d, sent.comments, sent.packet));
         const item = await invoke<ContextRef>("context/put", {
           key: contextKey("play", takeId, "feedback"),
           kind: "file",
@@ -413,19 +493,32 @@ export default function Review(props: ReviewProps) {
           contextId: item.id,
           label: `Playtest feedback · Take ${take.number}`,
         }).catch(() => undefined);
-        const fresh = await getTake(takeId);
-        setDoc(normalize(fresh.notes));
         await refreshComments();
-        props.onNotice(
+        onNotice(
           `Sent ${notes.length} ${notes.length === 1 ? "note" : "notes"}: ${sent.packet}/packet.md`,
         );
       } catch (e) {
         onProblem(`Couldn't send the notes: ${errorText(e)}`);
       } finally {
+        sendingNow.current = false;
         setSending(false);
+        // Edits made while sending were held back. They go now, stamped, even
+        // if the person has left the take since.
+        if (dirty.current) flush().catch(keepFailed);
       }
     },
-    [doc, take, sending, duration, takeId, onProblem, refreshComments, props, grabber],
+    [
+      take,
+      duration,
+      takeId,
+      onProblem,
+      onNotice,
+      refreshComments,
+      grabber,
+      flush,
+      commit,
+      keepFailed,
+    ],
   );
 
   const verdict = useCallback(
@@ -481,7 +574,7 @@ export default function Review(props: ReviewProps) {
         newNote();
         break;
       case "send":
-        void send({ contact: true });
+        void send(options);
         break;
     }
   };
@@ -503,7 +596,7 @@ export default function Review(props: ReviewProps) {
   }
 
   return (
-    <div className="pl-review" tabIndex={-1} onKeyDown={onKeyDown}>
+    <div className="pl-review" ref={root} tabIndex={-1} onKeyDown={onKeyDown}>
       <div className="pl-review__main">
         <div className="pl-review__tools" role="toolbar" aria-label="Markup tools">
           <button
@@ -682,6 +775,8 @@ export default function Review(props: ReviewProps) {
         selected={selected}
         sending={sending}
         readOnly={props.readOnly}
+        options={options}
+        onOptions={setOptions}
         onSelect={select}
         onChange={(n, patch) => change((d) => updateNote(d, n, patch))}
         onDelete={(n) => {
@@ -696,7 +791,7 @@ export default function Review(props: ReviewProps) {
         onDismiss={(ms) => change((d) => dismissMark(d, ms))}
         onVerdict={(id, v, reply) => void verdict(id, v, reply)}
         onPlayScene={props.onPlayScene}
-        onSend={(o) => void send(o)}
+        onSend={() => void send(options)}
       />
       <div className="pl-review__footer">
         <span>
@@ -709,9 +804,19 @@ export default function Review(props: ReviewProps) {
           type="button"
           className="k-btn k-btn--ghost k-btn--sm"
           onClick={() => {
-            deleteTake(takeId)
+            // The notes go with the take, so no write of them may start, or
+            // land, after the delete; one that fails puts them back to write.
+            const unsaved = dirty.current;
+            dirty.current = false;
+            clearTimeout(saveTimer.current);
+            saving.current
+              .catch(() => undefined)
+              .then(() => deleteTake(takeId))
               .then(props.onDeleted)
-              .catch((e: unknown) => onProblem(`Couldn't delete the take: ${errorText(e)}`));
+              .catch((e: unknown) => {
+                dirty.current ||= unsaved;
+                onProblem(`Couldn't delete the take: ${errorText(e)}`);
+              });
           }}
         >
           Delete take

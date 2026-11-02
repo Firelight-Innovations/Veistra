@@ -9,6 +9,10 @@
  * is shown (§4.3, the game paints above the WebView), so when an overlay
  * covers it, or live mark up is drawing on it, the window is hidden and the
  * box shows the game's last frame as a still instead.
+ *
+ * Leaving the live view unmounts this, and the unmount hides the game.
+ * Keeping it mounted under review with a `hidden` flag was the other way; it
+ * would still leave the game shown when the pane's page itself went away.
  */
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import type { MarkupExport } from "@veistra/markup/layer";
@@ -32,8 +36,6 @@ export interface LiveViewProps {
   overlays: WindowRect[];
   /** Something of the pane's own is open over the box (a picker, a dialog). */
   coveredHere: boolean;
-  /** This pane is in review, or otherwise not showing the game. */
-  hidden: boolean;
   marking: LiveMarking | null;
   hint: string;
   onMarkupDone: (result: MarkupExport, shown: { width: number; height: number }) => void;
@@ -41,13 +43,18 @@ export interface LiveViewProps {
   onProblem: (message: string) => void;
 }
 
+/** What the backend was last told, so an unchanged box is not sent again. */
+interface Reported {
+  rect: Rect | null;
+  visible: boolean;
+  window?: string;
+  dpr?: number;
+}
+
 export function LiveView(props: LiveViewProps) {
-  const { session, frameRect, overlays, coveredHere, hidden, marking } = props;
+  const { session, frameRect, overlays, coveredHere, marking } = props;
   const box = useRef<HTMLDivElement | null>(null);
-  const last = useRef<{ rect: Rect | null; visible: boolean; window?: string }>({
-    rect: null,
-    visible: false,
-  });
+  const last = useRef<Reported>({ rect: null, visible: false });
   const [stillUrl, setStillUrl] = useState<string | null>(null);
   const [measured, setMeasured] = useState(0);
   const embedded = session?.embed.kind === "embedded";
@@ -61,6 +68,40 @@ export function LiveView(props: LiveViewProps) {
     return () => observer.disconnect();
   }, []);
 
+  // A move to a monitor of another scale changes devicePixelRatio and nothing
+  // measured in CSS pixels, so only this sees it. A resolution query matches
+  // one ratio, so each change watches the next.
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    let query: MediaQueryList | null = null;
+    const changed = () => {
+      setMeasured((m) => m + 1);
+      watch();
+    };
+    const watch = () => {
+      query?.removeEventListener("change", changed);
+      query = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+      query.addEventListener("change", changed);
+    };
+    watch();
+    return () => query?.removeEventListener("change", changed);
+  }, []);
+
+  // Leaving the live view hides the game: its window is above the WebView and
+  // would paint over whatever takes the box's place. The ref is cleared so a
+  // remount (StrictMode rehearses one) sends the box again.
+  useEffect(
+    () => () => {
+      const prev = last.current;
+      last.current = { rect: null, visible: false };
+      if (prev.rect && prev.visible) {
+        const dpr = prev.dpr ?? window.devicePixelRatio;
+        void embedRect(prev.rect, false, prev.window, dpr).catch(() => undefined);
+      }
+    },
+    [],
+  );
+
   const rect = (() => {
     const el = box.current;
     if (!el || !frameRect) return null;
@@ -68,29 +109,30 @@ export function LiveView(props: LiveViewProps) {
     return boxInWindow(frameRect, r);
   })();
   const coveredNow = coveredHere || (rect !== null && covered(rect, overlays));
-  const visible =
-    !hidden && !coveredNow && marking === null && rect !== null && rect.w > 0 && rect.h > 0;
+  const visible = !coveredNow && marking === null && rect !== null && rect.w > 0 && rect.h > 0;
 
   // One report a frame at most, and only when something changed.
   useEffect(() => {
     if (!rect) return;
     const frame = requestAnimationFrame(() => {
       const prev = last.current;
+      const dpr = window.devicePixelRatio;
       if (
         sameRect(prev.rect, rect) &&
         prev.visible === visible &&
-        prev.window === frameRect?.window
+        prev.window === frameRect?.window &&
+        prev.dpr === dpr
       )
         return;
-      last.current = { rect, visible, window: frameRect?.window };
-      void embedRect(rect, visible, frameRect?.window).catch(() => undefined);
+      last.current = { rect, visible, window: frameRect?.window, dpr };
+      void embedRect(rect, visible, frameRect?.window, dpr).catch(() => undefined);
     });
     return () => cancelAnimationFrame(frame);
     // `measured` is what re-runs this after a resize the props did not see.
   }, [rect?.x, rect?.y, rect?.w, rect?.h, visible, frameRect?.window, measured]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // While covered, the game's last frame stands in for it.
-  const wantStill = embedded && props.running && coveredNow && marking === null && !hidden;
+  const wantStill = embedded && props.running && coveredNow && marking === null;
   useEffect(() => {
     if (!wantStill) return;
     let live = true;
@@ -166,6 +208,8 @@ export interface LiveStripProps {
   session: Session | null;
   running: boolean;
   recordOn: boolean;
+  /** Why Record cannot record here (no capture addon, or no recorder), whether it is on or off. */
+  recordBlocked: string | null;
   errors: LogLine[];
   now: number;
   canCapture: boolean;
@@ -238,9 +282,11 @@ export function LiveStrip(props: LiveStripProps) {
           ? take.reason
           : take?.state === "starting"
             ? "Waiting for the game's window to start recording."
-            : props.recordOn
-              ? "Record is on; the next run is recorded."
-              : "Turn on Record to keep this run and mark it up afterwards. Mark up still works on the live frame.";
+            : props.recordBlocked
+              ? props.recordBlocked
+              : props.recordOn
+                ? "Record is on; the next run is recorded."
+                : "Turn on Record to keep this run and mark it up afterwards. Mark up still works on the live frame.";
   return (
     <div className="pl-strip">
       <span className="pl-strip__off">

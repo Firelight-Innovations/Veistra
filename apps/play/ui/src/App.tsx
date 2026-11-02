@@ -81,6 +81,9 @@ import "./App.css";
 /** Lines kept in the pane; the backend keeps its own, larger, bound. */
 const LOG_KEEP = 2000;
 const POLL_MS = 500;
+/** How long F7 waits for a take the game's own exit is still writing. */
+const SAVING_WAIT_MS = 5_000;
+const SAVING_POLL_MS = 250;
 
 type View = { kind: "live" } | { kind: "review"; take: string };
 type Drawer = "closed" | "output" | "errors" | "notes";
@@ -88,6 +91,14 @@ type Drawer = "closed" | "output" | "errors" | "notes";
 const PLAY_TARGET = { app: "play", label: "Play" };
 
 const leaf = (p: string | null | undefined) => (p ? p.slice(p.lastIndexOf("/") + 1) : "");
+
+/** Why a run that ended has no take: Record off, unable to record, or never in the pane. */
+function notRecorded(recordOn: boolean, blocked: string | null): string {
+  if (blocked) return `This run was not recorded. ${blocked}`;
+  if (recordOn)
+    return "Nothing was recorded: a take starts once the game's window is in the pane, and this run's never got there.";
+  return "This run was not recorded, so there is no take to review. Turn on Record.";
+}
 
 /** The excalidraw pins of a markup, with where each sits on the shown frame. */
 function pinCentres(json: MarkupExport["json"]): { n: number; x: number; y: number }[] {
@@ -132,6 +143,12 @@ export default function App() {
   const cursor = useRef(0);
   const keyCursor = useRef(0);
   const runId = useRef<number | null>(null);
+  /** Whether a poll has answered since this pane opened. */
+  const primed = useRef(false);
+  /** The last saved take the poll saw, so a take saved anywhere refreshes Takes. */
+  const savedTake = useRef<string | null>(null);
+  /** The chosen project, for the poll, which outlives every render. */
+  const projectRel = useRef<string | undefined>(undefined);
   const actions = useRef<{ review: () => void; markup: () => void }>({
     review: () => undefined,
     markup: () => undefined,
@@ -142,6 +159,7 @@ export default function App() {
   const projects = status?.projects ?? [];
   const chosen = projects.find((p) => p.rel === project) ?? projects[0] ?? null;
   const chosenRel = chosen?.rel;
+  projectRel.current = chosenRel;
   const running = info?.state.kind === "running";
   const paused = running && info?.paused === true;
   const canRun = found !== null && chosen !== null && chosen.engineMajor >= 4;
@@ -220,20 +238,35 @@ export default function App() {
     let cancelled = false;
     const tick = async () => {
       try {
-        let s = await getState(cursor.current, keyCursor.current);
+        let s = await getState(cursor.current, keyCursor.current, projectRel.current);
         if (cancelled) return;
-        setLive(s.live ?? null);
-        if (!s.run) {
-          setInfo(null);
-          return;
-        }
-        if (runId.current !== s.run.id) {
+        const opening = !primed.current;
+        primed.current = true;
+        let newRun = false;
+        if (s.run && runId.current !== s.run.id) {
           runId.current = s.run.id;
           cursor.current = 0;
           keyCursor.current = 0;
           setLines([]);
-          s = await getState(0, 0);
-          if (cancelled || !s.run) return;
+          s = await getState(0, 0, projectRel.current);
+          if (cancelled) return;
+          newRun = true;
+        }
+        setLive(s.live ?? null);
+        // However the take was saved (Stop, the game quitting, Record off, Pop
+        // out), Takes lists it. Restart's is gone from the session by now, so
+        // doRestart lists its own.
+        const t = s.live?.session?.take;
+        if (t?.state === "saved" && t.id !== savedTake.current) {
+          savedTake.current = t.id;
+          void loadTakes();
+        }
+        // Live mark up belongs to the run it paused; once that has ended or
+        // been replaced, a drawing left open would cover the next run.
+        if (!s.run || newRun || s.run.state.kind !== "running") setMarking(null);
+        if (!s.run) {
+          setInfo(null);
+          return;
         }
         setInfo(s.run);
         if (s.log && s.log.lines.length > 0) {
@@ -242,8 +275,20 @@ export default function App() {
           setLines((prev) => [...prev, ...fresh].slice(-LOG_KEEP));
         }
         const keys = s.live?.session?.keys ?? [];
+        // Keys from before this pane opened were for whoever had it then;
+        // replaying an old F7 would stop the game.
+        if (opening) {
+          keyCursor.current = keys.reduce((m, k) => Math.max(m, k.seq), keyCursor.current);
+          return;
+        }
+        // A new run's keys wait a tick, the cursor left where it is: the
+        // actions read the last render, which has not drawn this run yet.
+        if (newRun) return;
+        // A slow answer can overlap the next tick's; a key either one has
+        // already acted on is not acted on again.
         for (const k of keys) {
-          keyCursor.current = Math.max(keyCursor.current, k.seq);
+          if (k.seq <= keyCursor.current) continue;
+          keyCursor.current = k.seq;
           if (k.key === "F7") actions.current.review();
           if (k.key === "Ctrl Shift M") actions.current.markup();
         }
@@ -257,7 +302,14 @@ export default function App() {
       cancelled = true;
       clearInterval(timer);
     };
-  }, []);
+  }, [loadTakes]);
+
+  // The frame live mark up drew on is let go with the drawing, however it ends.
+  useEffect(() => {
+    if (!marking) return;
+    const url = marking.url;
+    return () => URL.revokeObjectURL(url);
+  }, [marking]);
 
   const guarded = useCallback(async (fn: () => Promise<unknown>) => {
     setProblem(null);
@@ -275,6 +327,7 @@ export default function App() {
         setInfo(s.run);
         setLive(s.live ?? null);
         setShot(null);
+        setMarking(null);
         setView({ kind: "live" });
       }),
     [chosenRel, guarded],
@@ -294,9 +347,12 @@ export default function App() {
     () =>
       guarded(async () => {
         setInfo((await restart(chosenRel)).run);
+        setMarking(null);
         void loadAddon(chosenRel);
+        // Restart saved the old run's take; the poll only sees the new run's.
+        void loadTakes();
       }),
-    [chosenRel, guarded, loadAddon],
+    [chosenRel, guarded, loadAddon, loadTakes],
   );
 
   const doStop = useCallback(
@@ -305,6 +361,7 @@ export default function App() {
         const s = await stop();
         setInfo(s.run);
         setLive(s.live ?? null);
+        setMarking(null);
         void loadTakes();
       }),
     [guarded, loadTakes],
@@ -331,13 +388,24 @@ export default function App() {
         if (s) {
           setInfo(s.run);
           setLive(s.live ?? null);
+          setMarking(null);
         }
-        const t = (s?.live ?? live)?.session?.take;
+        let t = (s?.live ?? live)?.session?.take;
+        // The game quit by itself a moment ago, and its take is being written.
+        for (let waited = 0; t?.state === "saving" && waited < SAVING_WAIT_MS;) {
+          await new Promise((r) => setTimeout(r, SAVING_POLL_MS));
+          waited += SAVING_POLL_MS;
+          t = (await getState(cursor.current, keyCursor.current, projectRel.current)).live?.session
+            ?.take;
+        }
         if (t?.state === "saved") openReview(t.id);
         else if (t?.state === "failed") setProblem(t.reason);
-        else setNotice("This run was not recorded, so there is no take to review. Turn on Record.");
+        else if (t?.state === "saving")
+          setNotice("The take is still being saved. Open it from Takes in a moment.");
+        else if (!t) setNotice("Nothing has run here yet, so there is no take to review.");
+        else setNotice(notRecorded(recordOn, recordBlocked));
       }),
-    [guarded, running, live, openReview],
+    [guarded, running, live, openReview, recordOn, recordBlocked],
   );
 
   const doCapture = useCallback(async () => {
@@ -379,7 +447,6 @@ export default function App() {
     async (keepPaused: boolean) => {
       const m = marking;
       setMarking(null);
-      if (m) URL.revokeObjectURL(m.url);
       if (m && !m.wasPaused && !keepPaused) await setPaused(false).catch(() => undefined);
     },
     [marking],
@@ -420,7 +487,8 @@ export default function App() {
       if (take?.state === "recording" && session) {
         const markupPng = await blobBase64(result.png);
         const atMs = m.atWall - session.zero;
-        setLiveNotes((n) => [...n, { atMs, body: words, markup: json, markupPng, target }]);
+        const note = { take: take.id, atMs, body: words, markup: json, markupPng, target };
+        setLiveNotes((n) => [...n, note]);
         setNotice("Kept as a note on this take. It opens with the take in review.");
       } else {
         await guarded(() => sendMarkup(PLAY_TARGET, result.png, json, info?.scene ?? null));
@@ -433,9 +501,12 @@ export default function App() {
 
   actions.current = { review: () => void stopAndReview(), markup: () => void startLiveMarkup() };
 
+  const canEnableCapture = addon !== null && addon.addon !== "yes" && !readOnly;
+
+  /** Record, and the blocked Record: off and blocked offers Enable capture; on, it always turns off. */
   const toggleRecord = useCallback(() => {
     if (!recordOn && recordBlocked) {
-      if (addon && addon.addon !== "yes" && !readOnly) setConsentOpen(true);
+      if (canEnableCapture) setConsentOpen(true);
       else setProblem(recordBlocked);
       return;
     }
@@ -443,7 +514,12 @@ export default function App() {
       await setRecord(!recordOn, chosenRel);
       setLive((l) => (l ? { ...l, record: { ...l.record, on: !recordOn } } : l));
     });
-  }, [recordOn, recordBlocked, addon, readOnly, guarded, chosenRel]);
+  }, [recordOn, recordBlocked, canEnableCapture, guarded, chosenRel]);
+
+  const onLiveNotesTaken = useCallback(
+    (id: string) => setLiveNotes((notes) => notes.filter((n) => n.take !== id)),
+    [],
+  );
 
   const doOpenEditor = useCallback(
     () => guarded(() => openInGodot(chosenRel)),
@@ -566,8 +642,20 @@ export default function App() {
       <ToolbarButton disabled title="Review opens when the file is closed, about a second">
         Saving take…
       </ToolbarButton>
-    ) : recordBlocked && !recordOn ? (
-      <ToolbarButton title={`${recordBlocked} Click to enable capture.`} onClick={toggleRecord}>
+    ) : recordBlocked && !recording ? (
+      // Record on with capture gone records nothing, so it shows as blocked
+      // too (§5.1), and its click turns the setting off. A take already
+      // going keeps its clock: removing the script does not stop it.
+      <ToolbarButton
+        title={
+          recordOn
+            ? `${recordBlocked} Record is on, but nothing is recorded until then. Click to turn Record off (Ctrl R).`
+            : canEnableCapture
+              ? `${recordBlocked} Click to enable capture.`
+              : recordBlocked
+        }
+        onClick={toggleRecord}
+      >
         <span className="pl-rec-ring pl-rec-ring--off" aria-hidden="true" />
         Record
       </ToolbarButton>
@@ -832,7 +920,7 @@ export default function App() {
           takeId={view.take}
           readOnly={readOnly}
           liveNotes={liveNotes}
-          onLiveNotesTaken={() => setLiveNotes([])}
+          onLiveNotesTaken={onLiveNotesTaken}
           onPlayScene={(scene) =>
             void guarded(async () => {
               if (!recordOn && !recordBlocked) await setRecord(true, chosenRel);
@@ -856,7 +944,6 @@ export default function App() {
               frameRect={frameRect}
               overlays={overlays}
               coveredHere={pickerOpen || consentOpen || shot !== null}
-              hidden={false}
               marking={marking}
               hint={hint}
               onMarkupDone={(r, shown) => void doneLiveMarkup(r, shown)}
@@ -905,6 +992,7 @@ export default function App() {
             session={session}
             running={running}
             recordOn={recordOn}
+            recordBlocked={recordBlocked}
             errors={errors}
             now={now}
             canCapture={running && (info?.captureReady ?? false) && !capturing}

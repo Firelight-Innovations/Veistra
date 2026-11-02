@@ -12,6 +12,7 @@ import {
   dismissMark,
   emptyDoc,
   errorsNear,
+  markSent,
   noteStatus,
   normalize,
   parseLog,
@@ -44,6 +45,21 @@ describe("notes", () => {
     doc = updateNote(doc, 2, { body: "wall" });
     expect(sendable(doc).map((n) => n.n)).toEqual([2]);
     expect(removeNote(doc, 1).notes).toHaveLength(2);
+  });
+
+  it("stamp the notes Send filed and leave the rest, edits included, as they are", () => {
+    let { doc } = addNote(emptyDoc(), 1_000);
+    ({ doc } = addNote(doc, 2_000));
+    doc = updateNote(doc, 1, { body: "door, typed while sending" });
+    doc = updateNote(doc, 2, { body: "wall, written after Send began" });
+    const sent = markSent(doc, [[1, "c1"]], ".veistra/feedback/t-1");
+    expect(sent.notes[0]).toMatchObject({
+      body: "door, typed while sending",
+      commentId: "c1",
+      packet: ".veistra/feedback/t-1",
+    });
+    expect(sent.notes[1].commentId).toBeUndefined();
+    expect(sendable(sent).map((n) => n.n)).toEqual([2]);
   });
 
   it("read a notes.json leniently and keep numbers above what is there", () => {

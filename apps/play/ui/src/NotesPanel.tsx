@@ -30,6 +30,9 @@ export interface NotesPanelProps {
   selected: number | null;
   sending: boolean;
   readOnly: boolean;
+  /** Kept by Review, because Ctrl Enter sends with them too. */
+  options: SendOptions;
+  onOptions: (options: SendOptions) => void;
   onSelect: (n: number) => void;
   onChange: (n: number, patch: Partial<NoteDraft>) => void;
   onDelete: (n: number) => void;
@@ -38,7 +41,7 @@ export interface NotesPanelProps {
   onDismiss: (ms: number) => void;
   onVerdict: (comment: string, verdict: Verdict, reply?: string) => void;
   onPlayScene: (scene: string | undefined) => void;
-  onSend: (options: SendOptions) => void;
+  onSend: () => void;
 }
 
 function when(note: NoteDraft): string {
@@ -204,7 +207,7 @@ function NoteCard(props: {
 }
 
 export function NotesPanel(props: NotesPanelProps) {
-  const [options, setOptions] = useState<SendOptions>({ contact: true });
+  const { options } = props;
   const [showResolved, setShowResolved] = useState(false);
   const rows = props.notes.map((note) => ({
     note,
@@ -303,7 +306,7 @@ export function NotesPanel(props: NotesPanelProps) {
           <input
             type="checkbox"
             checked={options.contact}
-            onChange={(e) => setOptions({ ...options, contact: e.target.checked })}
+            onChange={(e) => props.onOptions({ ...options, contact: e.target.checked })}
           />
           Contact sheet per note, 1 frame a second
         </label>
@@ -323,7 +326,7 @@ export function NotesPanel(props: NotesPanelProps) {
               ? "This is the main checkout, which is read-only; open a worktree to send notes."
               : "Write the feedback packet and tell the agent (Ctrl Enter)"
           }
-          onClick={() => props.onSend(options)}
+          onClick={props.onSend}
         >
           {props.sending
             ? "Sending…"
