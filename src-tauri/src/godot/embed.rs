@@ -252,12 +252,16 @@ impl Inner {
 
 /// One game's window and what was last asked of it.
 ///
-/// **Placing never blocks the caller.** Moving another process's window waits
-/// for that process to handle the move, and a game stuck in a loop never does.
-/// Window moves and tab switches arrive on Veistra's main thread, so
+/// **Placing never blocks the main thread.** Moving another process's window
+/// waits for that process to handle the move, and a game stuck in a loop never
+/// does. Window moves and tab switches arrive on Veistra's main thread, so
 /// [`Embed::reapply`] only records the newest placement and a thread of the
 /// embed's own makes it. `SWP_ASYNCWINDOWPOS` alone was rejected: it stops
 /// being asynchronous once the owner link has joined the two input queues.
+/// Attach and Dock never run on the main thread, and make their first
+/// placement themselves, so the window has the pane's size when a take starts;
+/// having the take wait for the worker instead was rejected as a counter and
+/// a timeout to buy the same order.
 pub struct Embed {
     inner: Arc<Inner>,
     worker: Once,
@@ -325,9 +329,10 @@ impl Embed {
 
     /// Find the window of `pids` (the game and anything it started) and
     /// place it over the pane, or give up and say why. Blocks for up to
-    /// [`FIND_WINDOW_FOR`]; called on the thread a run starts. `owner` is
-    /// asked once the window exists, because Veistra may have moved while
-    /// the game started. `alive` stops the search when the game exits first.
+    /// [`FIND_WINDOW_FOR`] and then for the first placement; called on the
+    /// thread a run starts. `owner` is asked once the window exists, because
+    /// Veistra may have moved while the game started. `alive` stops the
+    /// search when the game exits first.
     pub fn attach(
         &self,
         pids: &dyn Fn() -> Vec<u32>,
@@ -366,16 +371,14 @@ impl Embed {
             self.inner.win.embed(hwnd, owner.hwnd).map(|saved| {
                 *self.inner.saved.lock_or_panic() = Some(saved);
                 self.set(State::Embedded);
+                self.place_now(&owner);
             })
         };
-        match embedded {
-            Ok(()) => self.reapply(&owner),
-            Err(e) => {
-                crate::veistra_log!("play: could not place the game in the pane: {e}");
-                self.set(State::OwnWindow {
-                    reason: "Playing in its own window.".into(),
-                });
-            }
+        if let Err(e) = embedded {
+            crate::veistra_log!("play: could not place the game in the pane: {e}");
+            self.set(State::OwnWindow {
+                reason: "Playing in its own window.".into(),
+            });
         }
         Some(hwnd)
     }
@@ -404,29 +407,60 @@ impl Embed {
         *self.inner.last.lock_or_panic()
     }
 
-    /// Put the window where the pane last said, or hide it, by handing the
-    /// placement to the worker. Only while embedded: a popped-out or own
-    /// window is the person's to move.
-    pub fn reapply(&self, owner: &Owner) {
+    /// Where the pane last said, against `owner`; `None` unless embedded,
+    /// because a popped-out or own window is the person's to move. Callers
+    /// hold the queue while working it out, so a placement queued later was
+    /// worked out from a box at least as new.
+    fn placement(&self, owner: &Owner) -> Option<Placement> {
         if self.state() != State::Embedded {
-            return;
+            return None;
         }
-        let (Some(hwnd), Some(last)) = (self.hwnd(), self.last()) else {
-            return;
-        };
+        let (hwnd, last) = (self.hwnd()?, self.last()?);
         let shown = *self.inner.shown.lock_or_panic();
-        let placement = Placement {
+        Some(Placement {
             hwnd,
             at: to_screen(last.rect, owner.origin, scale_for(last.dpr, owner.scale)),
             visible: last.visible && shown && last.rect.w >= 1.0 && last.rect.h >= 1.0,
             owner: owner.hwnd,
-        };
-        self.inner.queue.lock_or_panic().next = Some(placement);
+        })
+    }
+
+    /// Put the window where the pane last said, or hide it, by handing the
+    /// placement to the worker.
+    pub fn reapply(&self, owner: &Owner) {
+        {
+            let mut queue = self.inner.queue.lock_or_panic();
+            let Some(placement) = self.placement(owner) else {
+                return;
+            };
+            queue.next = Some(placement);
+        }
         self.inner.wake.notify_all();
         self.worker.call_once(|| {
             let inner = self.inner.clone();
             std::thread::spawn(move || inner.work());
         });
+    }
+
+    /// The first placement after embedding, made on the caller's thread with
+    /// `ops` held, never the main thread. A take starts right after it, and
+    /// the recorder sizes its video once from the window's client area:
+    /// queued, the move could land after that, while the client area is
+    /// still the whole frameless launch window, and the take would be padded
+    /// out to that size with black.
+    fn place_now(&self, owner: &Owner) {
+        let placement = {
+            let mut queue = self.inner.queue.lock_or_panic();
+            // Anything queued already was worked out from an older box.
+            queue.next = None;
+            self.placement(owner)
+        };
+        let Some(p) = placement else {
+            return;
+        };
+        if let Err(e) = self.inner.win.place(p.hwnd, p.at, p.visible, p.owner) {
+            crate::veistra_log!("play: could not move the game window: {e}");
+        }
     }
 
     /// Pop out: the window gets its caption and borders back and leaves the pane.
@@ -452,19 +486,17 @@ impl Embed {
         Ok(())
     }
 
-    /// Dock: back over the pane.
+    /// Dock: back over the pane, sized to it before this returns.
     pub fn dock(&self, owner: &Owner) -> Result<(), String> {
-        {
-            let _ops = self.inner.ops.lock_or_panic();
-            let hwnd = self.hwnd().ok_or("the game has no window yet")?;
-            if self.state() != State::PoppedOut {
-                return Err("the game is not popped out".into());
-            }
-            let saved = self.inner.win.embed(hwnd, owner.hwnd)?;
-            *self.inner.saved.lock_or_panic() = Some(saved);
-            self.set(State::Embedded);
+        let _ops = self.inner.ops.lock_or_panic();
+        let hwnd = self.hwnd().ok_or("the game has no window yet")?;
+        if self.state() != State::PoppedOut {
+            return Err("the game is not popped out".into());
         }
-        self.reapply(owner);
+        let saved = self.inner.win.embed(hwnd, owner.hwnd)?;
+        *self.inner.saved.lock_or_panic() = Some(saved);
+        self.set(State::Embedded);
+        self.place_now(owner);
         Ok(())
     }
 }
@@ -848,8 +880,19 @@ mod tests {
         let found = embed.attach(&|| vec![1], &|| Some(owner(1.0)), &|| true);
         assert_eq!(found, Some(7));
         assert_eq!(embed.state(), State::Embedded);
-        wait_for("the first placement", || placed(fake).len() == 1);
+        assert_eq!(placed(fake).len(), 1, "placed before attach returned");
         embed
+    }
+
+    /// The placements made on this thread, in order.
+    fn placed_here(fake: &Fake) -> Vec<Placement> {
+        let me = std::thread::current().id();
+        fake.placed
+            .lock_or_panic()
+            .iter()
+            .filter(|(_, on)| *on == me)
+            .map(|(p, _)| *p)
+            .collect()
     }
 
     #[test]
@@ -1032,8 +1075,33 @@ mod tests {
             })
         };
         embed.attach(&|| vec![1], &now, &|| true);
-        wait_for("the placement", || placed(&fake).len() == 1);
+        assert_eq!(placed(&fake).len(), 1);
         assert_eq!(placed(&fake)[0].at.x, 410);
+    }
+
+    #[test]
+    fn attach_and_dock_size_the_window_to_the_pane_before_a_take_can_start() {
+        // A take starts the moment either returns and sizes its video from
+        // the window then, so the move must already be made, on this thread.
+        let fake = Arc::new(Fake::default());
+        let embed = embedded(&fake);
+        let pane = ScreenRect {
+            x: 110,
+            y: 50,
+            w: 640,
+            h: 100,
+        };
+        assert_eq!(
+            placed_here(&fake).iter().map(|p| p.at).collect::<Vec<_>>(),
+            [pane]
+        );
+        embed.pop_out(Some(&owner(1.0))).unwrap();
+        embed.set_rect(shown(rect(20.0, 800.0)), Some(&owner(1.0)));
+        embed.dock(&owner(1.0)).unwrap();
+        let docked = placed_here(&fake);
+        assert_eq!(docked.len(), 2, "Dock placed it before returning");
+        assert_eq!((docked[1].at.x, docked[1].at.w), (120, 800));
+        assert!(docked[1].visible);
     }
 
     #[test]

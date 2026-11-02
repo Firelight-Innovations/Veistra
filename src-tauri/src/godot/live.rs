@@ -113,7 +113,10 @@ fn owner(ctx: &Ctx, window: Option<&str>) -> Option<Owner> {
 
 /// The pane's box. Leaving the live view (review, or the pane going away)
 /// sends `visible: false` with any box, 0 x 0 included; the box it had is
-/// kept then, so the next launch is still sized to the pane.
+/// kept then, so the next launch is still sized to the pane. A call with no
+/// `window` keeps the one the pane last named: only the shell knows it, so
+/// a page that has not heard from the shell sends none, and taking that for
+/// `main` would re-own the game to `main`, over `main`'s UI.
 fn embed_rect(ctx: &Ctx, p: &P) -> Result<Value, RpcError> {
     if ![p.x, p.y, p.w, p.h].iter().all(|v| v.is_finite()) || p.w < 0.0 || p.h < 0.0 {
         return Err(RpcError::new(INVALID_PARAMS, "the box needs x, y, w and h"));
@@ -128,21 +131,31 @@ fn embed_rect(ctx: &Ctx, p: &P) -> Result<Value, RpcError> {
         visible: p.visible,
         dpr: p.dpr.filter(|d| d.is_finite() && *d > 0.0),
     };
-    let last = Last::then(ctx.godot.pane(&ctx.key).map(|old| old.last()), asked);
+    let old = ctx.godot.pane(&ctx.key);
+    let last = Last::then(old.as_ref().map(Pane::last), asked);
+    let window = p.window.clone().or_else(|| old.and_then(|o| o.window));
     ctx.godot.set_pane(
         &ctx.key,
         Pane {
             rect: last.rect,
             visible: last.visible,
-            window: p.window.clone(),
+            window: window.clone(),
             dpr: last.dpr,
         },
     );
     if let Some(s) = session(ctx) {
         s.embed
-            .set_rect(asked, owner(ctx, p.window.as_deref()).as_ref());
+            .set_rect(asked, owner(ctx, window.as_deref()).as_ref());
     }
     Ok(json!({ "ok": true }))
+}
+
+/// The Veistra window cluster `key`'s pane is in, looked up when called, for
+/// the thread that waits for a game's window: it asks once the window exists,
+/// and by then the pane may have named its window, or moved, since Play.
+pub fn pane_owner(ctx: &Ctx) -> impl Fn() -> Option<Owner> + Send + Sync + 'static {
+    let (owner, window) = (ctx.owner.clone(), ctx.godot.pane_window(&ctx.key));
+    move || owner(window().as_deref())
 }
 
 /// Pop out ends a take going: the recorder captures the whole window, and a
@@ -775,6 +788,55 @@ mod tests {
         );
         let bad = json!({ "x": 0, "y": 0, "w": -1, "h": 0, "visible": false });
         assert!(call(&c, "play/embed-rect", Some(&bad)).unwrap().is_err());
+    }
+
+    #[test]
+    fn a_hide_without_a_window_keeps_the_game_in_the_window_the_pane_is_in() {
+        let w = world();
+        let asked = Arc::new(std::sync::Mutex::new(Vec::<Option<String>>::new()));
+        let log = asked.clone();
+        let c = Ctx {
+            owner: Arc::new(move |label| {
+                log.lock().unwrap().push(label.map(str::to_string));
+                Some(Owner {
+                    hwnd: if label == Some("w2") { 2 } else { 1 },
+                    origin: (0, 0),
+                    scale: 1.0,
+                })
+            }),
+            ..ctx(&w)
+        };
+        // Play pressed from review in a second Veistra window: the live view
+        // has not named its window yet.
+        let attach_owner = pane_owner(&c);
+        let spec = super::super::runner::RunSpec {
+            program: super::super::testing::fake_godot(w.dir.path(), true),
+            project: w.dir.path().join("game"),
+            scene: None,
+            channel: None,
+            window: None,
+        };
+        let run = w.godot.runner.start("c1", spec).unwrap();
+        w.godot
+            .set_session("c1", Arc::new(Session::new(run.id, None, None)));
+        let live = json!({ "x": 10, "y": 20, "w": 800, "h": 400, "visible": true, "window": "w2" });
+        call(&c, "play/embed-rect", Some(&live)).unwrap().unwrap();
+        let hide = json!({ "x": 0, "y": 0, "w": 0, "h": 0, "visible": false });
+        call(&c, "play/embed-rect", Some(&hide)).unwrap().unwrap();
+        let window = w.godot.pane("c1").and_then(|p| p.window);
+        // Clean-up only: nothing below depends on how the stop went.
+        let _ = w.godot.runner.stop("c1");
+        assert_eq!(window.as_deref(), Some("w2"));
+        assert_eq!(
+            asked.lock().unwrap().last(),
+            Some(&Some("w2".to_string())),
+            "the hide is made in w2, not main"
+        );
+        assert_eq!(
+            attach_owner().map(|o| o.hwnd),
+            Some(2),
+            "attach asks where the pane is when the game shows up"
+        );
     }
 
     #[test]

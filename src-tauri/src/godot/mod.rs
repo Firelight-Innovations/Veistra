@@ -84,8 +84,9 @@ pub struct Godot {
     next_command: AtomicU64,
     /// Each cluster's latest run's session: its window, take and marks.
     sessions: Mutex<HashMap<String, Arc<session::Session>>>,
-    /// Each cluster's Play pane box, kept between runs.
-    panes: Mutex<HashMap<String, live::Pane>>,
+    /// Each cluster's Play pane box, kept between runs. Shared, so a thread
+    /// that outlives the call that started it can read it ([`Self::pane_window`]).
+    panes: Arc<Mutex<HashMap<String, live::Pane>>>,
 }
 
 impl Godot {
@@ -157,6 +158,18 @@ impl Godot {
 
     pub fn set_pane(&self, key: &str, pane: live::Pane) {
         self.panes.lock_or_panic().insert(key.to_string(), pane);
+    }
+
+    /// Reads the label of the Veistra window cluster `key`'s pane is in each
+    /// time it is called, not once now.
+    pub fn pane_window(&self, key: &str) -> impl Fn() -> Option<String> + Send + Sync + 'static {
+        let (panes, key) = (self.panes.clone(), key.to_string());
+        move || {
+            panes
+                .lock_or_panic()
+                .get(&key)
+                .and_then(|p| p.window.clone())
+        }
     }
 
     /// The engine version a take records: the last executable found.

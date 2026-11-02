@@ -388,11 +388,8 @@ fn start_run(ctx: &Ctx, project: &GodotProject, scene: Option<String>) -> Result
             session.embed.forget();
         }));
     }
-    let owner_fn = ctx.owner.clone();
-    let label = pane.and_then(|p| p.window);
-    std::thread::spawn(move || {
-        super::session::attach(&session, &run, &|| owner_fn(label.as_deref()));
-    });
+    let owner = super::live::pane_owner(ctx);
+    std::thread::spawn(move || super::session::attach(&session, &run, &owner));
     Ok(play_state(ctx, 0))
 }
 
