@@ -107,8 +107,9 @@ fn kind(anchor: &Anchor) -> &'static str {
 /// - `note_fixed`: an agent reported an open or working note fixed. `attempt`
 ///   is which fix this is (2 after one Still broken); `commit` whether it
 ///   named one.
-/// - `note_resolved`: the note became resolved. `checked` is whether the
-///   person closed it from Fixed, check it (Looks good) rather than outright.
+/// - `note_resolved`: the note became resolved. `attempt` counts the agent's
+///   fixes, the one just checked included; `checked` is whether the person
+///   closed it from Fixed, check it (Looks good) rather than outright.
 ///
 /// A new note is `note_created`, which the page reports; Still broken and
 /// Agent working are not launch events (spec §13).
@@ -118,17 +119,19 @@ fn usage(change: &Change) -> Option<(&'static str, Value)> {
         return None;
     }
     let before = change.before?;
+    // The fix on the comment now, or the one a person's own resolve of a fixed
+    // note has just written over: only an agent ever leaves a note fixed.
+    let unchecked = before == Status::Fixed
+        || comment
+            .resolution
+            .as_ref()
+            .is_some_and(|r| r.by == Author::Agent);
     let fixes = comment
         .replies
         .iter()
         .filter(|r| r.by == Author::Agent)
         .count()
-        + usize::from(
-            comment
-                .resolution
-                .as_ref()
-                .is_some_and(|r| r.by == Author::Agent),
-        );
+        + usize::from(unchecked);
     match comment.status {
         Status::Fixed if before.is_active() => {
             let commit = comment
@@ -233,6 +236,11 @@ mod tests {
             heard(Some(Status::Open), &c),
             Some(("note_resolved", json!({ "attempt": 0, "checked": false })))
         );
+        assert_eq!(
+            heard(Some(Status::Fixed), &c),
+            Some(("note_resolved", json!({ "attempt": 1, "checked": true }))),
+            "a person's own note over the agent's fix still counts that fix"
+        );
     }
 
     #[test]
@@ -300,5 +308,29 @@ mod tests {
         );
         assert_eq!(on_root(clusters(), None, Some("c4")), ["c4"]);
         assert!(on_root(clusters(), None, None).is_empty());
+    }
+
+    /// Every name this module sends is one the webview listens for or
+    /// declares. A typo on either side fails nowhere at run time: the push
+    /// reaches no pane, or the shell refuses the event with a console line.
+    #[test]
+    fn the_names_sent_are_the_ones_the_webview_knows() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let read = |rel: &str| std::fs::read_to_string(repo.join(rel)).expect(rel);
+
+        let feature = read("src/shell/telemetry/features/godot.ts");
+        assert!(feature.contains(&format!("id: \"{FEATURE}\"")));
+        for event in ["note_fixed", "note_resolved"] {
+            assert!(feature.contains(&format!("\"{event}\",")), "{event}");
+        }
+
+        let bindings = read("src/bindings.ts");
+        assert!(bindings.contains(&format!("COMMENTS_CHANGED_EVENT = \"{CHANGED_EVENT}\"")));
+        assert!(bindings.contains(&format!(
+            "BACKEND_USAGE_EVENT = \"{}\"",
+            crate::telemetry::BACKEND_EVENT
+        )));
+        let apps = read("apps/shared/commentEvents.ts");
+        assert!(apps.contains(&format!("COMMENTS_CHANGED = \"{CHANGED_EVENT}\"")));
     }
 }

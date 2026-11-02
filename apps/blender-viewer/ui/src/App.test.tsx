@@ -244,6 +244,34 @@ describe("Blender Viewer toolbar", () => {
     expect(lists()).toBe(before + 1);
   });
 
+  it("drops an earlier load failure once a pushed change lists fine", async () => {
+    backend();
+    const listed = bridge.invoke.getMockImplementation()!;
+    bridge.invoke.mockImplementation((method: string, ...rest: unknown[]) =>
+      method === "comments/list" ? Promise.reject(new Error("busy")) : listed(method, ...rest),
+    );
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Comments" }));
+    expect(await screen.findByText("Couldn't load comments.")).toBeTruthy();
+    await waitFor(() => expect(bridge.handlers.has("comments:changed")).toBe(true));
+
+    backend(undefined, {}, [
+      {
+        id: "a",
+        anchor: { kind: "mesh", part: "Frame", material: "none" },
+        author: "user",
+        body: "too tall",
+        status: "open",
+        created: 1,
+        updated: 1,
+      },
+    ]);
+    bridge.handlers.get("comments:changed")?.({ id: "a", kind: "mesh", status: "open" });
+    expect(await screen.findByText("1 open · 0 resolved")).toBeTruthy();
+    expect(screen.getByText("too tall")).toBeTruthy();
+    expect(screen.queryByText("Couldn't load comments.")).toBeNull();
+  });
+
   it("reaches the wireframe pass from the view switch, with the parts list still beside it", async () => {
     backend();
     render(<App />);

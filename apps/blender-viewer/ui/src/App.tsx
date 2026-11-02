@@ -188,10 +188,14 @@ export default function App() {
 
   // A comment changed somewhere in this environment: an agent's fix, a verdict from another
   // pane, Send's notes. Listed again quietly, so an open panel updates in place rather than
-  // blinking through its loading state; a failed quiet list keeps what is on screen.
+  // blinking through its loading state; a failed quiet list keeps what is on screen, and a
+  // good one clears an earlier failure, which would otherwise hide the list it just fetched.
   useCommentsChanged(() => {
     listComments()
-      .then(setComments)
+      .then((next) => {
+        setComments(next);
+        setCommentsError(null);
+      })
       .catch(() => {});
   });
 
