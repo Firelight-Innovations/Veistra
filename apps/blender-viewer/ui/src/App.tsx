@@ -25,6 +25,7 @@ import {
   verdictComment,
   type Comment,
 } from "../../../shared/comments";
+import { useCommentsChanged } from "../../../shared/commentEvents";
 import { SegmentedControl } from "../../../shared/SegmentedControl";
 import { SendButton, SendFooter, useSendAction } from "../../../shared/SendFooter";
 import { ToolbarButton, ViewerToolbar } from "../../../shared/ViewerToolbar";
@@ -184,6 +185,15 @@ export default function App() {
       setCommentsLoading(false);
     }
   }, []);
+
+  // A comment changed somewhere in this environment: an agent's fix, a verdict from another
+  // pane, Send's notes. Listed again quietly, so an open panel updates in place rather than
+  // blinking through its loading state; a failed quiet list keeps what is on screen.
+  useCommentsChanged(() => {
+    listComments()
+      .then(setComments)
+      .catch(() => {});
+  });
 
   const refresh = useCallback(async () => {
     try {

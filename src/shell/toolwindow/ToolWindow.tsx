@@ -46,6 +46,7 @@ import type {
 import { relayPageEscape } from "./pageEscape";
 import { relayChord } from "./relayChord";
 import { agentTabFrames } from "./agentTabFrames";
+import { relayCommentChanges } from "./commentFrames";
 import { createFrameSearch } from "./frameSearch";
 import {
   OPENED_EVENT,
@@ -1464,6 +1465,18 @@ const ToolWindow = forwardRef<
       unlisten?.();
     };
   }, []);
+
+  // A comment was written (`comment_events.rs`): an agent started or fixed a note, the person
+  // gave a verdict, Send filed notes. To every app frame here when this window shows a cluster
+  // on that environment, so open comment lists follow without a reload (`commentFrames.ts`).
+  useEffect(
+    () =>
+      relayCommentChanges(
+        () => frames.current,
+        () => showing.current,
+      ),
+    [],
+  );
 
   // An agent tab's session events, its choice of harness, and word that a harness's models
   // are in (`apps::agent_tab`), each to the one frame it names. Every other frame, an agent tab for another session included,

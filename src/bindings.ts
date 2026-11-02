@@ -526,6 +526,29 @@ export function onFilesChanged(cb: (payload: unknown) => void): Promise<Unlisten
   return listen<unknown>(FILES_CHANGED_EVENT, (e) => cb(e.payload));
 }
 
+/** The event Rust emits after every comment write (`comment_events::CHANGED_EVENT`).
+ *  Payload `{ clusterId, clusters, id, kind, take, status, from }`, relayed untyped. */
+export const COMMENTS_CHANGED_EVENT = "comments:changed";
+
+/** Hear that a comment was written: a new one, a status change, a verdict, an agent's fix. */
+export function onCommentsChanged(cb: (payload: unknown) => void): Promise<UnlistenFn> {
+  return listen<unknown>(COMMENTS_CHANGED_EVENT, (e) => cb(e.payload));
+}
+
+/** A usage event reported from Rust (`telemetry::BACKEND_EVENT`):
+ *  `{ feature, event, props }`, checked by `backendTrack.ts` before it is believed. */
+export const BACKEND_USAGE_EVENT = "telemetry:event";
+
+/**
+ * Hear the usage events Rust reports. Rust sends them to the main window alone, and this
+ * listens on this window alone: a global `listen` hears an event sent to any window (Tauri
+ * delivers every event to an `Any` listener), and a second window's pipeline would count it
+ * again.
+ */
+export async function onBackendUsage(cb: (payload: unknown) => void): Promise<UnlistenFn> {
+  return getCurrentWindow().listen<unknown>(BACKEND_USAGE_EVENT, (e) => cb(e.payload));
+}
+
 /** The event Rust emits for every agent tab session change (`apps::agent_tab::EVENT`).
  *  Payload is an `Envelope` from `apps/agent-tab/ui/src/protocol.generated.ts`. */
 export const AGENT_TAB_EVENT = "agent-tab:event";

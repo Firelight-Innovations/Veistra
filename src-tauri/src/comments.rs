@@ -13,6 +13,11 @@
 //! per comment beats an array plus a counter, why there is no in-memory cache
 //! the way [`crate::design_comments`] keeps one, and what still doesn't read
 //! these comments back.
+//!
+//! Every write goes through [`create`] or `change`: the one place the fix
+//! loop's rules are kept, and the one place [`observe`]'s observer hears from
+//! (`crate::comment_events` pushes it to open panes). No `AppHandle` here, so
+//! all of it is tested without an app.
 
 use crate::apps::CallContext;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -22,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use veistra_rpc::{RpcError, INTERNAL_ERROR, INVALID_PARAMS};
 
@@ -75,8 +81,8 @@ pub enum Anchor {
 /// Whose turn a comment reports, and who wrote a [`Resolution`].
 ///
 /// Every comment this build writes is the user's. A resolution is the agent's
-/// when it comes through the context server's `resolve_comment`, which reads
-/// `.veistra/comments/` for an agent; every other resolution is the user's.
+/// when it comes through an MCP tool (the context server's `resolve_comment`,
+/// or `resolve_play_note`); every other resolution is the user's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Author {
@@ -264,7 +270,13 @@ pub fn create(context: &CallContext, draft: Draft) -> Result<Comment, RpcError> 
         created: at,
         updated: at,
     };
+    // No [`WRITES`] here: the id is new, so nothing else can be writing it.
     write_comment_file(&comment_file(&dir, &id), &comment)?;
+    told(&Change {
+        context,
+        before: None,
+        comment: &comment,
+    });
     Ok(comment)
 }
 
@@ -279,18 +291,84 @@ pub fn get(context: &CallContext, id: &str) -> Result<Comment, RpcError> {
     })
 }
 
-/// Read, change and write one comment back, stamping `updated`.
+/// Held from reading a comment to writing it back, so two writers in this
+/// process take turns. An agent's `resolve_play_note` runs on the MCP
+/// listener and the person's Still broken on an app-call worker; without this
+/// the second rename wins and the first one's status or reply is gone. One
+/// lock for every environment, because writes are rare and short.
+///
+/// Poisoning is recovered from, as `takes::NOTES_LOCK` does: the lock guards
+/// no data, and the file it orders is replaced by rename, never half-written.
+static WRITES: Mutex<()> = Mutex::new(());
+
+/// Read, change and write one comment back, stamping `updated`, then tell
+/// the observer. The observer runs after the lock is released, so whatever it
+/// does cannot hold up the next write.
 fn change(
     context: &CallContext,
     id: &str,
     edit: impl FnOnce(&mut Comment, u64) -> Result<(), RpcError>,
 ) -> Result<Comment, RpcError> {
-    let mut comment = get(context, id)?;
-    let at = monotonic_ms();
-    edit(&mut comment, at)?;
-    comment.updated = at;
-    write_comment_file(&comment_file(&comments_dir(context)?, id), &comment)?;
+    let (before, comment) = {
+        let _turn = WRITES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut comment = get(context, id)?;
+        let before = comment.status;
+        let at = monotonic_ms();
+        edit(&mut comment, at)?;
+        comment.updated = at;
+        write_comment_file(&comment_file(&comments_dir(context)?, id), &comment)?;
+        (before, comment)
+    };
+    told(&Change {
+        context,
+        before: Some(before),
+        comment: &comment,
+    });
     Ok(comment)
+}
+
+/// One write, as [`observe`]'s observer hears it.
+pub struct Change<'a> {
+    /// The environment written to, and the cluster the call came from.
+    pub context: &'a CallContext,
+    /// The status before this write; `None` for a new comment.
+    pub before: Option<Status>,
+    /// The comment as written.
+    pub comment: &'a Comment,
+}
+
+type Observer = Box<dyn Fn(&Change) + Send + Sync>;
+
+static OBSERVER: OnceLock<Observer> = OnceLock::new();
+
+/// Hear every comment write from now on. Set once, from `lib.rs`'s setup;
+/// `false` when an observer is already installed, which is left as it was.
+pub fn observe(observer: Observer) -> bool {
+    OBSERVER.set(observer).is_ok()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What [`told`] heard on this thread: before, after, id. Per thread, so
+    /// tests running in parallel never see each other's writes.
+    static HEARD: std::cell::RefCell<Vec<(Option<Status>, Status, String)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn told(change: &Change) {
+    #[cfg(test)]
+    HEARD.with(|heard| {
+        heard.borrow_mut().push((
+            change.before,
+            change.comment.status,
+            change.comment.id.clone(),
+        ))
+    });
+    if let Some(observer) = OBSERVER.get() {
+        observer(change);
+    }
 }
 
 /// Close a comment with a note, recorded as `by`'s: the person's closes it,
@@ -307,6 +385,12 @@ pub fn resolve(
 }
 
 /// [`resolve`], naming the commit the fix is in.
+///
+/// The fix loop's rules are kept here rather than left to callers, so a new
+/// caller cannot break them: an agent reports only on a comment that is still
+/// its work (open or working), so it never replaces the person's Looks good or
+/// its own unchecked fix; and nobody resolves a resolved comment, which would
+/// rewrite what closed it and count it closed twice.
 pub fn resolve_with_commit(
     context: &CallContext,
     id: &str,
@@ -315,6 +399,21 @@ pub fn resolve_with_commit(
     by: Author,
 ) -> Result<Comment, RpcError> {
     change(context, id, |comment, at| {
+        if comment.status == Status::Resolved {
+            return Err(RpcError::new(
+                INVALID_PARAMS,
+                format!("comment `{id}` is already resolved"),
+            ));
+        }
+        if by == Author::Agent && !comment.status.is_active() {
+            return Err(RpcError::new(
+                INVALID_PARAMS,
+                format!(
+                    "comment `{id}` is already {}; the person decides what happens next",
+                    comment.status.name()
+                ),
+            ));
+        }
         comment.status = match by {
             Author::Agent => Status::Fixed,
             Author::User => Status::Resolved,
@@ -790,6 +889,101 @@ mod tests {
             verdict(&ctx, &a.id, Verdict::Broken, None).is_err(),
             "resolved stays resolved"
         );
+    }
+
+    #[test]
+    fn an_agent_cannot_fix_a_fixed_or_resolved_comment() {
+        let env = TempDir::new().expect("tempdir");
+        let ctx = context(env.path());
+        let c = create(&ctx, node_draft("x")).expect("create");
+        resolve(&ctx, &c.id, "first fix".into(), Author::Agent).expect("fix");
+
+        let again = resolve(&ctx, &c.id, "second".into(), Author::Agent).expect_err("fixed");
+        assert_eq!(again.code, INVALID_PARAMS);
+        assert!(again.message.contains("already fixed"), "{}", again.message);
+
+        verdict(&ctx, &c.id, Verdict::Good, None).expect("good");
+        let after = resolve(&ctx, &c.id, "undo".into(), Author::Agent).expect_err("resolved");
+        assert!(after.message.contains("already resolved"));
+        let kept = get(&ctx, &c.id).expect("get");
+        assert_eq!(
+            kept.status,
+            Status::Resolved,
+            "the person's Looks good stands"
+        );
+        assert_eq!(kept.resolution.map(|r| r.note), Some("first fix".into()));
+    }
+
+    #[test]
+    fn resolving_a_resolved_comment_is_refused_for_the_person_too() {
+        let env = TempDir::new().expect("tempdir");
+        let ctx = context(env.path());
+        let c = create(&ctx, node_draft("x")).expect("create");
+        resolve(&ctx, &c.id, "done".into(), Author::User).expect("resolve");
+        let err = resolve(&ctx, &c.id, "done again".into(), Author::User).expect_err("twice");
+        assert_eq!(err.code, INVALID_PARAMS);
+        assert_eq!(
+            get(&ctx, &c.id).expect("get").resolution.map(|r| r.note),
+            Some("done".into())
+        );
+    }
+
+    #[test]
+    fn every_write_tells_the_observer_what_it_was_and_is() {
+        HEARD.with(|h| h.borrow_mut().clear());
+        let env = TempDir::new().expect("tempdir");
+        let ctx = context(env.path());
+        let a = create(&ctx, node_draft("a")).expect("create");
+        start(&ctx, &a.id).expect("start");
+        resolve(&ctx, &a.id, "fixed".into(), Author::Agent).expect("fix");
+        verdict(&ctx, &a.id, Verdict::Broken, Some("no".into())).expect("broken");
+        resolve(&ctx, &a.id, "again".into(), Author::Agent).expect("fix");
+        verdict(&ctx, &a.id, Verdict::Good, None).expect("good");
+        assert!(start(&ctx, &a.id).is_err());
+
+        let heard: Vec<(Option<Status>, Status)> = HEARD.with(|h| {
+            h.borrow()
+                .iter()
+                .map(|(before, after, id)| {
+                    assert_eq!(id, &a.id);
+                    (*before, *after)
+                })
+                .collect()
+        });
+        use Status::*;
+        assert_eq!(
+            heard,
+            vec![
+                (None, Open),
+                (Some(Open), Working),
+                (Some(Working), Fixed),
+                (Some(Fixed), Open),
+                (Some(Open), Fixed),
+                (Some(Fixed), Resolved),
+            ],
+            "a refused write is not heard"
+        );
+    }
+
+    #[test]
+    fn two_threads_writing_one_comment_lose_nothing() {
+        let env = TempDir::new().expect("tempdir");
+        let ctx = context(env.path());
+        let c = create(&ctx, node_draft("x")).expect("create");
+        const ROUNDS: usize = 40;
+        std::thread::scope(|s| {
+            for side in ["left", "right"] {
+                let (ctx, id) = (&ctx, &c.id);
+                s.spawn(move || {
+                    for i in 0..ROUNDS {
+                        let reply = format!("{side} {i}");
+                        verdict(ctx, id, Verdict::Broken, Some(reply)).expect("broken");
+                    }
+                });
+            }
+        });
+        let replies = get(&ctx, &c.id).expect("get").replies;
+        assert_eq!(replies.len(), 2 * ROUNDS, "every reply survived");
     }
 
     #[test]

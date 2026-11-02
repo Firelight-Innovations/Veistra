@@ -10,10 +10,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
-const bridge = vi.hoisted(() => ({ invoke: vi.fn() }));
+const bridge = vi.hoisted(() => ({
+  invoke: vi.fn(),
+  handlers: new Map<string, (payload: unknown) => void>(),
+}));
 
 vi.mock("@veistra/bridge", () => ({
   invoke: bridge.invoke,
+  on: (event: string, cb: (payload: unknown) => void) => {
+    bridge.handlers.set(event, cb);
+    return () => bridge.handlers.delete(event);
+  },
   reportPainted: vi.fn(),
   openIn: vi.fn(),
 }));
@@ -212,6 +219,29 @@ describe("Blender Viewer toolbar", () => {
     ]);
     render(<App />);
     expect(await screen.findByText("Comments · 3 open")).toBeTruthy();
+  });
+
+  it("lists again when a comment changes in another pane or by an agent, without a reload", async () => {
+    const note = (status: string) => ({
+      id: "a",
+      anchor: { kind: "mesh", part: "Frame", material: "none" },
+      author: "user",
+      body: "too tall",
+      status,
+      created: 1,
+      updated: 1,
+    });
+    backend(undefined, {}, [note("open")]);
+    render(<App />);
+    expect(await screen.findByText("Comments · 1 open")).toBeTruthy();
+    await waitFor(() => expect(bridge.handlers.has("comments:changed")).toBe(true));
+    const lists = () => bridge.invoke.mock.calls.filter((c) => c[0] === "comments/list").length;
+    const before = lists();
+
+    backend(undefined, {}, [note("resolved")]);
+    bridge.handlers.get("comments:changed")?.({ id: "a", kind: "mesh", status: "resolved" });
+    expect(await screen.findByText("Comments")).toBeTruthy();
+    expect(lists()).toBe(before + 1);
   });
 
   it("reaches the wireframe pass from the view switch, with the parts list still beside it", async () => {

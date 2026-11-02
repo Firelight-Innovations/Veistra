@@ -99,6 +99,13 @@ comment with a `take` anchor, and the page attaches `packet.md` at the agent's p
 use `list_play_notes`, `start_play_note` and `resolve_play_note` on the workspace server, or
 on the context server from an agent tab.
 
+**Note status reaches panes by push** (#311). Every comment write is announced as
+`comments:changed` (`comment_events.rs`), relayed by each window's shell to the app frames of
+the clusters on that environment, and an app re-lists through `apps/shared/commentEvents.ts`.
+An agent's resolve is a Rust call no frame sees, so this is what turns an open card to "Fixed,
+check it". The same chokepoint reports `godot:note_fixed` and `godot:note_resolved` through
+`telemetry::track`, which hands the event to the main window's shell to check and send.
+
 ### Decisions
 
 | Decision | Chosen | Why, and what was rejected |
@@ -110,12 +117,27 @@ on the context server from an agent tab.
 | Video clip in the packet | Not built | The agent reads the contact sheet; the checkbox is shown disabled with why. |
 | Retention | Ten takes | Open decision 7. |
 | Video size | The window's, not 720p | `windows-capture` crops or pads, it does not scale. The bitrate is fixed at 3.5 Mbit/s, under 60 MB for two minutes. A D3D11 scaling pass is the follow-up. |
+| How note status reaches open panes (#311) | Pushed: `comments:changed` from the comment store's write chokepoint, relayed by the shell to the frames of every cluster on that environment | Polling in each pane was rejected: Review polls every 2 s and the other panes never saw an agent's fix. The file watcher was rejected: it watches only roots a Files frame asked for and fires on every write. Review's poll stays as the fallback. |
+| Where note_fixed and note_resolved fire (#311) | Rust, from the same chokepoint, through `telemetry::track` to the main window's shell, checked against the `godot` feature there | Tracking in a frame misses a fix made while no Play pane is open, and a broadcast is counted once per window. Capture stays in the webview (`docs/telemetry.md` §9). |
+| "Only the user sets resolved" (#311) | Enforced in `comments::resolve_with_commit`, with one write lock across read, edit and rename | Checks only in the MCP tools let a future caller undo a Looks good, and an agent's resolve racing a verdict lost one of them. |
+| One `godot` telemetry feature (#311) | `features/godot.ts`, apps `godot-viewer` and `play`, all eight §13 events declared at once | One feature per app was rejected: `play` becomes a mode of the Godot app (#313), and an app may report for one feature only. Declared whole so later issues add calls, not list edits. |
 
 ### Not verified on a real machine
 
 Built and tested on Linux with unit tests and a Windows type-check; the Win32 embedder, the
 recorder and the GDScript have not run. The acceptance list in section 13 of the design needs
 a Windows 11 pass on the demo game and on Anomaly.
+
+From #311, not yet run in a real Veistra (unit-tested only):
+
+- `comments:changed` reaching every window and being relayed into the right cluster's app
+  frames, including two clusters on one checkout and a cluster in a second window.
+- Spec test 7 end to end: an agent session calls `list_play_notes` and `resolve_play_note` and
+  an open card turns to "Fixed, check it" without a reload. The Blender Viewer listens for the
+  push; Play's review still sees it by its 2 s poll until #313 wires the Godot app.
+- `telemetry:event` sent with `emit_to("main")` arriving once, in the main window's
+  window-targeted listener only, and `godot:note_fixed` / `godot:note_resolved` reaching
+  PostHog in a release build with a project key and consent on.
 
 ## The Godot Viewer
 
