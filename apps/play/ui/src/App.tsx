@@ -149,7 +149,9 @@ export default function App() {
   const savedTake = useRef<string | null>(null);
   /** The chosen project, for the poll, which outlives every render. */
   const projectRel = useRef<string | undefined>(undefined);
-  const actions = useRef<{ review: () => void; markup: () => void }>({
+  /** What the poll's keys do, and the run the render that made them had drawn. */
+  const actions = useRef<{ run: number | null; review: () => void; markup: () => void }>({
+    run: null,
     review: () => undefined,
     markup: () => undefined,
   });
@@ -233,10 +235,20 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
 
-  // One poll loop: the run, its log after the cursor, and new keys.
+  // One poll loop: the run, its log after the cursor, and new keys. A tick is
+  // skipped while the one before it waits for its answer. Two in flight
+  // answered out of step: one sent before a run switch got past the switch's
+  // cursor reset and acted on every key since zero with the last render's
+  // actions (an old F7 said nothing had run while the game ran), and both
+  // added the same log lines. Dropping answers sent before the latest switch
+  // was the other way; it still let answers landing during the switch's own
+  // refetch through, and left the doubled log.
   useEffect(() => {
     let cancelled = false;
+    let inFlight = false;
     const tick = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
         let s = await getState(cursor.current, keyCursor.current, projectRel.current);
         if (cancelled) return;
@@ -281,19 +293,19 @@ export default function App() {
           keyCursor.current = keys.reduce((m, k) => Math.max(m, k.seq), keyCursor.current);
           return;
         }
-        // A new run's keys wait a tick, the cursor left where it is: the
-        // actions read the last render, which has not drawn this run yet.
-        if (newRun) return;
-        // A slow answer can overlap the next tick's; a key either one has
-        // already acted on is not acted on again.
+        // The actions are the last render's. Until it has drawn this run they
+        // would act on the one before (F7 would find nothing running), so the
+        // keys wait, the cursor left where it is, and come again next tick.
+        if (actions.current.run !== s.run.id) return;
         for (const k of keys) {
-          if (k.seq <= keyCursor.current) continue;
           keyCursor.current = k.seq;
           if (k.key === "F7") actions.current.review();
           if (k.key === "Ctrl Shift M") actions.current.markup();
         }
       } catch {
         // A poll that fails is retried on the next tick.
+      } finally {
+        inFlight = false;
       }
     };
     void tick();
@@ -499,7 +511,11 @@ export default function App() {
     [marking, take, session, guarded, info, endLiveMarkup],
   );
 
-  actions.current = { review: () => void stopAndReview(), markup: () => void startLiveMarkup() };
+  actions.current = {
+    run: info?.id ?? null,
+    review: () => void stopAndReview(),
+    markup: () => void startLiveMarkup(),
+  };
 
   const canEnableCapture = addon !== null && addon.addon !== "yes" && !readOnly;
 

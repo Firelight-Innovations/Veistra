@@ -10,9 +10,13 @@
  * covers it, or live mark up is drawing on it, the window is hidden and the
  * box shows the game's last frame as a still instead.
  *
- * Leaving the live view unmounts this, and the unmount hides the game.
- * Keeping it mounted under review with a `hidden` flag was the other way; it
- * would still leave the game shown when the pane's page itself went away.
+ * Opening review unmounts this, and the unmount hides the game. Keeping it
+ * mounted under review with a `hidden` flag was the other way; it kept the
+ * box's measuring, its still and the log running behind review for nothing.
+ * Neither covers the page itself going away (the pane closed, or a cluster
+ * switch reloading the frame), which runs no React cleanup: the backend hides
+ * the game then from the shell's state (`live::sync_visibility`), and nothing
+ * here can take that over.
  */
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import type { MarkupExport } from "@veistra/markup/layer";

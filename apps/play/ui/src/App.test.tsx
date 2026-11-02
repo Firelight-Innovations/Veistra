@@ -484,20 +484,42 @@ describe("Play live view", () => {
     await screen.findByRole("button", { name: /Takes · 1/ }, { timeout: 2000 });
   });
 
-  // Two polls in flight carry the same key when one answers late; both
-  // answers land before the pane draws again.
-  it("acts once on a key that two overlapping polls both carry", async () => {
+  // This replaces "acts once on a key that two overlapping polls both carry":
+  // polls no longer overlap, so that case cannot arise, and what keeps it
+  // from arising is checked here instead.
+  it("sends no poll while one waits for its answer, then acts once on its key", async () => {
     const world = liveBackend();
     render(<App />);
     await screen.findByText("Playing");
     const held: (() => void)[] = [];
     world.held = held;
-    await waitFor(() => expect(held.length).toBeGreaterThanOrEqual(2), { timeout: 2000 });
+    await waitFor(() => expect(held).toHaveLength(1), { timeout: 2000 });
+    const sent = calls("play/state").length;
+    await new Promise((r) => setTimeout(r, 1200));
+    expect(calls("play/state")).toHaveLength(sent);
     world.keys = [{ seq: 1, key: "F7", t: 5 }];
     world.held = null;
-    for (const answer of held) answer();
+    held[0]();
     await screen.findByText("Reviewing");
     expect(calls("play/stop")).toHaveLength(1);
+  });
+
+  // The first answer is late, so the interval fires while it waits. A second
+  // poll sent then answered during the first one's refetch, past the opening
+  // guard, and acted on the old F7 with the first render's actions.
+  it("ignores keys from before the pane opened when its first poll answers late", async () => {
+    const held: (() => void)[] = [];
+    const world = liveBackend({ keys: [{ seq: 3, key: "F7", t: 5 }], held });
+    render(<App />);
+    await waitFor(() => expect(held.length).toBeGreaterThanOrEqual(1));
+    await new Promise((r) => setTimeout(r, 1200));
+    world.held = null;
+    for (const answer of held) answer();
+    await screen.findByText("Playing");
+    await waitFor(() => expect(lastParams("play/state")?.keySince).toBe(3), { timeout: 2000 });
+    expect(calls("play/stop")).toHaveLength(0);
+    expect(screen.queryByText(/Nothing has run here yet/)).toBeNull();
+    expect(screen.queryByText(/not recorded/)).toBeNull();
   });
 
   it("says the window never reached the pane when F7 ends a take still starting", async () => {
