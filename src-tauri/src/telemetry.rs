@@ -3,7 +3,8 @@
 //!
 //! **The capture itself is not here.** Events and recordings leave from the
 //! webview through `posthog-js` (`src/shell/telemetry/`); `docs/telemetry.md`
-//! §9 says why, and is the contract for the whole system.
+//! §9 says why, and is the contract for the whole system. [`track`] hands a
+//! moment that happens only in Rust to the main window's shell to send.
 //!
 //! What *is* here is everything a person's consent does not decide:
 //!
@@ -15,18 +16,19 @@
 //!   `localStorage` because two windows count at once, and a read-modify-write
 //!   in two webviews loses increments that one mutex here does not.
 //!
-//! Nothing in `telemetry.json` leaves the machine by itself. The install id is
-//! sent only once usage data is switched on; the counts never are.
+//! Nothing in `telemetry.json` leaves the machine by itself: the install id is
+//! sent only once usage data is switched on, and the counts never are.
 
 use crate::error::{AppError, Result};
 use crate::sync::MutexExt;
 use crate::userdata::store::Keep;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// The PostHog project key, read at run time and then baked in at build time.
 ///
@@ -246,6 +248,37 @@ pub fn count(app: &AppHandle, key: &str) -> Result<Ledger> {
         )));
     }
     Ok(ledger)
+}
+
+/// The Tauri event a usage event from Rust travels on. Mirrored by
+/// `BACKEND_USAGE_EVENT` in `src/bindings.ts`.
+pub const BACKEND_EVENT: &str = "telemetry:event";
+
+/// The window whose shell forwards [`BACKEND_EVENT`]: `main`, which is there
+/// for as long as Veistra runs (`windows::request_close`).
+const FORWARDER: &str = "main";
+
+/// Report one feature event from Rust, for a moment no webview sees, such as
+/// an agent marking a play note fixed over MCP.
+///
+/// Sent to one window, never broadcast: each window runs its own pipeline,
+/// so a broadcast would be counted once per window. The shell there checks
+/// the feature and event against its registry, cleans `props` and sends only
+/// with the person's consent (`src/shell/telemetry/backendTrack.ts`), exactly
+/// as for an app's `veistra/track`. So `props` follows the same rule: short
+/// categories and counts, never a path, a name or a note's text.
+pub fn track(app: &AppHandle, feature: &str, event: &str, props: Value) {
+    if let Err(e) = app.emit_to(
+        FORWARDER,
+        BACKEND_EVENT,
+        backend_event(feature, event, props),
+    ) {
+        crate::veistra_log!("could not report {feature}:{event}: {e}");
+    }
+}
+
+fn backend_event(feature: &str, event: &str, props: Value) -> Value {
+    json!({ "feature": feature, "event": event, "props": props })
 }
 
 /// Record that a prompt was shown or answered.
@@ -499,6 +532,15 @@ mod tests {
                 last_shown_ms: Some(9),
                 answered_ms: Some(10)
             }
+        );
+    }
+
+    /// The shape `trackFromBackend` reads.
+    #[test]
+    fn a_backend_event_names_its_feature_and_event_and_carries_its_props() {
+        assert_eq!(
+            backend_event("godot", "note_fixed", json!({ "attempt": 1 })),
+            json!({ "feature": "godot", "event": "note_fixed", "props": { "attempt": 1 } })
         );
     }
 

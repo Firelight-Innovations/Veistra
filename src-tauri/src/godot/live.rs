@@ -6,12 +6,13 @@
 //! `play/*` here. The split is by what the method touches: those four drive
 //! the process, these drive the session around it ([`super::session`]).
 
-use super::embed::{CssRect, Last, Owner, State as EmbedState};
 use super::feedback;
 use super::record;
 use super::rpc::{fail, pick_project_for, Ctx};
 use super::session::{Plan, Session, TakeState};
 use super::takes;
+use crate::embed::host::{self, Slot};
+use crate::embed::{Cause, Kind, Owner, State as EmbedState};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use serde::Deserialize;
@@ -21,37 +22,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use veistra_rpc::{RpcError, INVALID_PARAMS};
 
-/// The pane's last box, kept per cluster so a game is launched at its size.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Pane {
-    pub rect: CssRect,
-    pub visible: bool,
-    pub window: Option<String>,
-    /// The Play page's `devicePixelRatio`, monitor scale times View zoom.
-    pub dpr: Option<f64>,
-}
-
-impl Pane {
-    pub fn last(&self) -> Last {
-        Last {
-            rect: self.rect,
-            visible: self.visible,
-            dpr: self.dpr,
-        }
-    }
-}
-
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct P {
     project: Option<String>,
     x: f64,
     y: f64,
-    w: f64,
-    h: f64,
-    visible: bool,
-    window: Option<String>,
-    dpr: Option<f64>,
     on: bool,
     id: Option<String>,
     take: Option<String>,
@@ -77,7 +53,7 @@ pub fn call(ctx: &Ctx, method: &str, raw: Option<&Value>) -> Option<Result<Value
         Err(e) => return Some(Err(e)),
     };
     Some(match method {
-        "play/embed-rect" => embed_rect(ctx, &p),
+        "play/embed-rect" => embed_rect(ctx, raw),
         "play/record" => set_record(ctx, &p),
         "play/mark" => mark(ctx),
         "play/pick" => pick(ctx, &p),
@@ -105,67 +81,51 @@ fn live_session(ctx: &Ctx) -> Result<Arc<Session>, RpcError> {
     session(ctx).ok_or_else(|| fail("no game is running"))
 }
 
-fn owner(ctx: &Ctx, window: Option<&str>) -> Option<Owner> {
-    (ctx.owner)(window)
+/// The Veistra window the game's pane is in.
+fn owner(ctx: &Ctx, s: &Session) -> Option<Owner> {
+    let hosted = ctx.hosts.hosting(&s.embed)?;
+    ctx.hosts.owner_for(&hosted, &ctx.owner)
 }
 
 // --- the pane's box ----------------------------------------------------------
 
-/// The pane's box. Leaving the live view (review, or the pane going away)
-/// sends `visible: false` with any box, 0 x 0 included; the box it had is
-/// kept then, so the next launch is still sized to the pane. A call with no
-/// `window` keeps the one the pane last named: only the shell knows it, so
-/// a page that has not heard from the shell sends none, and taking that for
-/// `main` would re-own the game to `main`, over `main`'s UI.
-fn embed_rect(ctx: &Ctx, p: &P) -> Result<Value, RpcError> {
-    if ![p.x, p.y, p.w, p.h].iter().all(|v| v.is_finite()) || p.w < 0.0 || p.h < 0.0 {
-        return Err(RpcError::new(INVALID_PARAMS, "the box needs x, y, w and h"));
+/// The pane's box, `embed::host`'s box message. It is kept per pane instance,
+/// so the next launch is sized to the pane that pressed Play, and the pane
+/// that sends `visible: true` takes the cluster's game: Play in two panes
+/// hands it between them. A game an agent started with no Play pane open
+/// joins the first pane that shows it, as a Dock.
+fn embed_rect(ctx: &Ctx, raw: Option<&Value>) -> Result<Value, RpcError> {
+    let (asked, window) = host::parse_box(raw)?;
+    let instance = ctx
+        .instance
+        .clone()
+        .ok_or_else(|| fail("play/embed-rect comes from a Play pane, and this call names none"))?;
+    let hosted = session(ctx).and_then(|s| ctx.hosts.hosting(&s.embed));
+    if let (Some(h), true) = (&hosted, asked.visible) {
+        ctx.hosts.claim(h, &instance, (ctx.shown)(&instance));
     }
-    let asked = Last {
-        rect: CssRect {
-            x: p.x,
-            y: p.y,
-            w: p.w,
-            h: p.h,
-        },
-        visible: p.visible,
-        dpr: p.dpr.filter(|d| d.is_finite() && *d > 0.0),
-    };
-    let old = ctx.godot.pane(&ctx.key);
-    let last = Last::then(old.as_ref().map(Pane::last), asked);
-    let window = p.window.clone().or_else(|| old.and_then(|o| o.window));
-    ctx.godot.set_pane(
-        &ctx.key,
-        Pane {
-            rect: last.rect,
-            visible: last.visible,
-            window: window.clone(),
-            dpr: last.dpr,
-        },
-    );
-    if let Some(s) = session(ctx) {
-        s.embed
-            .set_rect(asked, owner(ctx, window.as_deref()).as_ref());
+    ctx.hosts
+        .report_box(&Slot::new(&instance, Kind::Game), asked, window, &ctx.owner);
+    let waiting_for_a_pane = hosted.is_some_and(|h| {
+        matches!(
+            h.embed.state(),
+            EmbedState::OwnWindow {
+                cause: Cause::NoPane,
+                ..
+            }
+        )
+    });
+    if asked.visible && waiting_for_a_pane {
+        dock(ctx)?;
     }
     Ok(json!({ "ok": true }))
-}
-
-/// The Veistra window cluster `key`'s pane is in, looked up when called, for
-/// the thread that waits for a game's window: it asks once the window exists,
-/// and by then the pane may have named its window, or moved, since Play.
-pub fn pane_owner(ctx: &Ctx) -> impl Fn() -> Option<Owner> + Send + Sync + 'static {
-    let (owner, window) = (ctx.owner.clone(), ctx.godot.pane_window(&ctx.key));
-    move || owner(window().as_deref())
 }
 
 /// Pop out ends a take going: the recorder captures the whole window, and a
 /// decorated one would put its title bar in the video.
 fn pop_out(ctx: &Ctx) -> Result<Value, RpcError> {
     let s = live_session(ctx)?;
-    let window = ctx.godot.pane(&ctx.key).and_then(|p| p.window);
-    s.embed
-        .pop_out(owner(ctx, window.as_deref()).as_ref())
-        .map_err(fail)?;
+    s.embed.pop_out(owner(ctx, &s).as_ref()).map_err(fail)?;
     if let Some(run) = ctx.godot.runner.get(&ctx.key) {
         s.finish_take(&run);
     }
@@ -176,8 +136,7 @@ fn pop_out(ctx: &Ctx) -> Result<Value, RpcError> {
 /// of the rest of the run.
 fn dock(ctx: &Ctx) -> Result<Value, RpcError> {
     let s = live_session(ctx)?;
-    let window = ctx.godot.pane(&ctx.key).and_then(|p| p.window);
-    let o = owner(ctx, window.as_deref()).ok_or_else(|| fail("the Veistra window is not known"))?;
+    let o = owner(ctx, &s).ok_or_else(|| fail("the Veistra window is not known"))?;
     s.embed.dock(&o).map_err(fail)?;
     if let (Some(run), Some(root)) = (ctx.godot.runner.get(&ctx.key), ctx.root.as_ref()) {
         let rel = run
@@ -345,11 +304,16 @@ fn pick(ctx: &Ctx, p: &P) -> Result<Value, RpcError> {
 }
 
 /// The frame to show in place of the game while an overlay is open: the
-/// recording's last frame when there is one, else the addon's capture.
+/// recording's last frame while a take runs, else the window's own capture
+/// (`embed::capture`), else the addon's. The capture needs neither Record nor
+/// the addon, so a plain run has a still too.
 fn still(ctx: &Ctx) -> Result<Value, RpcError> {
     let s = live_session(ctx)?;
     if let Some(png) = s.still_png() {
         return Ok(json!({ "png": BASE64.encode(png), "source": "recording" }));
+    }
+    if let Some(png) = s.embed.still_png() {
+        return Ok(json!({ "png": BASE64.encode(png), "source": "capture" }));
     }
     let reply = super::addon::send(
         &channel(&s)?,
@@ -495,49 +459,6 @@ fn notes(ctx: &Ctx, p: &P) -> Result<Value, RpcError> {
     Ok(json!({ "notes": to_value(&wanted)? }))
 }
 
-/// Whether cluster `key`'s Play pane is on screen: the cluster is the one
-/// some window shows, and a Play instance is the active tab of one of its
-/// panes. Anything else (another tab, another cluster, a closed window)
-/// hides the game, which keeps running.
-pub fn play_shown(snapshot: &crate::shell_state::ShellSnapshot, key: &str) -> bool {
-    use crate::layout::PaneNode;
-    fn active(node: &PaneNode, out: &mut Vec<String>) {
-        match node {
-            PaneNode::Leaf { active_tab, .. } => out.extend(active_tab.clone()),
-            PaneNode::Split { children, .. } => children.iter().for_each(|c| active(c, out)),
-        }
-    }
-    snapshot.windows.iter().any(|w| {
-        w.active_cluster_id.as_deref() == Some(key)
-            && w.clusters.iter().filter(|c| c.id == key).any(|c| {
-                let mut tabs = Vec::new();
-                active(&c.tree, &mut tabs);
-                tabs.iter().any(|tab| {
-                    snapshot
-                        .instances
-                        .iter()
-                        .any(|i| &i.id == tab && i.app_id == "play")
-                })
-            })
-    })
-}
-
-/// Hide or show every running game after a change to the shell's state.
-/// Called beside `plane_webview::sync_visibility`, for the same reasons.
-pub fn sync_visibility(app: &tauri::AppHandle, snapshot: &crate::shell_state::ShellSnapshot) {
-    use tauri::Manager;
-    let godot = app.state::<super::Godot>();
-    for (key, session) in godot.live_sessions() {
-        if !session.embed.set_shown(play_shown(snapshot, &key)) {
-            continue;
-        }
-        let label = godot.pane(&key).and_then(|p| p.window);
-        if let Some(owner) = super::rpc::owner_of(app, label.as_deref()) {
-            session.embed.reapply(&owner);
-        }
-    }
-}
-
 /// `root/rel` when `rel` is a plain relative folder (`.` for the root) that
 /// holds a `project.godot`. Reads one file, never the environment.
 pub fn project_at(root: &Path, rel: &str) -> Option<PathBuf> {
@@ -617,74 +538,10 @@ pub fn state(ctx: &Ctx, key_since: u64, project: Option<&str>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::PaneNode;
-    use crate::shell_state::{
-        Cluster, ShellSnapshot, SurfaceInstance, SurfaceKind, WindowPlacement,
-    };
-
-    fn snapshot(active_cluster: &str, active_tab: &str) -> ShellSnapshot {
-        let cluster = |id: &str| Cluster {
-            id: id.to_string(),
-            name: id.to_string(),
-            tree: PaneNode::Leaf {
-                id: format!("{id}-pane"),
-                tabs: vec![format!("{id}-play"), format!("{id}-files")],
-                active_tab: Some(format!("{id}-{active_tab}")),
-            },
-            project: None,
-            worktree: None,
-            active_terminal: None,
-            band_height: None,
-            page: None,
-            environment: None,
-            pinned: false,
-            icon: None,
-            environment_missing: false,
-        };
-        let instance = |id: &str, app: &str| SurfaceInstance {
-            id: id.to_string(),
-            app_id: app.to_string(),
-            kind: SurfaceKind::App,
-            title: app.to_string(),
-        };
-        ShellSnapshot {
-            windows: vec![WindowPlacement {
-                label: "main".into(),
-                clusters: vec![cluster("c1"), cluster("c2")],
-                active_cluster_id: Some(active_cluster.to_string()),
-                geometry: None,
-                right_page: None,
-            }],
-            instances: ["c1", "c2"]
-                .iter()
-                .flat_map(|c| {
-                    [
-                        instance(&format!("{c}-play"), "play"),
-                        instance(&format!("{c}-files"), "files"),
-                    ]
-                })
-                .collect(),
-            terminals: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn the_game_shows_only_with_its_cluster_on_screen_and_play_the_active_tab() {
-        assert!(play_shown(&snapshot("c1", "play"), "c1"));
-        assert!(!play_shown(&snapshot("c1", "files"), "c1"), "another tab");
-        assert!(
-            !play_shown(&snapshot("c2", "play"), "c1"),
-            "another cluster"
-        );
-        assert!(
-            !play_shown(&snapshot("c1", "play"), "c9"),
-            "no such cluster"
-        );
-    }
-
     struct World {
         dir: tempfile::TempDir,
         godot: super::super::Godot,
+        hosts: crate::embed::host::Hosts,
     }
 
     fn world() -> World {
@@ -700,6 +557,7 @@ mod tests {
         World {
             dir,
             godot: super::super::Godot::default(),
+            hosts: crate::embed::host::Hosts::with(crate::embed::native(), false, false),
         }
     }
 
@@ -715,6 +573,10 @@ mod tests {
             scratch: w.dir.path().join("scratch"),
             owner: Arc::new(|_| None),
             allow_asset: &|_| {},
+            hosts: &w.hosts,
+            instance: Some("play-1".into()),
+            shown: &|_| true,
+            usage: Arc::new(|_, _| {}),
         }
     }
 
@@ -763,79 +625,39 @@ mod tests {
     }
 
     #[test]
-    fn the_box_keeps_the_page_s_pixel_ratio_and_a_hide_keeps_the_box() {
+    fn the_box_is_kept_per_pane_with_the_page_s_pixel_ratio_and_a_hide_keeps_it() {
         let w = world();
         let c = ctx(&w);
+        let pane = || w.hosts.box_of(&Slot::new("play-1", Kind::Game)).unwrap();
         let rect = json!({ "x": 10, "y": 20, "w": 800, "h": 400, "visible": true, "window": "main", "dpr": 1.25 });
         call(&c, "play/embed-rect", Some(&rect)).unwrap().unwrap();
-        let pane = w.godot.pane("c1").unwrap();
-        assert_eq!((pane.rect.w, pane.dpr), (800.0, Some(1.25)));
+        assert_eq!((pane().rect.w, pane().dpr), (800.0, Some(1.25)));
         let hide = json!({ "x": 0, "y": 0, "w": 0, "h": 0, "visible": false });
         call(&c, "play/embed-rect", Some(&hide)).unwrap().unwrap();
-        let pane = w.godot.pane("c1").unwrap();
-        assert!(!pane.visible);
+        assert!(!pane().visible);
         assert_eq!(
-            (pane.rect.w, pane.dpr),
-            (800.0, Some(1.25)),
+            (pane().rect.w, pane().dpr, pane().window.as_deref()),
+            (800.0, Some(1.25), Some("main")),
             "kept for the next launch"
         );
         let zero = json!({ "x": 0, "y": 0, "w": 10, "h": 10, "visible": true, "dpr": 0 });
         call(&c, "play/embed-rect", Some(&zero)).unwrap().unwrap();
-        assert_eq!(
-            w.godot.pane("c1").unwrap().dpr,
-            None,
-            "an unusable ratio is not kept"
-        );
+        assert_eq!(pane().dpr, None, "an unusable ratio is not kept");
         let bad = json!({ "x": 0, "y": 0, "w": -1, "h": 0, "visible": false });
         assert!(call(&c, "play/embed-rect", Some(&bad)).unwrap().is_err());
-    }
-
-    #[test]
-    fn a_hide_without_a_window_keeps_the_game_in_the_window_the_pane_is_in() {
-        let w = world();
-        let asked = Arc::new(std::sync::Mutex::new(Vec::<Option<String>>::new()));
-        let log = asked.clone();
-        let c = Ctx {
-            owner: Arc::new(move |label| {
-                log.lock().unwrap().push(label.map(str::to_string));
-                Some(Owner {
-                    hwnd: if label == Some("w2") { 2 } else { 1 },
-                    origin: (0, 0),
-                    scale: 1.0,
-                })
-            }),
+        let nobody = Ctx {
+            instance: None,
             ..ctx(&w)
         };
-        // Play pressed from review in a second Veistra window: the live view
-        // has not named its window yet.
-        let attach_owner = pane_owner(&c);
-        let spec = super::super::runner::RunSpec {
-            program: super::super::testing::fake_godot(w.dir.path(), true),
-            project: w.dir.path().join("game"),
-            scene: None,
-            channel: None,
-            window: None,
-        };
-        let run = w.godot.runner.start("c1", spec).unwrap();
-        w.godot
-            .set_session("c1", Arc::new(Session::new(run.id, None, None)));
-        let live = json!({ "x": 10, "y": 20, "w": 800, "h": 400, "visible": true, "window": "w2" });
-        call(&c, "play/embed-rect", Some(&live)).unwrap().unwrap();
-        let hide = json!({ "x": 0, "y": 0, "w": 0, "h": 0, "visible": false });
-        call(&c, "play/embed-rect", Some(&hide)).unwrap().unwrap();
-        let window = w.godot.pane("c1").and_then(|p| p.window);
-        // Clean-up only: nothing below depends on how the stop went.
-        let _ = w.godot.runner.stop("c1");
-        assert_eq!(window.as_deref(), Some("w2"));
-        assert_eq!(
-            asked.lock().unwrap().last(),
-            Some(&Some("w2".to_string())),
-            "the hide is made in w2, not main"
+        assert!(
+            call(&nobody, "play/embed-rect", Some(&rect))
+                .unwrap()
+                .is_err(),
+            "a box belongs to a pane"
         );
-        assert_eq!(
-            attach_owner().map(|o| o.hwnd),
-            Some(2),
-            "attach asks where the pane is when the game shows up"
+        assert!(
+            w.hosts.box_of(&Slot::new("play-2", Kind::Game)).is_none(),
+            "another pane's box is its own"
         );
     }
 

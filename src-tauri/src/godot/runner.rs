@@ -141,19 +141,16 @@ pub struct RunSpec {
     pub window: Option<WindowArgs>,
 }
 
-/// `--windowed --resolution <w>x<h> --position <x>,<y>`: sized to the pane,
-/// and first shown off screen so it does not flash before it is placed.
+/// `--windowed --resolution <w>x<h> [--position <x>,<y>]`: sized to the pane
+/// and first shown where it is ([`crate::embed::launch_rect`]). Off screen
+/// was tried first and dropped: Godot moves a window that starts off every
+/// monitor back onto one anyway, and a game that is never placed was left
+/// where nobody could see it. With no pane box known, Godot centres it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowArgs {
     pub width: u32,
     pub height: u32,
-    pub x: i32,
-    pub y: i32,
-}
-
-impl WindowArgs {
-    /// Far enough left and up to be on no monitor anyone has.
-    pub const OFF_SCREEN: (i32, i32) = (-32000, -32000);
+    pub position: Option<(i32, i32)>,
 }
 
 impl RunSpec {
@@ -164,8 +161,10 @@ impl RunSpec {
             args.push("--windowed".to_string());
             args.push("--resolution".to_string());
             args.push(format!("{}x{}", w.width, w.height));
-            args.push("--position".to_string());
-            args.push(format!("{},{}", w.x, w.y));
+            if let Some((x, y)) = w.position {
+                args.push("--position".to_string());
+                args.push(format!("{x},{y}"));
+            }
         }
         if let Some(scene) = &self.scene {
             args.push(scene.clone());
@@ -277,6 +276,13 @@ impl Run {
         }
     }
 
+    /// Stop it without waiting for the exit: its pane closed, and the thread
+    /// that sees the exit runs its hooks as for any stop.
+    pub fn kill(&self) {
+        self.stop_requested.store(true, Ordering::SeqCst);
+        kill_tree(self.pid);
+    }
+
     /// Run `hook` once the run has ended, on the thread that saw it end; at
     /// once, here, if it already has. Replaces a hook set before.
     pub fn on_exit(&self, hook: ExitHook) {
@@ -367,8 +373,7 @@ impl Runner {
         if !run.is_running() {
             return Ok(false);
         }
-        run.stop_requested.store(true, Ordering::SeqCst);
-        kill_tree(run.pid);
+        run.kill();
         for _ in 0..150 {
             if !run.is_running() {
                 run.note("stopped".to_string());
@@ -561,8 +566,7 @@ mod tests {
             window: Some(WindowArgs {
                 width: 960,
                 height: 540,
-                x: -32000,
-                y: -32000,
+                position: Some((110, -20)),
             }),
         };
         assert_eq!(
@@ -574,7 +578,7 @@ mod tests {
                 "--resolution",
                 "960x540",
                 "--position",
-                "-32000,-32000",
+                "110,-20",
                 "res://a.tscn",
                 "--",
                 "--veistra-dir=/tmp/c"

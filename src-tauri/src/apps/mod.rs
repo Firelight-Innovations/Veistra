@@ -70,6 +70,8 @@ pub struct AppInfo {
     pub name: &'static str,
     pub description: &'static str,
     pub url: String,
+    /// The app places a native window over its pane (see [`Registered`]).
+    pub places_window: bool,
 }
 
 /// Where a call is happening: which cluster asked, and what that cluster is
@@ -165,11 +167,24 @@ impl CallContext {
 /// app that had to reimplement the reply could get it wrong.
 type Dispatch = fn(&AppHandle, &CallContext, &str, Option<Value>) -> Result<Value, RpcError>;
 
+/// [`Dispatch`] with the pane instance that asked, for an app whose state
+/// belongs to a pane rather than to its cluster: where Play's game box is.
+type InstanceDispatch =
+    fn(&AppHandle, &CallContext, Option<&str>, &str, Option<Value>) -> Result<Value, RpcError>;
+
 struct Registered {
     id: &'static str,
     name: &'static str,
     description: &'static str,
     call: Dispatch,
+    /// Used in place of `call` when the shell knows which instance asked.
+    call_for: Option<InstanceDispatch>,
+    /// Rust places something native over the pane (Plane's webview, the game,
+    /// the Godot editor, Blender), so the shell pushes the pane's window-space
+    /// rect (`veistra/window-rect`) and the overlays drawn over it
+    /// (`veistra/overlays`), and the host answers `embed/*` for it. A declared
+    /// capability, so Play moving into the Godot app takes it along.
+    places_window: bool,
 }
 
 /// Every app this build ships, in the order they appear in the switcher bar.
@@ -186,12 +201,16 @@ const REGISTRY: &[Registered] = &[
         name: "Home",
         description: "Where a session starts — open a project, or pick up a recent one.",
         call: home::call,
+        call_for: None,
+        places_window: false,
     },
     Registered {
         id: "files",
         name: "File Explorer",
         description: "Browse the open project — its folders, and what is in them.",
         call: files::call,
+        call_for: None,
+        places_window: false,
     },
     Registered {
         id: "viewer",
@@ -217,6 +236,8 @@ const REGISTRY: &[Registered] = &[
         // `two_apps_in_one_cluster_resolve_the_same_context` below, which is
         // there to keep that true.
         call: files::call,
+        call_for: None,
+        places_window: false,
     },
     Registered {
         id: "godot-viewer",
@@ -227,6 +248,8 @@ const REGISTRY: &[Registered] = &[
         // first of three (with `blender-viewer` and `play`) whose only real
         // work today is `crate::comments` — see `godot_viewer.rs`.
         call: godot_viewer::call,
+        call_for: None,
+        places_window: true,
     },
     Registered {
         id: "blender-viewer",
@@ -234,6 +257,8 @@ const REGISTRY: &[Registered] = &[
         description: "Runs Blender headless on a .blend and shows what came out — preview renders, \
                       parts list and the .glb — with Open in Blender for the real editor.",
         call: blender_viewer::call,
+        call_for: None,
+        places_window: true,
     },
     Registered {
         id: "play",
@@ -241,6 +266,8 @@ const REGISTRY: &[Registered] = &[
         description: "Run the environment's debug build in a pane, and capture a comment on what \
                       you see.",
         call: play::call,
+        call_for: Some(play::call_for),
+        places_window: true,
     },
     Registered {
         id: "canvas",
@@ -253,6 +280,8 @@ const REGISTRY: &[Registered] = &[
         // points at a running page. This is the design canvas of
         // `docs/VEISTRA-UX-REWORK.md` §5, and it is always compiled in.
         call: canvas::call_live,
+        call_for: None,
+        places_window: false,
     },
     Registered {
         id: "agent-tab",
@@ -261,6 +290,8 @@ const REGISTRY: &[Registered] = &[
         // Reached with its instance through `call_for_instance` below; this
         // dispatch is the instance-free path, and answers one read.
         call: agent_tab::call,
+        call_for: None,
+        places_window: false,
     },
     Registered {
         id: "agents",
@@ -268,6 +299,8 @@ const REGISTRY: &[Registered] = &[
         description: "Agent machines in Veistra Cloud, their sessions, and what each one did.",
         // Reads Google Cloud with the user's own gcloud login; see `cloud`.
         call: agents::call,
+        call_for: None,
+        places_window: false,
     },
     Registered {
         id: "costs",
@@ -275,6 +308,8 @@ const REGISTRY: &[Registered] = &[
         description: "What Veistra Cloud has cost this month at list price, and the forecast against its budget.",
         // Read-only: inventory, Cloud Monitoring usage and the Billing Catalog.
         call: costs::call,
+        call_for: None,
+        places_window: false,
     },
     Registered {
         id: "projects",
@@ -284,6 +319,8 @@ const REGISTRY: &[Registered] = &[
         // and — once a project is picked — wakes and embeds Plane CE. See
         // `apps/projects.rs` and `VEISTRA-PLANE-DESIGN.md`.
         call: projects::call,
+        call_for: None,
+        places_window: true,
     },
     // Disabled by default; see `[features]` in `Cargo.toml`.
     #[cfg(feature = "design-mode")]
@@ -296,6 +333,8 @@ const REGISTRY: &[Registered] = &[
         // `design::normalize` and `design::arm` — neither of which is a
         // decision the frontend is allowed to make.
         call: design::call,
+        call_for: None,
+        places_window: false,
     },
     // Disabled by default (ORC-SCO-001); see `[features]` in `Cargo.toml`.
     #[cfg(feature = "schematify")]
@@ -312,6 +351,8 @@ const REGISTRY: &[Registered] = &[
         // Apps menu and boot all already know its shape before anything is
         // built behind it.
         call: schematify::call,
+        call_for: None,
+        places_window: false,
     },
     Registered {
         id: "tutorial",
@@ -322,6 +363,8 @@ const REGISTRY: &[Registered] = &[
         // cluster rather than taking a pane. This row is still what makes
         // `veistra/open` resolve a frontend. See `docs/tutorials.md` §8.
         call: tutorial::call,
+        call_for: None,
+        places_window: false,
     },
 ];
 
@@ -334,6 +377,7 @@ pub fn list() -> Vec<AppInfo> {
             name: a.name,
             description: a.description,
             url: entry_url(a.id),
+            places_window: a.places_window,
         })
         .collect()
 }
@@ -555,6 +599,18 @@ pub fn call(
     method: &str,
     params: Option<Value>,
 ) -> Result<Value, RpcError> {
+    call_from(app, context, None, id, method, params)
+}
+
+/// [`call`], knowing which pane instance asked when the shell does.
+fn call_from(
+    app: &AppHandle,
+    context: &CallContext,
+    instance_id: Option<&str>,
+    id: &str,
+    method: &str,
+    params: Option<Value>,
+) -> Result<Value, RpcError> {
     // Answered by the host, before the app is looked up at all. See
     // `docs/settings.md` §7 for why this is central rather than per-app.
     if method == SETTINGS_METHOD {
@@ -608,6 +664,11 @@ pub fn call(
     }
 
     if let Some(registered) = REGISTRY.iter().find(|a| a.id == id) {
+        // A pane's box and the window over it, for every app that places one
+        // (`crate::embed::host`). Reads of the checkout, so before the refusal.
+        if registered.places_window && crate::embed::host::is_method(method) {
+            return crate::embed::host::call(app, instance_id, method, params.as_ref());
+        }
         // One choke point for every first-party write, whoever is calling: the
         // app's own frontend, the shell's menu, or an agent over MCP `app_call`
         // all arrive here with a resolved cluster.
@@ -615,7 +676,10 @@ pub fn call(
             let env = app.state::<ShellState>().cluster_write_environment(cluster);
             write_refusal(env.as_ref(), method)?;
         }
-        return (registered.call)(app, context, method, params);
+        return match registered.call_for {
+            Some(call_for) => call_for(app, context, instance_id, method, params),
+            None => (registered.call)(app, context, method, params),
+        };
     }
 
     // Not a first-party app, so the answer is not in this process. A plugin
@@ -643,9 +707,10 @@ pub fn call(
 }
 
 /// [`call`], for a caller that knows which instance asked — the shell's
-/// `app_call` command, and nothing else. The agent tab is the one app whose
-/// state belongs to an instance rather than to its cluster, so it is the one
-/// app that is handed it; every other call carries on through [`call`].
+/// `app_call` command, and nothing else. The agent tab's state belongs to an
+/// instance rather than to its cluster, and so does a placed window's box:
+/// those apps are handed it ([`Registered::call_for`], `embed/*`); every other
+/// call carries on as through [`call`].
 pub fn call_for_instance(
     app: &AppHandle,
     context: &CallContext,
@@ -655,7 +720,7 @@ pub fn call_for_instance(
     params: Option<Value>,
 ) -> Result<Value, RpcError> {
     if id != agent_tab::ID || !method.starts_with("agent-tab/") {
-        return call(app, context, id, method, params);
+        return call_from(app, context, instance_id, id, method, params);
     }
     // The same choke point `call` applies to every registered app.
     if let Some(cluster) = context.cluster_id.as_deref() {
@@ -1087,6 +1152,26 @@ mod tests {
             "the terminal comes last, after the apps"
         );
         assert_eq!(offered.len(), offered_apps() + 1);
+    }
+
+    /// The shell pushes window rects and overlays to these, and the host
+    /// answers `embed/*` for them; `godot-viewer` is on the list before Play
+    /// moves into it, so the move keeps the game visible.
+    #[test]
+    fn the_apps_that_place_a_native_window_say_so() {
+        let placing: Vec<&str> = list()
+            .into_iter()
+            .filter(|a| a.places_window)
+            .map(|a| a.id)
+            .collect();
+        assert_eq!(
+            placing,
+            ["godot-viewer", "blender-viewer", "play", "projects"]
+        );
+        let play = REGISTRY.iter().find(|a| a.id == "play").unwrap();
+        assert!(play.call_for.is_some(), "Play's box belongs to its pane");
+        let info = serde_json::to_value(&list()[0]).unwrap();
+        assert_eq!(info["placesWindow"], false, "camelCase on the wire");
     }
 
     /// Agents is a page: its chip in the cluster bar is the only way in.
