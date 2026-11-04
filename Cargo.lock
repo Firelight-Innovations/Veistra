@@ -3820,7 +3820,7 @@ dependencies = [
 
 [[package]]
 name = "schematify-core"
-version = "0.6.2"
+version = "0.7.1"
 dependencies = [
  "getrandom 0.3.4",
  "serde",
@@ -3832,7 +3832,7 @@ dependencies = [
 
 [[package]]
 name = "schematify-reconcile"
-version = "0.6.2"
+version = "0.7.1"
 dependencies = [
  "chrono",
  "ignore",
@@ -5398,7 +5398,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "veistra-agent-host"
-version = "0.6.2"
+version = "0.7.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -5410,7 +5410,7 @@ dependencies = [
 
 [[package]]
 name = "veistra-echo-tool"
-version = "0.6.2"
+version = "0.7.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -5419,7 +5419,7 @@ dependencies = [
 
 [[package]]
 name = "veistra-orchestrator"
-version = "0.6.2"
+version = "0.7.1"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -5468,7 +5468,7 @@ dependencies = [
 
 [[package]]
 name = "veistra-rpc"
-version = "0.6.2"
+version = "0.7.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -5477,7 +5477,7 @@ dependencies = [
 
 [[package]]
 name = "veistra-tool-manifest"
-version = "0.6.2"
+version = "0.7.1"
 dependencies = [
  "semver",
  "serde",
