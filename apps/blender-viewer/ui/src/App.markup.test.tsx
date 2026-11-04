@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 /**
- * The Blender Viewer's markup: it is kept per .blend and brought back, sent
- * through the shared flow as Blender, and a file with no export (or no glb)
- * offers Export instead of an empty canvas. The 3D stage needs WebGL, so
- * `ModelPreview` is a stand-in with one button that reports a finished markup.
+ * The markup on an export's 3D view (Renders, 3D): it is kept per .blend and
+ * brought back, sent through the shared flow as Blender, and a file with no
+ * export (or no glb) offers Export instead of an empty canvas. The 3D stage
+ * needs WebGL, so `ModelPreview` is a stand-in with one button that reports a
+ * finished markup. Markup on Blender itself is `editor/EditorMode.test.tsx`.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -14,6 +15,7 @@ vi.mock("@veistra/bridge", () => ({
   invoke: bridge.invoke,
   reportPainted: vi.fn(),
   openIn: vi.fn(),
+  on: () => () => undefined,
 }));
 
 const drawn = {
@@ -122,6 +124,8 @@ function backend(
         return Promise.resolve({ groups, values: opts.values ?? {} });
       case "blender-viewer/markup":
         return Promise.resolve(opts.saved ?? null);
+      case "blender-viewer/editor-state":
+        return Promise.resolve({ editor: null });
       case "comments/list":
         return Promise.resolve([]);
       case "context/put":
@@ -135,6 +139,14 @@ function backend(
 }
 
 const calls = (method: string) => bridge.invoke.mock.calls.filter((c) => c[0] === method);
+
+/** The export's 3D view: Renders, then 3D. Editor mode is Blender itself here. */
+async function openModel() {
+  const utils = render(<App />);
+  fireEvent.click(await screen.findByRole("tab", { name: "Renders" }));
+  fireEvent.click(await screen.findByRole("tab", { name: "3D" }));
+  return utils;
+}
 
 beforeEach(() => {
   bridge.invoke.mockReset();
@@ -156,7 +168,7 @@ afterEach(() => {
 describe("Blender Viewer markup", () => {
   it("keeps a drawing under the .blend, and waits for Send markup by default", async () => {
     backend();
-    render(<App />);
+    await openModel();
     fireEvent.click(await screen.findByRole("button", { name: "Finish drawing" }));
     await waitFor(() => expect(calls("blender-viewer/markup-save")).toHaveLength(1));
     expect(calls("blender-viewer/markup-save")[0]![1]).toEqual({
@@ -170,7 +182,7 @@ describe("Blender Viewer markup", () => {
 
   it("sends the picture and the JSON as Blender, and types the references, on Send markup", async () => {
     backend();
-    render(<App />);
+    await openModel();
     fireEvent.click(await screen.findByRole("button", { name: "Finish drawing" }));
     fireEvent.click(await screen.findByRole("button", { name: "Send markup" }));
     await waitFor(() => expect(calls("context/insert")).toHaveLength(1));
@@ -183,14 +195,14 @@ describe("Blender Viewer markup", () => {
 
   it("sends at once on Done when the shared setting is on", async () => {
     backend({ values: { "markup.autoSend": true } });
-    render(<App />);
+    await openModel();
     fireEvent.click(await screen.findByRole("button", { name: "Finish drawing" }));
     await waitFor(() => expect(calls("context/insert")).toHaveLength(1));
   });
 
   it("brings the earlier markup of this .blend back as Previous markup", async () => {
     backend({ saved: { png: "QUJD", json: JSON.stringify(drawn), savedAt: 5 } });
-    render(<App />);
+    await openModel();
     await screen.findByText(/Previous markup: 1 pin/);
     expect(calls("blender-viewer/markup")[0]![1]).toEqual({ blend: "C:/p/bed.blend" });
     expect(screen.getByRole("button", { name: "Send markup" })).toBeTruthy();
@@ -199,17 +211,22 @@ describe("Blender Viewer markup", () => {
   it("offers Export, not an empty canvas, for a file with no export yet", async () => {
     backend({ state: { ...BASE, model: null } });
     const { container } = render(<App />);
+    fireEvent.click(await screen.findByRole("tab", { name: "Renders" }));
     await screen.findByText(/has not been exported yet/);
     fireEvent.click(container.querySelector(".bv__empty--export button")!);
     await waitFor(() => expect(calls("blender-viewer/export-start")).toHaveLength(1));
-    expect(calls("blender-viewer/export-start")[0]![1]).toEqual({ blend: "C:/p/bed.blend" });
+    // The person pressed it, so it is theirs: an export now names who asked (#317).
+    expect(calls("blender-viewer/export-start")[0]![1]).toEqual({
+      blend: "C:/p/bed.blend",
+      actor: "human",
+    });
     expect(screen.queryByRole("button", { name: "Finish drawing" })).toBeNull();
   });
 
-  it("keeps the renders reachable beside the 3D model", async () => {
+  it("keeps the stills reachable beside the 3D model", async () => {
     backend();
-    render(<App />);
+    await openModel();
     await screen.findByRole("button", { name: "Finish drawing" });
-    expect(screen.getByRole("tab", { name: "Renders" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Stills" })).toBeTruthy();
   });
 });

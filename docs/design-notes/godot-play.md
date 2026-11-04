@@ -172,6 +172,23 @@ on the context server from an agent tab.
 | The editor's floor size (#316) | The plugin lowers the window's minimum to 480 × 320 after the editor sets its own; without the plugin, nothing checks a pane smaller than 1024 × 600 | The editor holds its window at 1024 × 600, larger than many panes, and the embedder cannot shrink it below that. A size warning without the plugin was left out until a real pane shows how it looks cut off. |
 | What an agent may call on the editor (#316) | `godot/editor-state`, `godot/editor-selection`, `godot/editor-capture`, `godot/editor-pick`, and the plugin's status, install and remove as for the capture addon; `app_call` refuses open, close, save, select, open scene and Viewport only | The editor in the pane is the person's: an agent reading what it shows is the point, an agent closing or steering it under the person is not. Agents edit the project on disk and run Godot headless. |
 | `editor_opened` (#316) | Rust, once per open, `{plugin}` through `telemetry::track` | Whether people use the editor with the plugin is the question the plugin's cost rests on. A4's `features/godot.ts` must declare the event for the shell to forward it. |
+| Embedded editors, Blender (#317) | Editor mode is the person's own Blender, started as `blender <file.blend> --python veistra_boot.py` and placed over the box as kind `blender`; nothing is installed or enabled in Blender, and the script does nothing without `VEISTRA_BLENDER_CHANNEL`. Owner decision 6 replaces `VEISTRA-UX-REWORK.md` §3.1's "never embedded"; agents still run Blender headless | An add-on enabled in the person's Blender would outlive Veistra and load in every Blender they open. `--python` runs once the file has loaded, in this Blender only. Not `--disable-autoexec`: it is the person's file, and their preference decides. |
+| Opening Blender (#317) | Only on a press, never on mount: Open in Blender in Editor mode, or Renders' Open in Blender, which now goes through `blender-viewer/editor-open`. Refused on main, while this cluster's Blender has another file, and while another cluster or another Blender holds the file | A cluster switch reloads every frame, and Blender is too heavy to start for a glance. Renders' button started the detached `blender-viewer/open`, which takes no lock, so the person could have had two Blenders on one file. |
+| Where Blender's window starts (#317) | No `-p`: Blender opens where it would, and the embedder places the window over the box when it appears | `-p` measures from the lower-left corner in Blender's own screen coordinates, which nothing here could check. To revisit if the first frame shows at Blender's default place on a real machine. |
+| The boot script's channel (#317) | The capture addon's folder protocol (X5) in `temp_dir()/veistra-blender/blender-editor/<cluster>-<pid>-<n>`: `hello.json` once (with Blender's own pid), `state.json` on change (the file, unsaved, the selection, the 3D view), `cmd.json` in, `res-<id>.json` and `cap-<id>.png` out, every file written to a `.tmp` and renamed. One persistent `bpy.app.timers` callback every 250 ms | No socket and no port, as for the addon. A timer is the one way to run on Blender's main thread without a modal operator, and a persistent one survives File > Open. Commands are a table (`COMMANDS`), so #320's N-panel adds entries beside `select`, `viewport-only`, `capture`, `pick` and `quit`. |
+| The one-writer lock (#317) | `.veistra/locks/<file>.lock`, mirroring the file's folders, written and removed by Rust only, naming Blender's pid and that process's start time; a lock whose process is gone or whose pid now names a later process is stale, and the first reader removes it. A watcher thread follows the file Blender reports every 500 ms, so File > Open moves the lock, an unsaved new file holds none, and Blender exiting removes it with no pane polling | Blender has no quit hook to clean up, and Veistra may exit first and leave Blender running, so the lock cannot depend on either writing it last. The pid alone was rejected: Windows reuses pids. `hello.json`'s pid is the one locked, so a launcher that exits does not read as Blender gone. |
+| A Blender left running at exit (#317) | Its lock stays, correctly, until that Blender exits; Veistra does not adopt it into a pane after a restart | The lock still names a live Blender with the file open. Adopting it needs the window found from the pid with no channel to say which file it has; not built. |
+| Closing Blender (#317) | `WM_CLOSE` to its window, what its close button sends; with no window to post to, the boot script's `quit`, which runs Blender's own quit with its save prompt; otherwise the pane says to close it from Blender. Never a kill. The pane closing or Veistra exiting hands the window back (`Orphan::Release`) | An unsaved scene is the person's work (X2). |
+| Exports as versions (#317) | Every export, the person's or an agent's, lands as `.veistra/exports/<asset>/v<n>/` (`model.glb`, `renders/`, `export.log`, then `export.json` last), with `asset.json`'s `next` so a number is never handed out twice; the last ten are kept. Every export names its actor, `human` or `agent`; `system` is refused. `blender-viewer/export-versions` lists them newest first | Spec §11.3 and X6. Overwriting the one cached export would lose what Compare (#319) compares. A version is the folder with `export.json`, so an export that died midway is never listed. |
+| The export never writes the `.blend` (#317) | It reads the saved file in a headless Blender and writes only the new version; a live lock is recorded in the version (`sourceLocked`) and left alone | Spec §13 test 12. The person's unsaved changes are not on disk, so the agent exports what was last saved; the banner says the export never overwrites their file. |
+| The agent's export tools (#317) | `export_blend` and `list_blend_exports` on the workspace and context servers; `export_blend` answers as soon as the export starts, and `list_blend_exports` shows the version once it lands | A tool call runs inline on the server's worker, and an export can take minutes. |
+| What an agent may call on Blender in the pane (#317) | `blender-viewer/editor-state`, `editor-capture` and `editor-pick` read it; `app_call` refuses `editor-open`, `editor-close`, `editor-select` and `editor-viewport-only` | Blender in the pane is the person's: an agent reading what it shows is the point, an agent opening, closing or steering it under the person is not. |
+| Send selection and Mark up in Blender (#317) | One `capture` answer holds the picture, the view and the selection of the same moment; Send selection files it as two Context items (for `props/bed.blend`, `blender/props/bed/selection` text and `blender/props/bed/editor-viewport` image, each replacing the last send's) and types both references in one `context/insert`, never Enter (X8). Mark up draws on that capture and asks Blender what is under each pin (`pick`) after Done | Two round trips could pair a selection with a view the person had already moved. |
+| The markup host and pin naming in Blender (#317) | Blender-local copies of the Godot editor's (`editor/ViewportMarkup.tsx`, `editor/pins.ts`); `useTheme` moved to `apps/shared` | An app may not import another app's source (`eslint.config.js`). The copies can move to `apps/shared` once #316 and this have both landed. |
+| Compare before #319 (#317) | Drawn in the mode switch, `aria-disabled`, with a tooltip saying it is not built; the banner's Compare with v<n> waits for it the same way | A mode that appears later moves the switch under the person. `aria-disabled` keeps the tooltip and the tab stop, which `disabled` would drop. |
+| Opening a file Blender in a pane holds (#317) | `blender-viewer/open` and `files/open-in-blender` look for a live lock in every folder above the file (`lock::live_above`) and refuse it, naming the process | Files' Open in Blender gets an absolute path with no environment, and two Blenders on one file save over each other. The detached opens still take no lock of their own. |
+| Two bugs (#317) | `blender-viewer/open` resolves a project-relative path inside the environment, as `export-start` does; the wire render is SOLID with temporary Wireframe modifiers, dark lines on a light world, undone afterwards, and the `.glb` is exported with modifiers applied | The open refused `props/bed.blend`, the only kind the viewer and agents send. Workbench ignores WIREFRAME shading in a final render, so the wire pass was a blank white PNG. |
+| Agents editing a `.blend` (#317) | Not built: an agent exports and reads, and never saves a `.blend`, locked or not | Whether an agent may change a `.blend` while nobody has it open is the owner's question (X12). |
 
 ### Not verified on a real machine
 
@@ -248,6 +265,36 @@ window or Godot ran:
   this root and on another worktree's.
 - `godot:editor_opened` reaching PostHog, which needs A4's `features/godot.ts` to declare it.
 
+From #317, unit-tested in Rust through fakes (a fake Blender that writes the boot script's files,
+a fake window system) and in jsdom, `export.py` and `veistra_boot.py` run headless in `bpy` 5.0.1
+(`bpy_test.py`; `cargo test` runs it where `VEISTRA_TEST_BPY_PYTHON` names a Python with `bpy`,
+and it skips without one), and type-checked and linted for Windows; no WebView2, Win32 window or
+Blender with a window ran:
+
+- Spec §13 test 12 on a real machine: with `bed.blend` open in Blender in a pane and v1 to v5
+  kept, an agent's `export_blend` writes v6 and `bed.blend`'s bytes are unchanged; closing Blender
+  removes `.veistra/locks/bed.blend.lock`. The Rust test runs the same steps with a fake Blender.
+- Blender's window found by its class (`GHOST_WindowClass`) and placed over the box, after a
+  splitter drag, a maximise and a cluster switch; Pop out and Dock; the still under a menu or the
+  palette; the window handed back when its pane closes and when Veistra exits. Where the window
+  first shows before the embedder places it, with no `-p`.
+- Close: `WM_CLOSE` reaching Blender, its save prompt, and Cancel leaving it open; the boot
+  script's `quit` with no window to post to. File dialogs and Preferences opening above Veistra.
+- The boot script in a windowed Blender 4.2 and 4.5: `hello.json` and `state.json`, `select`,
+  `viewport-only` (and back), `capture` with the view and selection, `pick` on a mesh, `quit`, and
+  the timer surviving File > Open. The headless `bpy` run covers only what needs no window.
+- The lock's process start time on Windows (`sysinfo`), and a Blender found through a launcher or a
+  Steam install, where the pid Veistra starts is not Blender's: `hello.json`'s pid is locked.
+- Paths on Windows: a `.blend` named with different case or with `\` reaching
+  `relative_blend`, `lock::live_above` from Files' Open in Blender, and `canonicalize`'s `\\?\`
+  prefix.
+- The wire render fix with a real Blender's Workbench: dark lines on a light world, then the
+  scene restored. The headless `bpy` test checks the PNG is not blank.
+- Send selection reaching an agent's prompt with the text and the image; Mark up's pins named
+  through `pick`.
+- The Editor bar and banner against the Components and BlenderModel boards at 1440 and 1024 px
+  wide; Compare's tooltip.
+
 ## The Godot editor in the pane (#316)
 
 `godot/editor.rs`, `godot/plugin.rs` and `veistra_editor.gd`; the pane is
@@ -315,8 +362,8 @@ appears briefly. The frame is cached beside the tree and stamped separately.
 
 Running and viewing read the project, so they work on main. Writing does not:
 `godot/open-editor`, `godot/editor-open`, `godot/editor-save`, `godot/plugin-install`,
-`godot/plugin-remove`, `blender-viewer/open`, `files/open-in-blender`, `play/addon-install`,
-`play/addon-remove`, `play/send`, `comments/create` and `comments/verdict` are in
+`godot/plugin-remove`, `blender-viewer/open`, `blender-viewer/editor-open`, `files/open-in-blender`,
+`play/addon-install`, `play/addon-remove`, `play/send`, `comments/create` and `comments/verdict` are in
 `WRITE_METHODS` and are refused on main before a handler runs. The Godot viewer's cache and the
 Blender viewer's export cache go under the app-local data folder for main (Blender's keyed by
 the checkout's path) and under `<env>/.veistra/` for a worktree; run channels are always in temp.
@@ -371,3 +418,50 @@ The JSON an agent receives is the format in `docs/markup-format.md`, with the so
   "annotations": []
 }
 ```
+
+## Blender in the pane (#317)
+
+`blender/editor.rs`, `blender/lock.rs`, `blender/versions.rs` and `blender/veistra_boot.py`; the
+methods are in `apps/blender_viewer.rs`, the agent's tools in `mcp/servers/blender_exports.rs`, and
+the pane is `apps/blender-viewer/ui/src/editor/`. One Blender per cluster, and one per file across
+clusters and across Blenders, through the lock.
+
+**Opening.** Editor mode shows the `.blend` picker and Open in Blender. The press sends
+`blender-viewer/editor-open {blend}`, which writes `veistra_boot.py` into a fresh channel folder,
+starts `blender <file.blend> --python <channel>/veistra_boot.py` detached with
+`VEISTRA_BLENDER_CHANNEL` naming the folder, takes the lock, and hands the window to the embedder
+as kind `blender` for that pane (`embed/*` with `kind: "blender"`). Where there is no embedder the
+same Blender opens in its own window and the bar says so. The pane polls
+`blender-viewer/editor-state` every 500 ms: the process, the embed report, the file and its lock,
+whether it has unsaved changes, and what the boot script last wrote. Refused on main, for a path
+outside the environment, and while the file is open in another Blender.
+
+**The bar.** Mode (Editor, Renders, Compare); the environment chip, the file, with a dot while
+Blender has unsaved changes; the state chip: Not open, Starting, Editing, Popped out, Own window,
+Closing; Viewport only, Mark up and Send selection; Pop out or Dock, and Close. Each tool is
+disabled with its reason until the boot script has said hello. The footer names the Blender and
+the boot script's version.
+
+**The boot script** answers `select`, `viewport-only`, `capture`, `pick` and `quit` from one
+persistent `bpy.app.timers` callback, and rewrites `state.json` when the file, its unsaved flag,
+the selection or the 3D view change. None of its commands edits the scene. #320's Veistra tab in
+the N-panel adds its commands to the same `COMMANDS` table and uses the two names kept for it,
+`events.jsonl` and `notes.json`.
+
+**One writer.** While Blender has the file open, `.veistra/locks/<file>.lock` holds Blender's pid
+and start time, the cluster and the channel. A banner under the bar says "You have bed.blend open.
+The agent's next export goes to v6 beside it and never overwrites your file.", with Compare with
+v5 waiting for #319. Opening the same file again, from another pane, `blender-viewer/open` or
+Files' Open in Blender, is refused with the holding process; a file Blender reaches through
+File > Open that another Blender holds gets the conflict banner and no lock, until that one
+closes.
+
+**Exports.** Every export, the person's Export or an agent's `export_blend`, reads the saved
+`.blend` headless and lands as the next `.veistra/exports/<asset>/v<n>/`; ten are kept. Renders
+shows the newest; `blender-viewer/export-versions` lists them all, with the lock, for Compare.
+On main the same tree is under app-local data.
+
+**Closing.** Close asks Blender to quit as its own close button does, so Blender asks about
+unsaved work and the person may cancel; the chip says Closing until the process ends, and the
+watcher removes the lock. The pane closing or Veistra exiting hands the window back, still
+running, and its lock stays until it exits.

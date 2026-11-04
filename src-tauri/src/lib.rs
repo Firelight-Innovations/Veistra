@@ -209,6 +209,7 @@ pub fn run() {
         .manage(apps::projects::WakeManager::default())
         .manage(blender::job::Jobs::default())
         .manage(blender::detect::VersionCache::default())
+        .manage(blender::editor::Editors::default())
         // The New Project page's step-runner snapshot, for `home/create-
         // project-status` to poll — the same shape as `WakeManager` above.
         // See `apps::home_create`.

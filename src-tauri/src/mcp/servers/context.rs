@@ -229,6 +229,9 @@ const TOOLS: &[McpTool] = &[
     super::play_notes::TOOLS[0],
     super::play_notes::TOOLS[1],
     super::play_notes::TOOLS[2],
+    // An agent exports what the person may have open in Blender (#317).
+    super::blender_exports::TOOLS[0],
+    super::blender_exports::TOOLS[1],
 ];
 
 /// The selection, published so a client can subscribe to it.
@@ -365,6 +368,9 @@ fn strings(args: &Map<String, Value>, key: &str) -> Result<Option<Vec<String>>, 
 fn call(app: &AppHandle, tool: &str, params: Option<Value>) -> Result<ToolAnswer, RpcError> {
     if super::play_notes::serves(tool) {
         return super::play_notes::call(app, tool, &params);
+    }
+    if super::blender_exports::serves(tool) {
+        return super::blender_exports::call(app, tool, &params);
     }
     let args = match params {
         Some(Value::Object(map)) => map,
@@ -616,6 +622,19 @@ mod tests {
             assert_eq!(
                 super::super::read_only_hint(ID, tool),
                 Some(tool == "list_play_notes"),
+                "{tool}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_agent_tab_s_session_can_export_a_blend_without_touching_it() {
+        let names: Vec<&str> = TOOLS.iter().map(|t| t.name).collect();
+        for tool in ["export_blend", "list_blend_exports"] {
+            assert!(names.contains(&tool), "{tool}");
+            assert_eq!(
+                super::super::read_only_hint(ID, tool),
+                Some(tool == "list_blend_exports"),
                 "{tool}"
             );
         }

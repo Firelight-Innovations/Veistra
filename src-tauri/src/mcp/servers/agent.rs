@@ -84,6 +84,14 @@ const TOOL_LIST: [McpTool; 16] = [
 
 /// Why `app_call` refuses `method`, for the panel.
 pub fn blocked_reason(method: &str) -> Option<String> {
+    if STEERS_BLENDER.contains(&method) {
+        return Some(
+            "Acts on the person's Blender window, so only the Blender pane may call it; \
+             `blender-viewer/editor-state`, `blender-viewer/editor-capture` and \
+             `blender-viewer/editor-pick` read it, and `export_blend` exports without it"
+                .to_string(),
+        );
+    }
     if apps::agent_tab::needs_its_tab(method) {
         return Some("Acts on one agent tab's session, so only that tab may call it".to_string());
     }
@@ -112,6 +120,15 @@ const ACTS_ON_THE_EDITOR: &[&str] = &[
     "godot/editor-select",
     "godot/editor-open-scene",
     "godot/editor-viewport-only",
+];
+
+/// Blender in the pane is the person's (#317): an agent may read what it
+/// shows and export the file, but not open, close or steer it under them.
+const STEERS_BLENDER: &[&str] = &[
+    "blender-viewer/editor-open",
+    "blender-viewer/editor-close",
+    "blender-viewer/editor-select",
+    "blender-viewer/editor-viewport-only",
 ];
 
 /// The methods that raise a native dialog, and what to reach for instead.
@@ -742,5 +759,21 @@ mod tests {
     #[test]
     fn the_server_that_can_click_is_developer_only() {
         assert!(SERVER.dev_only);
+    }
+
+    #[test]
+    fn an_agent_reads_blender_in_the_pane_but_does_not_steer_it() {
+        for method in STEERS_BLENDER {
+            let reason = blocked_reason(method).unwrap_or_default();
+            assert!(reason.contains("Blender window"), "{method}");
+        }
+        for method in [
+            "blender-viewer/editor-state",
+            "blender-viewer/editor-capture",
+            "blender-viewer/editor-pick",
+            "blender-viewer/export-versions",
+        ] {
+            assert_eq!(blocked_reason(method), None, "{method}");
+        }
     }
 }

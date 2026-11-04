@@ -71,6 +71,31 @@ describe("ViewerToolbar", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Play" }));
     expect(onChange).toHaveBeenCalledWith("play");
   });
+
+  it("draws a mode that is not built yet, says why, and never switches to it", () => {
+    const onChange = vi.fn();
+    render(
+      <ViewerToolbar
+        label="Blender"
+        mode={{
+          value: "editor",
+          options: [
+            { value: "editor", label: "Editor" },
+            { value: "compare", label: "Compare", disabled: true, title: "Not built yet." },
+          ],
+          onChange,
+        }}
+      />,
+    );
+    const compare = screen.getByRole("tab", { name: "Compare" });
+    // aria-disabled, not disabled: it keeps its tooltip and its place in the tab order.
+    expect(compare.getAttribute("aria-disabled")).toBe("true");
+    expect((compare as HTMLButtonElement).disabled).toBe(false);
+    expect(compare.getAttribute("title")).toBe("Not built yet.");
+    fireEvent.click(compare);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("tab", { name: "Editor" }).getAttribute("aria-disabled")).toBeNull();
+  });
 });
 
 describe("ToolbarButton", () => {
