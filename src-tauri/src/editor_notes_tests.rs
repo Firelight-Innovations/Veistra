@@ -25,6 +25,7 @@ fn note(ctx: &CallContext, anchor: Anchor, body: &str) -> Comment {
 fn take(path: Option<&str>) -> Anchor {
     Anchor::Take {
         take: "2026-11-04_10-00-00".into(),
+        number: None,
         n: 2,
         at_ms: 102_200,
         in_ms: None,

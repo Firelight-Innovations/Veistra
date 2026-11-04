@@ -1341,6 +1341,7 @@ mod tests {
             &context,
             draft(Anchor::Node {
                 path: "World".into(),
+                scene: None,
             }),
         )
         .unwrap();
