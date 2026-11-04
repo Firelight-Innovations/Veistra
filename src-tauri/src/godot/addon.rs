@@ -71,16 +71,41 @@ pub fn status(project: &Path) -> Installed {
 }
 
 fn has_autoload(project_file: &str) -> bool {
+    section_line(project_file, "[autoload]", &format!("{AUTOLOAD_KEY}=")).is_some()
+}
+
+/// The line in `section` that starts with `prefix`, trimmed.
+pub(super) fn section_line<'a>(text: &'a str, section: &str, prefix: &str) -> Option<&'a str> {
     let mut in_section = false;
-    for line in project_file.lines() {
+    for line in text.lines() {
         let t = line.trim();
         if t.starts_with('[') {
-            in_section = t == "[autoload]";
-        } else if in_section && t.starts_with(&format!("{AUTOLOAD_KEY}=")) {
-            return true;
+            in_section = t == section;
+        } else if in_section && t.starts_with(prefix) {
+            return Some(t);
         }
     }
-    false
+    None
+}
+
+/// Delete `script` and the `.uid` file Godot 4.4 and later writes beside
+/// every script, then `addons/veistra` and `addons` if that leaves them
+/// empty, so anything else someone put there survives.
+pub(super) fn remove_script(script: &Path) -> Result<(), String> {
+    let uid = PathBuf::from(format!("{}.uid", script.display()));
+    for file in [script, uid.as_path()] {
+        if file.exists() {
+            std::fs::remove_file(file)
+                .map_err(|e| format!("could not delete {}: {e}", file.display()))?;
+        }
+    }
+    if let Some(dir) = script.parent() {
+        let _ = std::fs::remove_dir(dir);
+        if let Some(addons) = dir.parent() {
+            let _ = std::fs::remove_dir(addons);
+        }
+    }
+    Ok(())
 }
 
 /// Write the script and register the autoload. Idempotent: running it on an
@@ -105,20 +130,11 @@ pub fn install(project: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Delete what [`install`] wrote. The `addons/veistra` folder goes only if it is
-/// then empty, so anything else someone put there survives.
+/// Delete what [`install`] wrote, and the `.uid` file Godot made for it. The
+/// `addons/veistra` folder goes only if it is then empty, so anything else
+/// someone put there, the editor plugin included, survives.
 pub fn remove(project: &Path) -> Result<(), String> {
-    let script = script_path(project);
-    if script.exists() {
-        std::fs::remove_file(&script)
-            .map_err(|e| format!("could not delete {}: {e}", script.display()))?;
-    }
-    if let Some(dir) = script.parent() {
-        let _ = std::fs::remove_dir(dir);
-        if let Some(addons) = dir.parent() {
-            let _ = std::fs::remove_dir(addons);
-        }
-    }
+    remove_script(&script_path(project))?;
 
     let path = project.join("project.godot");
     let text = std::fs::read_to_string(&path)
@@ -133,11 +149,23 @@ pub fn remove(project: &Path) -> Result<(), String> {
 /// `project.godot` with the autoload line added. Only the `[autoload]` section
 /// is touched, and the file's line endings are kept.
 pub fn with_autoload(text: &str) -> String {
+    with_line(text, "[autoload]", &autoload_line())
+}
+
+/// The inverse of [`with_autoload`]: drops the line, and the `[autoload]`
+/// header too when that leaves the section empty.
+pub fn without_autoload(text: &str) -> String {
+    without_line(text, "[autoload]", &format!("{AUTOLOAD_KEY}="))
+}
+
+/// `text` with `line` first in `section`, which is added at the end when the
+/// file has none. Shared with the editor plugin's `[editor_plugins]` entry.
+pub(super) fn with_line(text: &str, section: &str, line: &str) -> String {
     let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
-    let line = autoload_line();
+    let line = line.to_string();
     let lines: Vec<&str> = text.split(nl).collect();
 
-    if let Some(at) = lines.iter().position(|l| l.trim() == "[autoload]") {
+    if let Some(at) = lines.iter().position(|l| l.trim() == section) {
         // After the header and the blank line Godot writes under it.
         let mut insert = at + 1;
         while lines.get(insert).is_some_and(|l| l.trim().is_empty()) {
@@ -158,7 +186,7 @@ pub fn with_autoload(text: &str) -> String {
     let mut out = text.trim_end_matches(['\r', '\n']).to_string();
     out.push_str(nl);
     out.push_str(nl);
-    out.push_str("[autoload]");
+    out.push_str(section);
     out.push_str(nl);
     out.push_str(nl);
     out.push_str(&line);
@@ -166,23 +194,22 @@ pub fn with_autoload(text: &str) -> String {
     out
 }
 
-/// The inverse of [`with_autoload`]: drops the line, and the `[autoload]`
-/// header too when that leaves the section empty.
-pub fn without_autoload(text: &str) -> String {
+/// The inverse of [`with_line`]: drops the line in `section` that starts with
+/// `prefix`, and the header too when that leaves the section empty.
+pub(super) fn without_line(text: &str, section: &str, prefix: &str) -> String {
     let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
     let mut lines: Vec<&str> = text.split(nl).collect();
-    let prefix = format!("{AUTOLOAD_KEY}=");
     let mut in_section = false;
     let mut header = None;
     let mut remove_at = None;
     for (i, l) in lines.iter().enumerate() {
         let t = l.trim();
         if t.starts_with('[') {
-            in_section = t == "[autoload]";
+            in_section = t == section;
             if in_section {
                 header = Some(i);
             }
-        } else if in_section && t.starts_with(&prefix) {
+        } else if in_section && t.starts_with(prefix) {
             remove_at = Some(i);
         }
     }
@@ -240,6 +267,10 @@ pub fn send(dir: &Path, id: u64, action: &str, wait: Duration) -> Result<Reply, 
     send_with(dir, id, action, serde_json::Value::Null, wait)
 }
 
+/// What a game that does not answer is told to do.
+const GAME_SILENT: &str =
+    "the game did not answer. It may have been started before capture was enabled - restart it.";
+
 /// [`send`] with fields beside `id` and `action`, such as `pick`'s `x` and `y`.
 pub fn send_with(
     dir: &Path,
@@ -248,6 +279,21 @@ pub fn send_with(
     extra: serde_json::Value,
     wait: Duration,
 ) -> Result<Reply, String> {
+    exchange(dir, id, action, extra, wait, GAME_SILENT, parse_reply)
+}
+
+/// One round trip on a channel folder, read by `parse`: the capture addon's,
+/// and the editor plugin's, which answers in the same files. `silent` is the
+/// error when nothing answers within `wait`.
+pub(super) fn exchange<T>(
+    dir: &Path,
+    id: u64,
+    action: &str,
+    extra: serde_json::Value,
+    wait: Duration,
+    silent: &str,
+    parse: impl Fn(&Path, &str) -> Result<T, String>,
+) -> Result<T, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
     let tmp = dir.join("cmd.json.tmp");
     let mut cmd = serde_json::json!({ "id": id, "action": action });
@@ -266,7 +312,7 @@ pub fn send_with(
     loop {
         if let Ok(text) = std::fs::read_to_string(&reply_path) {
             // A reply seen half-written parses badly; look again until the wait ends.
-            match parse_reply(dir, &text) {
+            match parse(dir, &text) {
                 Ok(reply) => return Ok(reply),
                 Err(e) => unreadable = Some(e),
             }
@@ -276,24 +322,25 @@ pub fn send_with(
             if let Some(e) = unreadable {
                 return Err(e);
             }
-            return Err(
-                "the game did not answer. It may have been started before capture was enabled - restart it."
-                    .to_string(),
-            );
+            return Err(silent.to_string());
         }
         std::thread::sleep(Duration::from_millis(40));
+    }
+}
+
+/// The picture a reply names, read from the channel folder. A name with a
+/// separator in it is ignored, so a reply cannot point outside the folder.
+pub(super) fn png_in(dir: &Path, reply: &serde_json::Value) -> std::io::Result<Option<Vec<u8>>> {
+    match reply["png"].as_str() {
+        Some(name) if !name.contains(['/', '\\']) => std::fs::read(dir.join(name)).map(Some),
+        _ => Ok(None),
     }
 }
 
 fn parse_reply(dir: &Path, text: &str) -> Result<Reply, String> {
     let v: serde_json::Value =
         serde_json::from_str(text).map_err(|e| format!("unreadable reply: {e}"))?;
-    let png = match v["png"].as_str() {
-        Some(name) if !name.contains(['/', '\\']) => Some(
-            std::fs::read(dir.join(name)).map_err(|e| format!("the game wrote no image: {e}"))?,
-        ),
-        _ => None,
-    };
+    let png = png_in(dir, &v).map_err(|e| format!("the game wrote no image: {e}"))?;
     let size = match (v["width"].as_u64(), v["height"].as_u64()) {
         (Some(w), Some(h)) => Some((w, h)),
         _ => None,
@@ -402,6 +449,22 @@ mod tests {
         std::fs::write(dir.path().join("addons/veistra/mine.txt"), "x").unwrap();
         remove(dir.path()).unwrap();
         assert!(dir.path().join("addons/veistra/mine.txt").is_file());
+    }
+
+    #[test]
+    fn remove_takes_the_uid_file_godot_wrote_and_then_the_empty_folders() {
+        let dir = project(PROJECT);
+        install(dir.path()).unwrap();
+        std::fs::write(
+            dir.path().join("addons/veistra/veistra_capture.gd.uid"),
+            "uid://b1",
+        )
+        .unwrap();
+        remove(dir.path()).unwrap();
+        assert!(
+            !dir.path().join("addons").exists(),
+            "a 4.4 project is left as it was"
+        );
     }
 
     #[test]

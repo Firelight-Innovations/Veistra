@@ -49,6 +49,7 @@ pub(crate) struct Fake {
     pub released: Mutex<Vec<Option<ScreenRect>>>,
     pub shown_near: Mutex<Vec<Option<ScreenRect>>>,
     pub kinds: Mutex<Vec<Kind>>,
+    pub closes: Mutex<Vec<isize>>,
 }
 
 impl Fake {
@@ -109,6 +110,10 @@ impl WindowSystem for Fake {
     }
     fn watch(&self, _hwnd: isize) -> Option<Box<dyn Still>> {
         Some(Box::new(FakeStill))
+    }
+    fn request_close(&self, hwnd: isize) -> Result<(), String> {
+        self.closes.lock_or_panic().push(hwnd);
+        Ok(())
     }
 }
 

@@ -14,12 +14,16 @@
 pub mod addon;
 /// The executable and the projects inside an environment.
 pub mod detect;
+/// The Godot editor in the pane: launched, followed, closed, and asked.
+pub mod editor;
 /// Send's packet: `packet.md`, pictures, context, comments.
 pub mod feedback;
 /// Play's methods for the pane, Record, takes and Send.
 pub mod live;
 /// Play notes as the workspace MCP server shows them to agents.
 pub mod notes;
+/// The Veistra editor plugin: installed, removed, and what it needs.
+pub mod plugin;
 /// A scene exported to glTF for the viewer's interactive 3D view.
 pub mod preview;
 /// A run recorded to `take.mp4` (Windows).
@@ -83,6 +87,8 @@ pub struct Godot {
     /// Each cluster's latest run's session: its window, take and marks. The
     /// pane's box is the embedder's ([`crate::embed::host::Hosts`]).
     sessions: Mutex<HashMap<String, Arc<session::Session>>>,
+    /// Each cluster's Godot editor in the pane.
+    pub editors: editor::Editors,
 }
 
 impl Godot {
@@ -155,6 +161,8 @@ impl Godot {
                 session.finish_take(&run);
             }
         }
+        // Games only. The editors are the person's: their windows were
+        // handed back by `embed::host::release_all`, and they keep running.
         self.runner.stop_all();
     }
 }
