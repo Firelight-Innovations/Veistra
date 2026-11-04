@@ -109,9 +109,10 @@ pub struct Counts {
 /// `take.json`, the shape in design §5.4. `number` (Take 4, Take 5), the
 /// tick fields and `project` are additions: the toolbar names takes by
 /// number, the acceptance checks for the capture addon read `tickRate` (nine
-/// a second or more) and `tickUsP95` (500 or less at 64 nodes), and `project`
-/// says which Godot project of a multi-project environment ran. `ticks`
-/// counts only the take's own, not the run's before Record went on.
+/// a second or more) and `tickUsP95` (500 or less when `tickNodes` is 64),
+/// and `project` says which Godot project of a multi-project environment
+/// ran. `ticks` counts only the take's own, not the run's before Record went
+/// on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Summary {
@@ -137,6 +138,10 @@ pub struct Summary {
     /// The 95th percentile of the addon's `tickUs`.
     #[serde(default)]
     pub tick_us_p95: u32,
+    /// The most nodes one tick tracked: the cost above is only the budget's
+    /// answer when this reached the addon's cap of 64.
+    #[serde(default)]
+    pub tick_nodes: usize,
 }
 
 /// [`SceneSpan`] as `take.json` spells it.
@@ -248,6 +253,7 @@ pub fn finish(f: &Finish) -> std::io::Result<Summary> {
         ticks: ticks.count,
         tick_rate: (ticks.per_second * 10.0).round() / 10.0,
         tick_us_p95: ticks.tick_us_p95,
+        tick_nodes: ticks.max_nodes,
     };
     write_json(&f.dir.join(SUMMARY), &summary)?;
     Ok(summary)
@@ -539,8 +545,8 @@ mod tests {
         std::fs::write(
             channel.join(telemetry::FILE),
             format!(
-                "{{\"t\":{early},\"kind\":\"tick\",\"scene\":\"res://a.tscn\",\"tickUs\":9000}}\n\
-                 {{\"t\":{a},\"kind\":\"tick\",\"scene\":\"res://a.tscn\",\"frameMs\":16,\"tickUs\":310}}\n\
+                "{{\"t\":{early},\"kind\":\"tick\",\"scene\":\"res://a.tscn\",\"tickUs\":9000,\"nodes\":[{{}},{{}},{{}}]}}\n\
+                 {{\"t\":{a},\"kind\":\"tick\",\"scene\":\"res://a.tscn\",\"frameMs\":16,\"tickUs\":310,\"nodes\":[{{}}]}}\n\
                  {{\"t\":{b},\"kind\":\"mark\"}}\n\
                  {{\"t\":{c},\"kind\":\"tick\",\"scene\":\"res://a.tscn\",\"frameMs\":16,\"tickUs\":420}}\n",
                 early = started - 3_000,
@@ -603,6 +609,7 @@ mod tests {
         assert_eq!(s.ticks, 2, "a tick from before the take is not the take's");
         assert_eq!(s.tick_rate, 0.0, "two ticks in 151 s round to nothing");
         assert_eq!(s.tick_us_p95, 420, "the early tick's cost is not counted");
+        assert_eq!(s.tick_nodes, 1, "nor its three nodes");
         assert_eq!(s.scenes.len(), 1);
         assert_eq!(s.scenes[0].to_ms, 151_400);
 
@@ -623,6 +630,7 @@ mod tests {
             "ticks",
             "tickRate",
             "tickUsP95",
+            "tickNodes",
         ] {
             assert!(json.get(key).is_some(), "take.json has `{key}`");
         }

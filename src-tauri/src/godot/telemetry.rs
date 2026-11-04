@@ -216,8 +216,7 @@ pub struct TickStats {
     pub count: u64,
     /// Ticks a second over the whole stretch, gaps included.
     pub per_second: f64,
-    /// The addon's own `tickUs`, as it reported them.
-    pub tick_us_mean: u32,
+    /// The 95th percentile of the addon's own `tickUs`, as it reported them.
     pub tick_us_p95: u32,
     /// The most nodes one tick tracked.
     pub max_nodes: usize,
@@ -238,7 +237,6 @@ pub fn tick_stats(lines: &[Line], from: u64, to: u64) -> TickStats {
         .collect();
     costs.sort_unstable();
     let seconds = to.saturating_sub(from) as f64 / 1000.0;
-    let sum: u64 = costs.iter().map(|&us| u64::from(us)).sum();
     TickStats {
         count: ticks.len() as u64,
         per_second: if seconds > 0.0 {
@@ -246,7 +244,6 @@ pub fn tick_stats(lines: &[Line], from: u64, to: u64) -> TickStats {
         } else {
             0.0
         },
-        tick_us_mean: (sum / costs.len().max(1) as u64) as u32,
         // Nearest rank: the smallest cost at least 95 % of ticks stay under.
         tick_us_p95: match costs.len() {
             0 => 0,
@@ -426,7 +423,6 @@ mod tests {
         assert_eq!(stats.count, 100);
         assert!((stats.per_second - 10.0).abs() < 1e-9);
         assert_eq!(stats.tick_us_p95, 300, "5 slow ticks in 100 sit above it");
-        assert_eq!(stats.tick_us_mean, (95 * 300 + 5 * 2_000) / 100);
         assert_eq!(stats.max_nodes, 64);
 
         let slow = tick_stats(&lines[..60], 0, 6_000);
