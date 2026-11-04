@@ -16,7 +16,6 @@ vi.mock("@veistra/bridge", () => ({
   on: () => () => {},
   reportPainted: vi.fn(),
   openIn: vi.fn(),
-  on: () => () => undefined,
 }));
 
 const drawn = {

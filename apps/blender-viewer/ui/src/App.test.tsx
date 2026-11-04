@@ -27,7 +27,6 @@ vi.mock("@veistra/bridge", () => ({
   },
   reportPainted: vi.fn(),
   openIn: vi.fn(),
-  on: () => () => undefined,
 }));
 
 import App from "./App";
