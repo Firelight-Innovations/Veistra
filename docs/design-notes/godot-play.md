@@ -189,6 +189,14 @@ on the context server from an agent tab.
 | Opening a file Blender in a pane holds (#317) | `blender-viewer/open` and `files/open-in-blender` look for a live lock in every folder above the file (`lock::live_above`) and refuse it, naming the process | Files' Open in Blender gets an absolute path with no environment, and two Blenders on one file save over each other. The detached opens still take no lock of their own. |
 | Two bugs (#317) | `blender-viewer/open` resolves a project-relative path inside the environment, as `export-start` does; the wire render is SOLID with temporary Wireframe modifiers, dark lines on a light world, undone afterwards, and the `.glb` is exported with modifiers applied | The open refused `props/bed.blend`, the only kind the viewer and agents send. Workbench ignores WIREFRAME shading in a final render, so the wire pass was a blank white PNG. |
 | Agents editing a `.blend` (#317) | Not built: an agent exports and reads, and never saves a `.blend`, locked or not | Whether an agent may change a `.blend` while nobody has it open is the owner's question (X12). |
+| The Veistra tab's two files (#320) | Beside `cmd.json` in the editor's channel folder: `notes.json`, Veistra to the editor, one snapshot replaced whole through a `.tmp` and a rename, with a `rev`; `events.jsonl`, the editor to Veistra, one JSON line appended a press, an ask's `ask-<n>.png` written before its line. Rust tails the file, checks each line (`editor_notes::parse_event`) and numbers the good ones with a `seq`; a bad line with an `n` gets a failed ack, so the tab says why | DECISIONS X5. The editor never reads or writes `.veistra/comments/`, which can sit above `res://` and which only Veistra writes. A second `cmd.json`-style request and answer per press was rejected: it would put the person's press in the queue Veistra uses to ask the editor things, and a press needs an answer whether or not a pane is open to act. |
+| Who carries out a press (#320) | The Editor mode pane, through the RPCs its own buttons use, then `godot/editor-ack` or `blender-viewer/editor-ack {n, ok, message}`, which the next `notes.json` carries back as `acks`; the backend hands an event on in every poll (`editor.events` after `eventsSince`) until it is answered | Ask needs `context/put` and `context/insert`, Mark up needs the pane's markup layer, and the verdict is the card's `comments/verdict`: all are the pane's already. Doing them in Rust would be a second copy of each. An agent may not call either ack (`app_call` refuses them): the press is the person's. |
+| Ask the agent from the tab (#320) | The question, the scene or file, the selected nodes or objects, the camera and a picture of the viewport in one line; the pane files the text and the picture as two Context items, keyed by the ask's `n` so a second question does not replace the first, and types both in one `context/insert`, never Enter (X8). With no picture it still sends the text and says so in it | The done-when: one message with the text, the node path and the image. `context/agents` and a SEND TO choice are B4's (#315) and not on this branch, so the question goes to the agent prompt `context/insert` picks. |
+| Looks good and Still broken in the tab (#320) | Only on a note whose status is `fixed`, as on Veistra's card; the pane sends `comments/verdict` with `expect: "fixed"`, and the store refuses it when the note is no longer fixed | The tab shows the note as `notes.json` last had it. Without the check a Still broken pressed after the agent had reopened the note would add a second reply to work the person never saw. |
+| Which notes the Godot dock shows (#320) | Notes on a selected node in the edited scene (`Anchor::Node` now records `scene`; a note from before has none and shows in any scene with that path), and Play's notes on that node, in this scene or under another root (`Main/Hallway/Enemy_02` for `Hallway/Enemy_02`) | A node path alone matches the same name in two scenes. Play's paths start at the running game's root, which the edited scene is often instanced under. |
+| Which notes Blender's tab shows (#320) | Notes on a part (`Anchor::Mesh`) whose name is a selected object's, in the open file when the note records one; no Play notes | X12: a Godot node path is not a Blender object name, and no mapping is decided. `blend` on a mesh note is #319's; until it lands, Blender notes carry none and show for any file with that object name. |
+| The tab's picture (#320) | Godot: the main screen's viewport (2D when the 2D screen is up, else the first 3D viewport), scaled to 1600 px on its long side. Blender: the 3D view drawn off screen (`GPUOffScreen.draw_view3d`) at no more than 1600 px, else Blender's screenshot of the area | What the person is looking at when they ask, small enough for one Context image. The off-screen draw leaves out the sidebar the tab itself is in. |
+| Notes reaching the tab (#320) | `notes.json` is rewritten in the Editor pane's poll (every 500 ms) when the comment files' count, size or newest time, the scope or the acks changed; the dock reads it every 250 ms by its text, Blender's tab in its 250 ms timer, and selecting a node redraws at once | The done-when: a selected node's notes within 1 s. Watching `.veistra/comments/` with a file watcher was rejected for now: the pane's poll already runs while the editor is in it. |
 
 ### Not verified on a real machine
 
@@ -295,6 +303,27 @@ Blender with a window ran:
 - The Editor bar and banner against the Components and BlenderModel boards at 1440 and 1024 px
   wide; Compare's tooltip.
 
+From #320, unit-tested in Rust (the two files, the checks, the acks, the verdict guard) and in
+jsdom (the pane carrying out each press), the dock parsed and linted with `gdtoolkit` and its
+structure pinned in vitest, Blender's tab registered and its operators run headless in `bpy`
+5.0.1 (`bpy_test.py`), and type-checked and linted for Windows; no Godot, no Blender with a
+window, no GPU and no WebView2 ran:
+
+- The done-when on a real machine: selecting Enemy_02 in the Godot editor in a pane shows its
+  notes in the Veistra dock within 1 s, and a note written in Scene mode or Play appears there
+  within 1 s; Ask sends the text, the node path and a viewport image to the agent's prompt in one
+  message.
+- The dock in Godot 4.2 to 4.5: added to the right upper dock slot when Veistra started the
+  editor and absent when the project is opened in Godot by hand, removed with the plugin, the
+  2D and 3D viewport pictures, a reply typed while `notes.json` changes, and the dock's layout
+  in a narrow slot.
+- Blender's tab in a windowed Blender 4.2 and 4.5: the Veistra tab in the 3D view's sidebar,
+  the off-screen picture (`bpy` here has no GPU, so only the screenshot fallback's call is
+  checked, and not its picture), Looks good and Still broken, and the tab surviving File > Open.
+- `events.jsonl` appended by Godot's `FileAccess` and Python while Rust reads it, and
+  `notes.json` replaced on Windows while the dock or the tab has it open: the rename is tried
+  again on the next poll when it is refused.
+
 ## The Godot editor in the pane (#316)
 
 `godot/editor.rs`, `godot/plugin.rs` and `veistra_editor.gd`; the pane is
@@ -316,13 +345,13 @@ Not open, Starting, Editing, Popped out, Own window, Closing; Viewport only, Mar
 selection; Pop out or Dock; Close. Every tool that needs the plugin is disabled without it and says
 why in its title, in words the backend gives (`plugin.why`).
 
-**The plugin** (`addons/veistra/plugin.cfg`, `addons/veistra/veistra_editor.gd`, one
-`[editor_plugins]` entry), opt-in behind a consent that lists what it adds, what it reports and
+**The plugin** (`addons/veistra/plugin.cfg`, `addons/veistra/veistra_editor.gd`,
+`addons/veistra/veistra_dock.gd`, one `[editor_plugins]` entry), opt-in behind a consent that lists what it adds, what it reports and
 takes, and that it uses no port. It is idle unless Veistra started the editor: no argument and no
 variable, no channel. It writes `hello.json` once and `state.json` whenever the edited scene, the
 open scenes, the selection or the main screen change; it answers `selection`, `capture`, `pick`,
-`select`, `open`, `viewport-only`, `save` and `close`. The Veistra dock, `events.jsonl` and
-`notes.json` are #320's and will sit beside these.
+`select`, `open`, `viewport-only`, `save` and `close`. The Veistra dock it adds (#320) is
+described below.
 
 **Mark up** captures the 3D viewport, hides the editor's window for as long as the still is up,
 and opens Play's markup tools over it. On Done each pin is resolved by `godot/editor-pick` at its
@@ -444,9 +473,9 @@ the boot script's version.
 
 **The boot script** answers `select`, `viewport-only`, `capture`, `pick` and `quit` from one
 persistent `bpy.app.timers` callback, and rewrites `state.json` when the file, its unsaved flag,
-the selection or the 3D view change. None of its commands edits the scene. #320's Veistra tab in
-the N-panel adds its commands to the same `COMMANDS` table and uses the two names kept for it,
-`events.jsonl` and `notes.json`.
+the selection or the 3D view change. None of its commands edits the scene. The Veistra tab it
+adds to the 3D view's sidebar (#320, below) adds no command: it reads `notes.json` and appends to
+`events.jsonl` from the same timer.
 
 **One writer.** While Blender has the file open, `.veistra/locks/<file>.lock` holds Blender's pid
 and start time, the cluster and the channel. A banner under the bar says "You have bed.blend open.
@@ -465,3 +494,38 @@ On main the same tree is under app-local data.
 unsaved work and the person may cancel; the chip says Closing until the process ends, and the
 watcher removes the lock. The pane closing or Veistra exiting hands the window back, still
 running, and its lock stays until it exits.
+
+## The Veistra tab inside Godot and Blender (#320)
+
+`editor_notes.rs`, `godot/veistra_dock.gd` and the tab in `blender/veistra_boot.py`; the pane's
+half is `apps/shared/editorEvents.ts`, used by both Editor modes. A Veistra tab in the editor
+shows the notes on what is selected there, and its buttons ask the pane to act.
+
+**Two files** beside `cmd.json` in the editor's channel folder. `notes.json` is Veistra's:
+`{version, rev, notes, problem, acks}`, replaced whole whenever the Editor pane's poll finds the
+comment files, the open file or the acks changed. Each row carries the anchor (`kind`, `path` or
+`part`, `scene`), the card's title and status words, the body, the thread and the agent's fix
+note. `events.jsonl` is the editor's: one line a press, `ask`, `verdict` or `markup`, each with
+the editor's own `n` and a time; an ask writes `ask-<n>.png` first and names it. The backend
+tails the file, refuses a line that fails its checks with a failed ack, and hands the rest to
+the pane as `editor.events` in `godot/editor-state` and `blender-viewer/editor-state`, numbered
+by `seq`, until each is answered.
+
+**The pane** passes `eventsSince` on its poll and carries out each new event once, in order:
+Ask the agent puts the question and the picture as two Context items and types both at the
+prompt in one `context/insert`, never Enter; Looks good and Still broken are `comments/verdict`
+with `expect: "fixed"`; Mark up opens the mode's own Mark up, or is refused with the bar's reason
+while the plugin or the boot script is not running. Each is answered with `editor-ack {n, ok,
+message}`, and the tab shows the message.
+
+**Godot's dock** (`veistra_dock.gd`, added by `veistra_editor.gd` to the right upper dock slot
+only when Veistra started the editor) lists the notes on the selected nodes: node notes in the
+edited scene, and Play's notes on that node. A note the agent fixed has a reply box and Looks
+good / Still broken. Under the list are a question box, Ask the agent and Mark up the viewport,
+and a line saying what the last press came to.
+
+**Blender's tab** (the Veistra tab in the 3D view's sidebar, N) lists the notes on parts named
+like the selected objects, with the same buttons. It is registered only when the boot script has
+its channel, so a Blender opened by hand has no Veistra tab, and its operators do not touch the
+scene or the undo history.
+
