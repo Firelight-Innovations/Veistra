@@ -390,8 +390,14 @@
   background: var(--danger);
 }
 
-.pl-strip__counts {
+.pl-strip__counts,
+.pl-strip__hint {
   white-space: nowrap;
+}
+
+/* While the game holds the mouse, the one way out: read first, not muted. */
+.pl-strip__hint {
+  color: var(--txt-primary);
 }
 
 /* The key on Stop and review, as the toolbar shows its keys, on the primary fill. */

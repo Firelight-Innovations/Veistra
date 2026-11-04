@@ -459,7 +459,9 @@ timeline where notes are written, marked up and sent to the agent as a
 feedback packet. F5 runs or restarts, Shift F5 stops, F6 pauses, F7 stops and
 opens review, F8 marks, Ctrl R toggles Record and Ctrl Shift M marks up the
 live frame. Keys are bound on the mode's own root element, not `window`, so
-they never fire while a different pane has focus.
+they never fire while a different pane has focus. While the game holds the
+mouse, the live strip names F7, the key the capture addon forwards from inside
+the game (`mouseCaptured`, sent by addon v2's backend, #312).
 `docs/design-notes/godot-play.md` has the whole of it.
 
 **A window over the pane.** The Godot app (under both of its ids), the Blender

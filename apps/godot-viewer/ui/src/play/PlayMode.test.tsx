@@ -209,6 +209,8 @@ interface World {
   lines: Line[];
   /** The scenes `godot-viewer/state` lists for every project. */
   scenes: string[];
+  /** Whether the game holds the mouse, as addon v2's backend reports it (#312). */
+  mouseCaptured?: boolean;
 }
 
 function liveBackend(over: Partial<World> = {}): World {
@@ -242,6 +244,7 @@ function liveBackend(over: Partial<World> = {}): World {
         embedded: world.embed.kind === "embedded",
         runId: world.run.id,
         take: world.take,
+        mouseCaptured: world.mouseCaptured,
         // Each key once, after the pane's cursor, as `Session::keys_since` answers.
         keys: world.keys.filter((k) => k.seq > keySince),
       },
@@ -853,6 +856,20 @@ describe("Play toolbar", () => {
     });
     render(<App />);
     expect(await screen.findByText("0 marks · 1 error")).toBeTruthy();
+  });
+
+  // Spec §4.4: with the mouse held by the game nothing in the pane can be
+  // clicked, and F7 is the key the addon forwards from inside it.
+  it("names F7 in the strip while the game holds the mouse, and only then", async () => {
+    const world = liveBackend({ mouseCaptured: true });
+    render(<App />);
+    expect(await screen.findByText("F7 stops and opens the take")).toBeTruthy();
+    world.take = { state: "off" };
+    world.record = { on: false, blocked: null };
+    expect(await screen.findByText("F7 stops the game.")).toBeTruthy();
+    world.mouseCaptured = false;
+    await waitFor(() => expect(screen.queryByText("F7 stops the game.")).toBeNull());
+    expect(screen.queryByText("F7 stops and opens the take")).toBeNull();
   });
 });
 

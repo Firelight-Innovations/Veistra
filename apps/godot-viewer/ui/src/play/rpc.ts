@@ -78,6 +78,12 @@ export interface Session {
   ticks: number;
   /** The addon version the game reported, or null before it has. */
   addon: number | null;
+  /**
+   * The game holds the mouse (its last tick's mouse mode), so nothing in the
+   * pane can be clicked until it lets go. Sent by capture addon v2's backend
+   * (#312); absent from a backend without it, which reads as not captured.
+   */
+  mouseCaptured?: boolean;
 }
 
 export interface Live {

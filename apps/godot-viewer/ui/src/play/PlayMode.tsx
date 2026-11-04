@@ -1224,7 +1224,7 @@ export default function PlayMode(props: PlayModeProps) {
                   addon.addon === "yes"
                     ? "Remove the capture script and its project.godot line."
                     : addon.addon === "partial"
-                      ? "Update the capture script to version 2."
+                      ? "Update the capture script."
                       : "Add the capture script so Play can record, mark, pause and capture the game."
                 }
               >
