@@ -3,7 +3,8 @@
  *
  * It used to sit at the right end of the cluster bar. That bar is gone, so it
  * is a title-bar control now, and it is drawn only while something is unhealthy
- * — the rest of the time it takes no width at all. Whether a tool needs an
+ * — the rest of the time it takes no width at all. In a narrow window it is a
+ * row of the overflow menu instead (`TitleBarActions`). Whether a tool needs an
  * update is a property of the stack, not of the open cluster, so it reads
  * `healthOf` and nothing else.
  */
@@ -17,6 +18,16 @@ function isUnhealthy(tool: ToolPresentation): tool is UnhealthyTool {
   return tool.health !== ("ok" satisfies ToolHealth);
 }
 
+/** The tools the badge counts. Also what the overflow menu's health row lists. */
+export function unhealthyTools(healthOf: ToolPresentation[]): UnhealthyTool[] {
+  return healthOf.filter(isUnhealthy);
+}
+
+/** The badge's name, and the overflow menu row's label: one sentence for both. */
+export function toolHealthLabel(count: number): string {
+  return count === 1 ? "1 tool needs attention" : `${count} tools need attention`;
+}
+
 export default function ToolHealthBadge({
   healthOf,
   onRescan,
@@ -26,7 +37,7 @@ export default function ToolHealthBadge({
 }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
-  const unhealthy = healthOf.filter(isUnhealthy);
+  const unhealthy = unhealthyTools(healthOf);
 
   // Dismiss like every other popover in the shell: a click outside, or Escape.
   useEffect(() => {
@@ -47,8 +58,7 @@ export default function ToolHealthBadge({
 
   if (unhealthy.length === 0) return null;
 
-  const label =
-    unhealthy.length === 1 ? "1 tool needs attention" : `${unhealthy.length} tools need attention`;
+  const label = toolHealthLabel(unhealthy.length);
 
   return (
     <div className="toolhealth" ref={wrapRef}>

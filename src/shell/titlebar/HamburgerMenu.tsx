@@ -12,12 +12,13 @@
  * render — animating those too would be a second, uncoordinated motion inside
  * the same gesture, which is exactly what `motion.ts` warns against.
  */
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import type { Menu } from "../contract";
 import { popover } from "../motion";
-import MenuItemList, { inMenuSurface } from "../MenuItemList";
+import MenuItemList from "../MenuItemList";
 import Hamburger from "./icons/Hamburger";
+import { useMenuDismiss } from "./useMenuDismiss";
 
 export default function HamburgerMenu({ menus }: { menus: Menu[] }) {
   const [open, setOpen] = useState(false);
@@ -29,33 +30,7 @@ export default function HamburgerMenu({ menus }: { menus: Menu[] }) {
     setExpanded(null);
   };
 
-  useEffect(() => {
-    if (!open) return;
-
-    const onPointerDown = (e: PointerEvent) => {
-      // A submenu is portalled out of this subtree, so `contains` calls a click
-      // inside it a click outside the menu. See `inMenuSurface`, and `MenuBar`'s
-      // copy of this guard for what missing it costs.
-      if (inMenuSurface(e.target)) return;
-      if (!rootRef.current?.contains(e.target as Node)) closeAll();
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeAll();
-    };
-    // Focus leaving this document closes it, for the reason `MenuBar`'s copy of
-    // this spells out: a click inside an app's iframe never reaches the shell's
-    // `window`, so `onPointerDown` alone cannot see most of the window.
-    const onBlur = () => closeAll();
-
-    window.addEventListener("pointerdown", onPointerDown);
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("blur", onBlur);
-    return () => {
-      window.removeEventListener("pointerdown", onPointerDown);
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("blur", onBlur);
-    };
-  }, [open]);
+  useMenuDismiss(open, rootRef, closeAll);
 
   return (
     <div className="hamburger" ref={rootRef}>

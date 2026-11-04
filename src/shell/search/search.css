@@ -1,16 +1,27 @@
 /*
- * The search field, in the title bar's right cell beside Review & merge. A
- * `control-md` (28px) box with a `border-subtle-1` edge and `radius-md`, the
- * same size and edge as the bar's other action. It shrinks (label ellipsis)
- * before it pushes anything, and becomes an icon under 1240px — see the
- * collapse order in `titlebar/titlebar.css`.
+ * The search field, in the title bar's middle group after the project pill,
+ * and centred with it (#336). A `control-md` (28px) box with a
+ * `border-subtle-1` edge and `radius-md`. It is the first thing in the group to
+ * give way: its shrink factor dwarfs the pill's, so it narrows to its icon and
+ * Ctrl+K, then to its icon alone, before the pill loses a character. Those two
+ * steps answer to the field's own width (it is its own container), not the
+ * window's, because how much room the group has depends on the pill's text as
+ * well. See the collapse order in `titlebar/titlebar.css`.
  */
 
 .search-slot {
-  flex: 0 1 240px;
+  /* The 240px is `width`, not the flex basis: a flex row's intrinsic width is
+     the sum of its items' widths, and the field is its own size container, so
+     with `width: auto` it would ask the group for nothing beyond its padding. */
+  flex: 0 9999 auto;
+  width: 240px;
   min-width: var(--control-md);
+  container: search-slot / inline-size;
   display: flex;
   align-items: center;
+  /* No effect while the label or the input fills the row; centres the glyph
+     once it is alone, overflowing its content box into the padding evenly. */
+  justify-content: center;
   gap: var(--space-2);
   height: var(--control-md);
   padding: 0 var(--space-2);
@@ -50,9 +61,11 @@
   flex: none;
 }
 
-/* A claimed field is a real input, so it keeps its width at every size: an icon
-   cannot be typed into. The `:focus-within` edge is the field's own. */
+/* A claimed field is a real input, so it never narrows to an icon: an icon
+   cannot be typed into. It gives up its Ctrl+K chip instead, and keeps room
+   for a few characters. The `:focus-within` edge is the field's own. */
 .search-slot--claimed {
+  min-width: 80px;
   cursor: text;
 }
 
@@ -78,16 +91,27 @@
   color: var(--txt-placeholder);
 }
 
-@container titlebar (max-width: 1239px) {
-  .search-slot:not(.search-slot--claimed) {
-    flex: none;
-    width: var(--control-md);
-    padding: 0;
-    justify-content: center;
+/* Widths are the field's content box. The label goes once fewer than about
+   five of its characters would show beside the glyph and the chip; the chip
+   goes once it would not fit beside the glyph. */
+@container search-slot (width < 120px) {
+  .search-slot__label {
+    display: none;
   }
 
-  .search-slot:not(.search-slot--claimed) .search-slot__label,
+  .search-slot__hint {
+    margin-inline-start: auto;
+  }
+}
+
+@container search-slot (width < 80px) {
   .search-slot:not(.search-slot--claimed) .search-slot__hint {
+    display: none;
+  }
+}
+
+@container search-slot (width < 134px) {
+  .search-slot--claimed .search-slot__hint {
     display: none;
   }
 }
