@@ -40,6 +40,7 @@ result = {
     "glb": None,
     "renders": [],
     "parts": [],
+    "materials": [],
     "stats": {},
     "warnings": warnings,
 }
@@ -159,9 +160,47 @@ def scene_bounds(scene):
     return lo, hi
 
 
+def principled(mat):
+    """The material's Principled BSDF, or None."""
+    if mat.node_tree is None:
+        return None
+    for node in mat.node_tree.nodes:
+        if node.type == "BSDF_PRINCIPLED":
+            return node
+    return None
+
+
+def collect_materials():
+    """Each used material's colour and scalar values, so Compare can say what
+    changed in a material between two versions (spec §12.1). The Principled
+    BSDF's inputs where they are plain values, the viewport ones otherwise."""
+    found = []
+    for mat in bpy.data.materials:
+        if mat.users == 0:
+            continue
+        entry = {
+            "name": mat.name,
+            "color": [round(c, 4) for c in mat.diffuse_color],
+            "metallic": round(mat.metallic, 4),
+            "roughness": round(mat.roughness, 4),
+        }
+        node = principled(mat)
+        if node is not None:
+            for key, socket in (("color", "Base Color"), ("metallic", "Metallic"),
+                                ("roughness", "Roughness"), ("alpha", "Alpha")):
+                field = node.inputs.get(socket)
+                if field is None or field.is_linked:
+                    continue
+                value = field.default_value
+                entry[key] = [round(c, 4) for c in value] if key == "color" else round(value, 4)
+        found.append(entry)
+    return found
+
+
 def export_glb(path):
     try:
-        bpy.ops.export_scene.gltf(filepath=path, export_format="GLB")
+        # Modifiers applied, so the .glb is the shape on screen, not the cage.
+        bpy.ops.export_scene.gltf(filepath=path, export_format="GLB", export_apply=True)
         result["glb"] = os.path.basename(path)
     except Exception as exc:  # the add-on can be missing or disabled
         warnings.append("glb export failed: %s" % exc)
@@ -190,17 +229,72 @@ def sync_viewport_colours():
         try:
             # Not the material's node-usage flag: 5.x deprecates it (removal in
             # 6.0) and prints a warning per material. No node tree, nothing to read.
-            if mat.node_tree is None:
+            node = principled(mat)
+            if node is None:
                 continue
-            for node in mat.node_tree.nodes:
-                if node.type != "BSDF_PRINCIPLED":
-                    continue
-                base = node.inputs["Base Color"]
-                if not base.is_linked:
-                    mat.diffuse_color = tuple(base.default_value)
-                    break
+            base = node.inputs["Base Color"]
+            if not base.is_linked:
+                mat.diffuse_color = tuple(base.default_value)
         except Exception as exc:  # e.g. linked library data refusing the write
             warnings.append("viewport colour for %s not synced: %s" % (mat.name, exc))
+
+
+WIRE_INK = (0.05, 0.05, 0.06)
+WIRE_PAPER = (0.9, 0.9, 0.9)
+
+
+def wire_look(scene, radius):
+    """Make the next render a wireframe, and return what undoes it.
+
+    Workbench does not draw WIREFRAME shading in a final render: the frame
+    comes out as the bare background, one flat colour, which is why the wire
+    view was a blank PNG. So it renders SOLID instead, each mesh swapped for
+    its edges by a temporary Wireframe modifier, dark lines on a light world.
+    The .glb was written before any of this, and nothing is saved."""
+    shading = scene.display.shading
+    saved = {key: getattr(shading, key) for key in (
+        "type", "light", "color_type",
+        "show_object_outline", "show_cavity", "show_shadows")}
+    # A copy: the property itself would follow the change below.
+    saved["single_color"] = tuple(shading.single_color)
+    old_world = scene.world
+    paper = bpy.data.worlds.new("veistra_wire_paper")
+    paper.color = WIRE_PAPER
+    scene.world = paper
+    shading.type = "SOLID"
+    shading.light = "FLAT"
+    shading.color_type = "SINGLE"
+    shading.single_color = WIRE_INK
+    shading.show_object_outline = False
+    shading.show_cavity = False
+    shading.show_shadows = False
+    # The frame is about 2.44 radii across (see render_views), so this is a
+    # line about 1.5 pixels wide at any resolution, in each object's own
+    # units: the modifier works before the object's scale.
+    width = radius * 3.6 / RES
+    added = []
+    for obj in bpy.data.objects:
+        if obj.type != "MESH":
+            continue
+        try:
+            scale = max(abs(s) for s in obj.matrix_world.to_scale()) or 1.0
+            mod = obj.modifiers.new("veistra_wire", "WIREFRAME")
+            mod.thickness = max(width / scale, 1e-5)
+            mod.use_replace = True
+            mod.use_even_offset = True
+            added.append((obj, mod))
+        except Exception as exc:  # linked library data refuses new modifiers
+            warnings.append("wire view: %s drawn solid: %s" % (obj.name, exc))
+
+    def undo():
+        for obj, mod in added:
+            obj.modifiers.remove(mod)
+        for key, value in saved.items():
+            setattr(shading, key, value)
+        scene.world = old_world
+        bpy.data.worlds.remove(paper)
+
+    return undo
 
 
 def render_views(scene, bounds):
@@ -249,16 +343,20 @@ def render_views(scene, bounds):
             cam.location = center + offset
             cam.rotation_euler = (center - cam.location).to_track_quat("-Z", "Y").to_euler()
             pick_engine(scene, wire)
+            undo = None
             if wire:
-                scene.display.shading.type = "WIREFRAME"
-                scene.display.shading.show_object_outline = False
+                undo = wire_look(scene, radius)
             else:
                 scene.display.shading.type = "SOLID"
                 # Default is the studio grey; MATERIAL shows each material's viewport colour.
                 scene.display.shading.color_type = "MATERIAL"
             filename = "%s.png" % view_id
             scene.render.filepath = os.path.join(OUT, filename)
-            bpy.ops.render.render(write_still=True)
+            try:
+                bpy.ops.render.render(write_still=True)
+            finally:
+                if undo is not None:
+                    undo()
             result["renders"].append({"id": view_id, "label": label, "file": filename})
         except Exception as exc:
             warnings.append("render %s failed: %s" % (label, exc))
@@ -287,6 +385,10 @@ def main():
         }
     except Exception as exc:
         warnings.append("parts list failed: %s" % exc)
+    try:
+        result["materials"] = collect_materials()
+    except Exception as exc:
+        warnings.append("material values failed: %s" % exc)
 
     progress("glb")
     if mesh_objects(scene) or mesh_instances(bpy.context.evaluated_depsgraph_get()):
