@@ -175,6 +175,13 @@ impl Hosts {
         }
     }
 
+    /// Whether this registry can place a window in a pane at all: the
+    /// platform's answer ([`SUPPORTED`]), or a test's. `VEISTRA_EMBED=off` is
+    /// not part of it, since the fallback it shows is per window.
+    pub fn supported(&self) -> bool {
+        self.supported
+    }
+
     /// An embed for a window of `kind`, placed by this registry's window system.
     pub fn embed(&self, kind: Kind) -> Arc<Embed> {
         Arc::new(Embed::with(self.win.clone(), kind))

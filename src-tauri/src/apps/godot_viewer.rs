@@ -11,6 +11,10 @@
 //! time and a screenshot (`docs/VEISTRA-UX-REWORK.md` §3.4), to
 //! [`crate::comments`], shared with every other viewer.
 //!
+//! `godot/status` answers `editor`, where Editor mode shows
+//! ([`crate::editor_surface`]): the scene view above is its read-only surface,
+//! the one main, a cloud session or a missing Godot get.
+//!
 //! The app id stays `godot-viewer`, and `play` is a second registry row that
 //! opens this frontend in Play mode with this same dispatch, so a saved layout
 //! or an agent's `veistra/open` naming either id lands on one app.

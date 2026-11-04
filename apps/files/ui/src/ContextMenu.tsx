@@ -331,12 +331,15 @@ export default function ContextMenu({
             </button>
           )}
           {/* Only for a .blend: the OS may not associate it with Blender at
-              all, and this one says so when Blender is not installed. */}
+              all, and this one says so when Blender is not installed. Blender
+              can save into what it opens, so main refuses it as a write. */}
           {kind !== "dir" && /\.blend$/i.test(path) && (
             <button
               type="button"
               className="menu__item"
               role="menuitem"
+              disabled={readOnly}
+              title={readOnly ? READ_ONLY_HINT : undefined}
               onClick={() => run("files/open-in-blender", () => openInBlender(path))}
             >
               Open in Blender

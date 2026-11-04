@@ -60,7 +60,8 @@ import { blobBase64, sendMarkup } from "../../../../shared/markupFlow";
 import { SendButton, SendFooter, useSendAction } from "../../../../shared/SendFooter";
 import {
   ToolbarButton,
-  ToolbarChip,
+  ToolbarEnvChip,
+  ToolbarReason,
   ViewerToolbar,
   type ToolbarStatus,
 } from "../../../../shared/ViewerToolbar";
@@ -215,6 +216,8 @@ export default function PlayMode(props: PlayModeProps) {
   });
 
   const readOnly = status?.environment.readOnly ?? false;
+  // A cloud session's files, and so its game, are on its VM (`editorSurface.ts`).
+  const cloud = status?.editor?.code === "cloud";
   const found = status?.executable.found ?? null;
   const projects = status?.projects ?? [];
   const chosen = projects.find((p) => p.rel === project) ?? projects[0] ?? null;
@@ -222,7 +225,7 @@ export default function PlayMode(props: PlayModeProps) {
   projectRel.current = chosenRel;
   const running = info?.state.kind === "running";
   const paused = running && info?.paused === true;
-  const canRun = found !== null && chosen !== null && chosen.engineMajor >= 4;
+  const canRun = !cloud && found !== null && chosen !== null && chosen.engineMajor >= 4;
   const session = live?.session ?? null;
   const take = session?.take ?? null;
   const recordOn = live?.record.on ?? false;
@@ -937,7 +940,12 @@ export default function PlayMode(props: PlayModeProps) {
       <span className="pl-subject">{leaf(info?.scene ?? main) || "no scene"}</span>
     );
 
-  const subject =
+  // The environment first, as in every surface (DECISIONS X4): which checkout
+  // a run, a take and a note belong to.
+  const envChip = (
+    <ToolbarEnvChip kind={status?.environment.kind} branch={status?.environment.branch} />
+  );
+  const picker =
     view.kind === "review" ? (
       <select
         className="k-vtb__select"
@@ -976,6 +984,12 @@ export default function PlayMode(props: PlayModeProps) {
         {scenePicker}
       </span>
     );
+  const subject = (
+    <>
+      {envChip}
+      {picker}
+    </>
+  );
 
   const transport = (
     <>
@@ -1065,13 +1079,16 @@ export default function PlayMode(props: PlayModeProps) {
       <ToolbarButton
         kbd="F5"
         disabled={!canRun}
-        title="Run the game again (F5)"
+        title={
+          recordOn
+            ? "Run the game again (F5). Record is on, so the run is kept as a take."
+            : "Run the game again (F5)"
+        }
         icon={<PlayIcon size={14} strokeWidth={1.5} aria-hidden="true" />}
         onClick={() => void playAgain()}
       >
         Play again
       </ToolbarButton>
-      {recordOn && <ToolbarChip tone="danger" label="Record on" />}
       <ToolbarButton onClick={() => setView({ kind: "live" })}>Back to live</ToolbarButton>
     </Fragment>
   );
@@ -1107,7 +1124,7 @@ export default function PlayMode(props: PlayModeProps) {
     problem !== null ||
     statusError !== null ||
     notice !== null ||
-    (status !== null && (!found || projects.length === 0 || readOnly));
+    (status !== null && !cloud && (!found || projects.length === 0));
 
   const hint = info
     ? "Waiting for the game to print something."
@@ -1127,6 +1144,22 @@ export default function PlayMode(props: PlayModeProps) {
         leave={leave}
       />
 
+      {/* Main and a cloud session are facts about the whole pane, so they are
+          the one line under the bar, worded and placed as in Editor. */}
+      {cloud ? (
+        <ToolbarReason>
+          This is a cloud session: its files are on the VM, not on this computer, so the game cannot
+          run here. Open a local worktree to play it.
+        </ToolbarReason>
+      ) : (
+        readOnly && (
+          <ToolbarReason>
+            This is the main checkout, which is read-only here. Play and Record still run; sending
+            notes, enabling capture and Open in Godot need a worktree.
+          </ToolbarReason>
+        )
+      )}
+
       {showNotices && (
         <div className="pl__notices">
           {problem && <p className="pl__notice pl__notice--error">{problem}</p>}
@@ -1139,7 +1172,7 @@ export default function PlayMode(props: PlayModeProps) {
               </button>
             </p>
           )}
-          {status && !found && (
+          {status && !cloud && !found && (
             <p className="pl__notice">
               Godot 4 was not found.
               {status.executable.problems.length > 0 && ` ${status.executable.problems[0]}`} Set its
@@ -1149,7 +1182,7 @@ export default function PlayMode(props: PlayModeProps) {
               </button>
             </p>
           )}
-          {status && projects.length === 0 && (
+          {status && !cloud && projects.length === 0 && (
             <p className="pl__notice">
               No <code>project.godot</code> in this environment (looked four folders deep).
             </p>
@@ -1157,12 +1190,6 @@ export default function PlayMode(props: PlayModeProps) {
           {chosen && chosen.engineMajor < 4 && (
             <p className="pl__notice">
               {chosen.name} is a Godot 3 project. Veistra drives Godot 4.x.
-            </p>
-          )}
-          {readOnly && (
-            <p className="pl__notice">
-              This is the main checkout, which is read-only here. Play and Record still run; sending
-              notes, enabling capture and Open in Godot need a worktree.
             </p>
           )}
         </div>

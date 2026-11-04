@@ -5,6 +5,7 @@
  * `src-tauri/src/apps/blender_viewer.rs`.
  */
 import { invoke } from "@veistra/bridge";
+import type { EditorSurface, SurfaceEnvironment } from "../../../shared/editorSurface";
 
 export interface BlenderPart {
   name: string;
@@ -78,8 +79,11 @@ export interface BlenderViewerState {
   blender: BlenderInstall;
   /** The cluster has an environment to look for `.blend` files in. */
   project: boolean;
-  /** main: an export folder inside the checkout would be refused. */
+  /** main: an export folder inside the checkout would be refused, and the cache is kept outside it. */
   readOnly: boolean;
+  /** Where Blender's Editor mode shows, and why when not in the pane (`editorSurface.ts`). */
+  editor: EditorSurface;
+  environment: SurfaceEnvironment;
   blends: BlendFile[];
   /** The `.blend` this state is about (absolute), or `null` when there is none. */
   blend: string | null;

@@ -39,6 +39,8 @@ const STATE = {
   },
   project: true,
   readOnly: false,
+  editor: { surface: "embedded", reason: null, code: null },
+  environment: { kind: "localWorktree", branch: "wt/bed" },
   blends: [{ path: "C:/p/bed.blend", rel: "bed.blend", mtime: 1, size: 1 }],
   blend: "C:/p/bed.blend",
   rel: "bed.blend",
@@ -278,5 +280,107 @@ describe("Blender Viewer toolbar", () => {
     fireEvent.click(await screen.findByRole("tab", { name: "Wire" }));
     await screen.findByText("This export has no wireframe pass.");
     expect(screen.getByText(/Parts \(1\)/)).toBeTruthy();
+  });
+});
+
+describe("Blender Viewer surface (the backend's `editor`)", () => {
+  const MAIN = {
+    readOnly: true,
+    environment: { kind: "main", branch: null },
+    editor: {
+      surface: "viewer",
+      code: "main",
+      reason:
+        "This is the main checkout, which is read-only here, so Blender does not open on it. Open a worktree to edit.",
+    },
+  };
+
+  it("on the main checkout shows the reason under the toolbar and still shows the export", async () => {
+    backend(undefined, MAIN);
+    const { container } = render(<App />);
+    const note = await screen.findByRole("note");
+    expect(note.textContent).toContain("This is the main checkout");
+    const bar = screen.getByRole("toolbar", { name: "Blender" });
+    expect(bar.nextElementSibling).toBe(note);
+    expect(container.querySelector(".k-vtb__env")?.textContent).toBe("main");
+    const open = within(bar).getByRole("button", { name: "Open in Blender" }) as HTMLButtonElement;
+    expect(open.disabled).toBe(true);
+    expect(open.title).toContain("main checkout");
+    expect(screen.getByText(/Parts \(1\)/)).toBeTruthy();
+  });
+
+  it("on the main checkout will not post a comment, and says why", async () => {
+    backend(undefined, MAIN);
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /Frame/ }));
+    fireEvent.change(screen.getByPlaceholderText("What should change about this part?"), {
+      target: { value: "thinner" },
+    });
+    const post = screen.getByRole("button", { name: "Comment" }) as HTMLButtonElement;
+    expect(post.disabled).toBe(true);
+    expect(post.title).toContain("main is read-only");
+  });
+
+  it("says a refused comment instead of dropping it", async () => {
+    backend();
+    bridge.invoke.mockImplementation((method: string) => {
+      if (method === "blender-viewer/state") return Promise.resolve(STATE);
+      if (method === "comments/list") return Promise.resolve([]);
+      if (method === "comments/create") return Promise.reject(new Error("refused: read-only"));
+      return Promise.resolve(null);
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /Frame/ }));
+    fireEvent.change(screen.getByPlaceholderText("What should change about this part?"), {
+      target: { value: "thinner" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("refused: read-only");
+  });
+
+  it("leaves a missing Blender to its setup panel, not a second line", async () => {
+    backend(undefined, {
+      blender: { ...STATE.blender, found: false, path: null, configuredMissing: true },
+      editor: {
+        surface: "viewer",
+        code: "noEditor",
+        reason: "Blender was not found on this computer. Set its path under Settings, Blender.",
+      },
+    });
+    render(<App />);
+    await screen.findByRole("region", { name: "Blender not found" });
+    expect(screen.queryByRole("note")).toBeNull();
+  });
+
+  it("names its own window when there is no embedder, and Open in Blender still works", async () => {
+    backend(undefined, {
+      editor: {
+        surface: "popOut",
+        code: "noEmbedder",
+        reason:
+          "Blender opens in its own window: Veistra cannot place it in the pane on macOS yet.",
+      },
+    });
+    render(<App />);
+    expect((await screen.findByRole("note")).textContent).toContain("its own window");
+    const bar = screen.getByRole("toolbar", { name: "Blender" });
+    const open = within(bar).getByRole("button", { name: "Open in Blender" }) as HTMLButtonElement;
+    expect(open.disabled).toBe(false);
+  });
+
+  it("puts the environment first in the subject, and Mark up in the actions before the view switch", async () => {
+    backend();
+    render(<App />);
+    const bar = await screen.findByRole("toolbar", { name: "Blender" });
+    const text = bar.textContent ?? "";
+    expect(text.indexOf("wt")).toBeLessThan(text.indexOf("bed.blend"));
+    const markUp = within(bar).getByRole("button", { name: /Mark up/ });
+    const actions = bar.querySelector(".k-vtb__actions");
+    expect(actions?.contains(markUp)).toBe(true);
+    const switcher = within(bar).getByRole("tablist", { name: "Model view" });
+    expect(
+      markUp.compareDocumentPosition(switcher) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: /Mark up/ })).toHaveLength(1);
   });
 });

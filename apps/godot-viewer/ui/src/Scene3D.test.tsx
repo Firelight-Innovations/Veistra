@@ -4,7 +4,7 @@
  * the SceneView and the markup layer are stand-ins; what is under test is the
  * view's own promise about the camera, not the renderer.
  */
-import { forwardRef, useImperativeHandle, type ReactNode } from "react";
+import { forwardRef, useImperativeHandle, useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
@@ -51,23 +51,34 @@ vi.mock("@veistra/markup/layer", () => ({
 }));
 
 import Scene3D from "./Scene3D";
+import { MarkupButton, type MarkupTrigger } from "../../../shared/MarkupTrigger";
 
 const lookup = { toView: (p: string | null) => p, toScene: (p: string | null) => p };
 
-function mount(onMarkup = vi.fn(), onNotice = vi.fn()) {
-  render(
-    <Scene3D
-      glb={new ArrayBuffer(0)}
-      lookup={lookup}
-      glbPath="C:/p/.veistra/preview/godot/main.glb"
-      scenePath="res://main.tscn"
-      godot={null}
-      selected={null}
-      onSelect={vi.fn()}
-      onMarkup={onMarkup}
-      onNotice={onNotice}
-    />,
+/** The view beside the toolbar button it reports to, as Editor mode holds them. */
+function WithButton({ onMarkup, onNotice }: { onMarkup: () => void; onNotice: () => void }) {
+  const [trigger, setTrigger] = useState<MarkupTrigger | null>(null);
+  return (
+    <>
+      <MarkupButton trigger={trigger} />
+      <Scene3D
+        glb={new ArrayBuffer(0)}
+        lookup={lookup}
+        glbPath="C:/p/.veistra/preview/godot/main.glb"
+        scenePath="res://main.tscn"
+        godot={null}
+        selected={null}
+        onSelect={vi.fn()}
+        onMarkup={onMarkup}
+        onNotice={onNotice}
+        onTrigger={setTrigger}
+      />
+    </>
   );
+}
+
+function mount(onMarkup = vi.fn(), onNotice = vi.fn()) {
+  render(<WithButton onMarkup={onMarkup} onNotice={onNotice} />);
   return { onMarkup, onNotice };
 }
 

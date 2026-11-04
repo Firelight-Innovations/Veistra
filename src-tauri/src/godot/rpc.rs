@@ -25,8 +25,10 @@ use super::scene::{self, Refresh};
 use super::session::Session;
 use super::takes;
 use super::{scratch_root, Godot};
+use crate::editor_surface::{self, Facts, Tool};
 use crate::embed::host::{HostSpec, Hosts, Orphan, Pane, Slot};
 use crate::embed::{self, Kind, Owner, OwnerFn};
+use crate::environments::Environment;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use serde::Deserialize;
@@ -50,11 +52,16 @@ pub struct Ctx<'a> {
     pub godot: &'a Godot,
     /// The cluster id; runs and viewer jobs are kept per cluster.
     pub key: String,
-    /// The environment's folder, `None` before a project is open.
+    /// The environment's folder, `None` before a project is open, and on a
+    /// cloud session, which has no folder on this computer.
     pub root: Option<PathBuf>,
+    /// The cluster's write environment, `None` for a plain folder.
+    pub environment: Option<Environment>,
     /// The cluster's project, which every one of its environments belongs
     /// to; Record's settings are kept under it.
     pub project_root: Option<PathBuf>,
+    /// `environment` is the main checkout. Its own field because most
+    /// handlers ask only this.
     pub read_only: bool,
     pub probe: Probe,
     pub check: Check<'a>,
@@ -195,9 +202,13 @@ pub fn viewer(ctx: &Ctx, method: &str, raw: Option<&Value>) -> Option<Result<Val
 // --- shared lookups ---------------------------------------------------------
 
 fn root<'a>(ctx: &'a Ctx) -> Result<&'a Path, RpcError> {
-    ctx.root
-        .as_deref()
-        .ok_or_else(|| fail("this cluster has no environment yet - open a project first"))
+    ctx.root.as_deref().ok_or_else(|| match ctx.environment {
+        Some(Environment::Cloud { .. }) => fail(
+            "this is a cloud session: its files are on the VM, not on this computer, so there is \
+             nothing here to open or run",
+        ),
+        _ => fail("this cluster has no environment yet - open a project first"),
+    })
 }
 
 fn projects(ctx: &Ctx) -> Result<Vec<GodotProject>, RpcError> {
@@ -250,10 +261,22 @@ fn status(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
         v["addon"] = to_value(&addon::status(&project.dir))?;
         described.push(v);
     }
+    let editor = editor_surface::decide(
+        Tool::Godot,
+        Facts {
+            environment: ctx.environment.as_ref(),
+            editor_found: resolution.found.is_some(),
+            editor_problem: resolution.problems.first().map(String::as_str),
+            platform: editor_surface::current(),
+            embedder: ctx.hosts.supported(),
+        },
+    );
     Ok(json!({
         "environment": {
             "root": ctx.root.as_ref().map(|r| r.display().to_string()),
             "readOnly": ctx.read_only,
+            "kind": ctx.environment.as_ref().map(Environment::kind),
+            "branch": ctx.environment.as_ref().and_then(Environment::branch),
         },
         "executable": {
             "found": to_value(&resolution.found)?,
@@ -261,6 +284,7 @@ fn status(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
             "setting": ctx.probe.setting,
         },
         "projects": described,
+        "editor": editor,
     }))
 }
 
@@ -942,11 +966,11 @@ pub fn with_live_for<R>(
     use tauri::Manager;
     let key = context.cluster_id.clone().unwrap_or_default();
     let shell = app.state::<crate::shell_state::ShellState>();
-    let read_only = context.cluster_id.as_deref().is_some_and(|cluster| {
-        shell
-            .cluster_write_environment(cluster)
-            .is_some_and(|env| env.is_main())
-    });
+    let environment = context
+        .cluster_id
+        .as_deref()
+        .and_then(|cluster| shell.cluster_write_environment(cluster));
+    let read_only = environment.as_ref().is_some_and(Environment::is_main);
     let setting = crate::settings::text(app, super::KEY_EXECUTABLE_PATH);
     let cache_root = app
         .path()
@@ -987,6 +1011,7 @@ pub fn with_live_for<R>(
         godot: &godot,
         key,
         root: context.project.clone(),
+        environment,
         project_root,
         read_only,
         probe: Probe::from_system(&setting),
@@ -1051,6 +1076,7 @@ mod tests {
             godot: &w.godot,
             key: "c1".to_string(),
             root: Some(w.root.clone()),
+            environment: read_only.then_some(Environment::Main),
             project_root: Some(w.root.clone()),
             read_only,
             probe: Probe {
@@ -1112,6 +1138,85 @@ mod tests {
             .unwrap()
             .contains("does not exist"));
         assert_eq!(s["projects"].as_array().unwrap().len(), 1);
+        assert_eq!(s["editor"]["surface"], "viewer");
+        assert_eq!(s["editor"]["code"], "noEditor");
+        let reason = s["editor"]["reason"].as_str().unwrap();
+        assert!(reason.contains("does not exist"), "{reason}");
+        assert!(reason.ends_with("Set its path under Settings, Godot."));
+    }
+
+    #[test]
+    fn status_on_main_answers_the_viewer_and_why() {
+        let w = world(false);
+        let c = ctx(&w, true, &real_check);
+        let s = call(&c, "godot/status", json!({})).unwrap();
+        assert_eq!(s["environment"]["readOnly"], true);
+        assert_eq!(s["environment"]["kind"], "main");
+        assert_eq!(s["editor"]["surface"], "viewer");
+        assert_eq!(s["editor"]["code"], "main");
+        assert!(s["editor"]["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("This is the main checkout"));
+        // The viewer still has what it reads: the engine and the projects.
+        assert_eq!(s["executable"]["found"]["version"], "4.3.stable.fake");
+        assert_eq!(s["projects"][0]["rel"], "game");
+    }
+
+    #[test]
+    fn status_on_a_cloud_cluster_answers_cloud_and_the_rest_says_so() {
+        let w = world(false);
+        let c = Ctx {
+            root: None,
+            environment: Some(Environment::Cloud {
+                session_id: "s1".into(),
+                vm: "vm-1".into(),
+                branch: Some("wt/cloud".into()),
+            }),
+            ..ctx(&w, false, &real_check)
+        };
+        let s = call(&c, "godot/status", json!({})).unwrap();
+        assert_eq!(s["environment"]["kind"], "cloud");
+        assert_eq!(s["environment"]["branch"], "wt/cloud");
+        assert_eq!(s["environment"]["readOnly"], false);
+        assert_eq!(s["editor"]["code"], "cloud");
+        assert_eq!(s["projects"], json!([]));
+        for method in ["play/run", "godot/open-editor", "godot-viewer/state"] {
+            let err = call(&c, method, json!({})).unwrap_err();
+            assert!(err.message.contains("cloud session"), "{method}: {err:?}");
+        }
+    }
+
+    #[test]
+    fn status_in_a_worktree_answers_embedded_only_where_there_is_an_embedder() {
+        let w = world(false);
+        let env = Environment::LocalWorktree {
+            name: "feat".into(),
+            path: w.root.display().to_string(),
+            branch: "wt/feat".into(),
+            base: "main".into(),
+        };
+        let without = Ctx {
+            environment: Some(env.clone()),
+            ..ctx(&w, false, &real_check)
+        };
+        let s = call(&without, "godot/status", json!({})).unwrap();
+        assert_eq!(s["environment"]["kind"], "localWorktree");
+        assert_eq!(s["environment"]["branch"], "wt/feat");
+        assert_eq!(s["editor"]["surface"], "popOut");
+        assert_eq!(s["editor"]["code"], "noEmbedder");
+
+        let placing = Hosts::with(embed::native(), true, false);
+        let with = Ctx {
+            environment: Some(env),
+            hosts: &placing,
+            ..ctx(&w, false, &real_check)
+        };
+        let s = call(&with, "godot/status", json!({})).unwrap();
+        assert_eq!(
+            s["editor"],
+            json!({ "surface": "embedded", "reason": null, "code": null })
+        );
     }
 
     #[test]

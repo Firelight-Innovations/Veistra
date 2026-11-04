@@ -1,9 +1,12 @@
 /**
- * The Godot app's Editor mode, for now: a scene's node tree beside a 3D view
- * or its last rendered frame, read-only. The editor itself opens in its own
- * window (Open in Godot) until it can open in the pane. The header is the
- * shared `ViewerToolbar`, so Editor reads like Play and the Blender viewer:
- * mode, scene, freshness, actions, leave.
+ * The Godot app's read-only viewer: a scene's node tree beside a 3D view or
+ * its last rendered frame. It is Editor mode's body whenever the backend
+ * answers `viewer` (main, a cloud session, no Godot: `editorSurface.ts`), and,
+ * until the editor can open in the pane (C1), every other time too, with Open
+ * in Godot for the editor in its own window. The header is the shared
+ * `ViewerToolbar`, so Editor reads like Play and the Blender viewer: the
+ * environment and scene, freshness, actions, leave; the backend's reason for
+ * the surface is the one line under it.
  */
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { reportPainted } from "@veistra/bridge";
@@ -27,10 +30,13 @@ import {
   type Comment,
 } from "../../../shared/comments";
 import { formatRenderAge } from "../../../shared/age";
+import { EditorReason } from "../../../shared/EditorReason";
+import { canLaunch } from "../../../shared/editorSurface";
 import { errorText, openInGodot } from "../../../shared/godot";
+import { MarkupButton, type MarkupTrigger } from "../../../shared/MarkupTrigger";
 import { SegmentedControl } from "../../../shared/SegmentedControl";
 import { SendButton, SendFooter, useSendAction } from "../../../shared/SendFooter";
-import { ToolbarButton, ViewerToolbar } from "../../../shared/ViewerToolbar";
+import { ToolbarButton, ToolbarEnvChip, ViewerToolbar } from "../../../shared/ViewerToolbar";
 import {
   getImage,
   getState,
@@ -89,6 +95,11 @@ export default function SceneMode({ modeSwitch, status, epoch, onPlay }: SceneMo
   const [draft, setDraft] = useState("");
   const [posting, setPosting] = useState(false);
   const [view, setView] = useState<View>("3d");
+  const [trigger, setTrigger] = useState<MarkupTrigger | null>(null);
+  const surface = status?.editor ?? null;
+  // A cloud session's files are on its VM: there is nothing here to read, and
+  // every read would only fail with the reason the line under the bar gives.
+  const cloud = surface?.code === "cloud";
   const refreshComments = useCallback(async () => {
     setCommentsLoading(true);
     setCommentsError(null);
@@ -115,12 +126,12 @@ export default function SceneMode({ modeSwitch, status, epoch, onPlay }: SceneMo
   // Again after the cluster's project moves: the scenes and comments are the
   // new root's.
   useEffect(() => {
-    void load();
-  }, [load, epoch]);
+    if (!cloud) void load();
+  }, [load, epoch, cloud]);
 
   useEffect(() => {
-    void refreshComments();
-  }, [refreshComments, epoch]);
+    if (!cloud) void refreshComments();
+  }, [refreshComments, epoch, cloud]);
 
   // A fix an agent made over MCP, or a verdict from Play, moves a card and
   // the tree's badges here too. Quietly: no spinner, and a failure keeps them.
@@ -172,8 +183,8 @@ export default function SceneMode({ modeSwitch, status, epoch, onPlay }: SceneMo
 
   const shown = preview ? sampleState : state;
   const nodes = shown?.nodes ?? [];
-  const found = status?.executable.found ?? null;
   const readOnly = status?.environment.readOnly ?? false;
+  const launchable = canLaunch(surface);
   // Every comment not yet resolved, as the panel and Play count them: one an
   // agent is working on, or has fixed and left for the person to check, still
   // waits on someone.
@@ -251,10 +262,17 @@ export default function SceneMode({ modeSwitch, status, epoch, onPlay }: SceneMo
       setDraft("");
       await refreshComments();
       setCommentsOpen(true);
+    } catch (e) {
+      setProblem(errorText(e));
     } finally {
       setPosting(false);
     }
   };
+
+  // The line under the bar already says Godot is missing; this is for when it
+  // gives another reason first (main, say) and Godot is missing as well.
+  const engineNotice =
+    !preview && state !== null && !state.engineFound && surface?.code !== "noEditor";
 
   const sourceLabel =
     shown?.source === "headless"
@@ -265,38 +283,38 @@ export default function SceneMode({ modeSwitch, status, epoch, onPlay }: SceneMo
 
   return (
     <div className="gv" ref={root} tabIndex={-1} onKeyDown={onKeyDown}>
-      {/* Mark up is not here: it belongs to the 3D view and sits on that view's
-          own bar (`apps/shared/MarkupScene.tsx`), which already knows when the
-          view can be drawn on. A second trigger here would need a handle into
-          that lazy-loaded view for no gain. */}
       <ViewerToolbar
         label="Godot"
         mode={modeSwitch}
         subject={
-          !preview &&
-          state &&
-          state.scenes.length > 0 && (
-            <select
-              className="k-vtb__select"
-              aria-label="Scene"
-              value={state.scene ?? ""}
-              disabled={busy}
-              onChange={(e) => {
-                setScene(e.target.value);
-                setSelected(null);
-              }}
-            >
-              {state.scenes.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-          )
+          <>
+            <ToolbarEnvChip kind={status?.environment.kind} branch={status?.environment.branch} />
+            {!preview && state && state.scenes.length > 0 && (
+              <select
+                className="k-vtb__select"
+                aria-label="Scene"
+                value={state.scene ?? ""}
+                disabled={busy}
+                onChange={(e) => {
+                  setScene(e.target.value);
+                  setSelected(null);
+                }}
+              >
+                {state.scenes.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+            )}
+          </>
         }
         status={sceneChip(state, preview)}
         actions={
           <>
+            {/* The 3D view is lazy, so it reports how to start drawing and
+                the button lives here, in slot 4, as in Play. */}
+            {view === "3d" && !preview && <MarkupButton trigger={inThreeD ? trigger : null} />}
             <SegmentedControl
               aria-label="Scene view"
               value={view}
@@ -348,13 +366,11 @@ export default function SceneMode({ modeSwitch, status, epoch, onPlay }: SceneMo
           <ToolbarButton
             icon={<ExternalLink size={14} strokeWidth={1.5} aria-hidden="true" />}
             label="Open in Godot"
-            disabled={!found || readOnly}
+            disabled={!launchable}
             title={
-              readOnly
-                ? "The default branch is read-only; open a worktree to edit."
-                : found
-                  ? "Open this project in the Godot editor"
-                  : "Godot 4 was not found."
+              launchable
+                ? "Open this project in the Godot editor"
+                : (surface?.reason ?? "Checking for Godot...")
             }
             onClick={() => {
               setProblem(null);
@@ -364,7 +380,18 @@ export default function SceneMode({ modeSwitch, status, epoch, onPlay }: SceneMo
         }
       />
 
-      {(problem || job?.error || (!preview && state && !state.engineFound)) && (
+      <EditorReason
+        surface={surface}
+        tool="godot"
+        detail={
+          surface?.code === "noEditor"
+            ? "The tree is read from the scene file, and no frame can be rendered."
+            : undefined
+        }
+        onError={setProblem}
+      />
+
+      {(problem || job?.error || engineNotice) && (
         <div className="gv__notices">
           {problem && <p className="gv__notice gv__notice--error">{problem}</p>}
           {job?.error && (
@@ -373,7 +400,7 @@ export default function SceneMode({ modeSwitch, status, epoch, onPlay }: SceneMo
               {job.output.length > 0 && <code className="gv__output">{job.output.join("\n")}</code>}
             </p>
           )}
-          {!preview && state && !state.engineFound && (
+          {engineNotice && (
             <p className="gv__notice">
               Godot 4 was not found, so the tree is read from the scene file and no frame can be
               rendered. Set its path under Settings, Godot.
@@ -390,9 +417,11 @@ export default function SceneMode({ modeSwitch, status, epoch, onPlay }: SceneMo
           </div>
           {nodes.length === 0 ? (
             <p className="gv__hint">
-              {noScenes
-                ? "No .tscn scenes in this project."
-                : "Nothing read yet. Refresh the tree to load it."}
+              {cloud
+                ? "Nothing to read here: this session's files are on its VM."
+                : noScenes
+                  ? "No .tscn scenes in this project."
+                  : "Nothing read yet. Refresh the tree to load it."}
             </p>
           ) : (
             <div className="gv__tree-list">
@@ -435,6 +464,7 @@ export default function SceneMode({ modeSwitch, status, epoch, onPlay }: SceneMo
                   onSelect={setSelected}
                   onMarkup={onMarkup}
                   onNotice={setProblem}
+                  onTrigger={setTrigger}
                 />
               </Suspense>
               {markup && (
@@ -506,7 +536,12 @@ export default function SceneMode({ modeSwitch, status, epoch, onPlay }: SceneMo
                 type="button"
                 className="gv__composer-submit"
                 onClick={postComment}
-                disabled={posting || !draft.trim()}
+                disabled={posting || !draft.trim() || readOnly}
+                title={
+                  readOnly
+                    ? "Comments are kept in the checkout, and main is read-only. Open a worktree to comment."
+                    : undefined
+                }
               >
                 {posting ? "Posting..." : "Comment"}
               </button>
@@ -550,11 +585,13 @@ export default function SceneMode({ modeSwitch, status, epoch, onPlay }: SceneMo
       <SendFooter
         trailing={
           <>
-            {/* Until the editor is embedded (C1), Editor mode is this read-only
-                view; C3 keeps it as the fallback. */}
-            <span className="gv__footer-note">
-              The Godot editor opens in its own window for now: Open in Godot.
-            </span>
+            {/* Until the editor is embedded (C1), an embedder's answer still
+                shows this view. Pop out says so in the line under the bar. */}
+            {surface?.surface === "embedded" && (
+              <span className="gv__footer-note">
+                The Godot editor opens in its own window for now: Open in Godot.
+              </span>
+            )}
             <button
               type="button"
               className="gv__footer-btn"

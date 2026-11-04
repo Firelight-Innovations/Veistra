@@ -206,6 +206,12 @@ check it". The same chokepoint reports `godot:note_fixed` and `godot:note_resolv
 | Comment pushes and the mark telemetry (#313) | Not wired here; #314 does both | The issue moves Play; the comment push (`useCommentsChanged`) and `mark_dropped` belong to review and its notes. |
 | The captured-mouse hint (#313) | The strip reads an optional `session.mouseCaptured`: "F7 stops and opens the take" while recording, "F7 stops the game." otherwise; absent reads as not captured | Spec §4.4. A game holding the mouse leaves nothing in the pane to click, and F7 is the key the addon forwards. #312's backend sends the field; this branch does not contain it, so the hint shows once the two meet. |
 | A game an agent started with no Play pane open (#309) | Its own window until a Play pane shows it; that pane places it when the window appears, or docks it at once if it is already up | Failing the pane's first box because the window had not shown yet left the game in its own frame for the whole run. The 10 s wait restarts when the pane opens: time with no pane had nothing to place the window in, and counting it kept a slow window out of a pane opened at 15 s while one opened at 25 s docked it. |
+| Where an editor shows (#318) | The backend decides, once, in `editor_surface::decide`, and `godot/status` and `blender-viewer/state` answer it as `editor: {surface, reason, code}`; the order is cloud, then main, then no editor, then embedded where there is an embedder and Pop out where there is not | Each page working it out again from `readOnly` and a found path was how the two apps came to disagree. Wayland was not a separate surface: macOS, Linux on X11 and Linux on Wayland all lack an embedder today, so Pop out is "no embedder here" and the platform only changes the sentence. |
+| The fallback's reason (#318) | One line under the toolbar (`ToolbarReason`), not a slot or a banner; a missing editor gets Open Settings on its section, main and a cloud session have nothing to press. The mode's label stays Editor | The five slots are full, and a sixth is how the toolbars drift apart. Renaming the mode to Viewer when the viewer shows was rejected: the mode would change name under the person as the cluster moved. |
+| Cloud sessions in the viewer (#318) | A reason only: nothing is read, no scene and no comments, and Play does not offer Run | The files are on the VM. No cloud cluster can be made in this build, so the case is unit-tested only. |
+| Mark up's place (#318) | Slot 4 in every surface; the lazy 3D view reports how to start drawing (`onTrigger`) and the toolbar draws the button (`MarkupButton`) | It sat on the 3D view's own bar in Editor and the Blender viewer and in slot 4 in Play. A handle into the lazy view was rejected: it would pull three.js into the eager chunk. |
+| The environment chip (#318) | First in slot 2, before the picker: `wt`, `cloud`, `main` or `design` and the branch, with main in the warning tone | Which checkout an edit lands in is the first thing to know before pressing anything; Play's review keeps one state chip and says Record is on in Play again's title. |
+| Blender on main (#318) | `blender-viewer/open` and `files/open-in-blender` are writes, refused on main; the Blender export cache for main moved to app-local data, keyed by the checkout's path | Blender saves into what it opens. The cache under `<project>/.veistra/blender/` was the one thing the viewer still wrote into main. |
 | Where pick's physics query runs (#312) | `_physics_process`; the command poll only queues the pick | Godot makes the direct space state safe there alone: from `_process` it refuses with physics on its own thread, and Jolt refuses while it steps, so the pick fell back to boxes without saying why. The node runs while paused, so a pick still answers during Mark up. |
 | Exported builds (#312) | Inert whenever `OS.has_feature("template")` | Relying on a missing `--veistra-dir` alone was rejected: a shipped game started with the argument by hand would write telemetry and answer commands, against §5.5 rule 6 and the consent text. |
 | When Update capture is offered (#312) | Whenever the installed script's text is not this build's, CRLF read as LF; an earlier v2 goes out as `partial` but keeps its channel | The marker alone called every earlier v2 current, so no fix to the script ever reached a project that had one. Treating an earlier v2 as a broken install was rejected: its game would lose capture and Rec until updated. |
@@ -329,6 +335,16 @@ From #313, tested in jsdom and type-checked for Windows only; no WebView2 or God
 - The captured-mouse hint with a real game: it needs #312's backend, which sends
   `mouseCaptured`, and a game that captures the mouse.
 
+From #318, unit-tested in Rust and jsdom; no WebView2, Godot or Blender ran:
+
+- The Godot app and the Blender viewer opened on the main checkout in the real window: the
+  viewer, the reason under the bar, the `main` chip, Open in Godot and Open in Blender disabled.
+- The Pop out wording on macOS and on Linux with X11 and with Wayland: the platform is read from
+  `WAYLAND_DISPLAY` and `XDG_SESSION_TYPE`, tested as strings only.
+- A cloud session's reason: no cloud cluster can be made in this build.
+- The reason line and the environment chip against the board at 1440 and 1024 px wide.
+- A Blender export on main landing under app-local data, with a real Blender.
+
 From #314, tested in jsdom and type-checked only; no WebView2, video decoder or Godot ran:
 
 - Spec test 5: review within 2 s of F7 for a two-minute take of the demo (`data-open-ms`, above),
@@ -405,9 +421,15 @@ appears briefly. The frame is cached beside the tree and stamped separately.
 ## Read-only main (#163)
 
 Running and viewing read the project, so they work on main. Writing does not:
-`godot/open-editor`, `play/addon-install`, `play/addon-remove`, `play/send` and
-`comments/verdict` are in `WRITE_METHODS` and are refused on main before a handler runs. The viewer's cache goes under the app-local data folder
-for main and under `<env>/.veistra/godot-viewer/` for a worktree; run channels are always in temp.
+`godot/open-editor`, `blender-viewer/open`, `files/open-in-blender`, `play/addon-install`,
+`play/addon-remove`, `play/send`, `comments/create` and `comments/verdict` are in
+`WRITE_METHODS` and are refused on main before a handler runs. The Godot viewer's cache and the
+Blender viewer's export cache go under the app-local data folder for main (Blender's keyed by
+the checkout's path) and under `<env>/.veistra/` for a worktree; run channels are always in temp.
+
+On main, Editor mode is the read-only viewer and says why under the toolbar
+(`editor_surface.rs`, #318): Open in Godot and Open in Blender are disabled with that reason,
+and the comment composers say comments cannot be kept in main.
 
 What Veistra cannot prevent: Godot writes `<project>/.godot/` (import cache) whenever it loads a
 project. It is engine-generated and gitignored by every Godot template.

@@ -116,6 +116,17 @@ impl Environment {
         matches!(self, Environment::Main)
     }
 
+    /// The wire tag alone (`"localWorktree"`, `"cloud"`, `"main"`, `"design"`),
+    /// for an answer that names the kind without the paths that go with it.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Environment::LocalWorktree { .. } => "localWorktree",
+            Environment::Cloud { .. } => "cloud",
+            Environment::Main => "main",
+            Environment::Design { .. } => "design",
+        }
+    }
+
     /// A stable key naming *this* environment, not just its kind — what
     /// `ShellState::project_live_counts` dedups on to turn "N clusters" into
     /// "N environments" when two clusters happen to point at the same one
@@ -450,6 +461,31 @@ mod tests {
         assert_eq!(json["kind"], "main");
         let back: Environment = serde_json::from_value(json).unwrap();
         assert_eq!(back, Environment::Main);
+    }
+
+    #[test]
+    fn kind_is_the_wire_tag() {
+        let all = [
+            Environment::LocalWorktree {
+                name: "x".into(),
+                path: "/x".into(),
+                branch: "wt/x".into(),
+                base: "main".into(),
+            },
+            Environment::Cloud {
+                session_id: "s".into(),
+                vm: "vm".into(),
+                branch: None,
+            },
+            Environment::Main,
+            Environment::Design {
+                path: "/d".into(),
+                branch: "wt/design".into(),
+            },
+        ];
+        for env in all {
+            assert_eq!(serde_json::to_value(&env).unwrap()["kind"], env.kind());
+        }
     }
 
     // --- environment resolution -----------------------------------------------

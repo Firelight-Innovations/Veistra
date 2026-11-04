@@ -161,6 +161,21 @@ pub fn cache_root(project: &Path) -> PathBuf {
     project.join(".veistra").join("blender")
 }
 
+/// Where a project's cache is: [`cache_root`], or, when `outside` names a
+/// folder, a folder under it keyed by a hash of the project's path. The
+/// read-only main checkout gets the second, as the Godot viewer's cache does:
+/// nothing Veistra keeps may be written into main.
+pub fn cache_root_in(project: &Path, outside: Option<&Path>) -> PathBuf {
+    match outside {
+        None => cache_root(project),
+        Some(dir) => {
+            let digest = Sha256::digest(project.to_string_lossy().as_bytes());
+            let hex: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
+            dir.join("blender").join(hex)
+        }
+    }
+}
+
 /// The `.blend` path as written relative to the project, with forward slashes,
 /// or `None` if it is not inside it. Never trusts a `..` in the input.
 pub fn relative_blend(project: &Path, blend: &Path) -> Option<String> {
@@ -206,8 +221,9 @@ pub fn slug(rel: &str) -> String {
     format!("{clean}-{hash}")
 }
 
-pub fn cache_dir(project: &Path, rel: &str) -> PathBuf {
-    cache_root(project).join(slug(rel))
+/// One `.blend`'s cache under [`cache_root_in`].
+pub fn cache_dir_in(project: &Path, rel: &str, outside: Option<&Path>) -> PathBuf {
+    cache_root_in(project, outside).join(slug(rel))
 }
 
 /// What one successful export left behind: the whole of `export.json`.
@@ -537,7 +553,7 @@ mod tests {
     #[test]
     fn commit_moves_files_into_place_and_writes_the_manifest_last() {
         let project = TempDir::new().unwrap();
-        let cache = cache_dir(project.path(), "bed.blend");
+        let cache = cache_dir_in(project.path(), "bed.blend", None);
         let pending = cache.join("pending");
         std::fs::create_dir_all(&pending).unwrap();
         std::fs::write(pending.join("model.glb"), b"glb").unwrap();
@@ -580,6 +596,21 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(cache_root(project.path()).join(".gitignore")).unwrap(),
             "*\n"
+        );
+    }
+
+    #[test]
+    fn a_cache_kept_outside_is_keyed_by_the_project_and_never_inside_it() {
+        let app = Path::new("/appdata");
+        let a = cache_dir_in(Path::new("/repo"), "bed.blend", Some(app));
+        let b = cache_dir_in(Path::new("/other"), "bed.blend", Some(app));
+        assert!(a.starts_with("/appdata/blender"), "{}", a.display());
+        assert!(!a.starts_with("/repo"));
+        assert_ne!(a, b, "two checkouts never share one");
+        assert_eq!(a, cache_dir_in(Path::new("/repo"), "bed.blend", Some(app)));
+        assert_eq!(
+            cache_dir_in(Path::new("/repo"), "bed.blend", None),
+            cache_root(Path::new("/repo")).join(slug("bed.blend"))
         );
     }
 

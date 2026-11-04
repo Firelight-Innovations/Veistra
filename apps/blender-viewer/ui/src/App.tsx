@@ -1,8 +1,11 @@
 /**
  * The Blender Viewer: a headless export of a `.blend` (the `.glb` in 3D, its
- * renders, its parts) with comments and markup. The header is the shared
- * `ViewerToolbar`, so it reads like Godot Scene and Play: mode, file,
- * freshness, actions, leave.
+ * renders, its parts) with comments and markup. It is Blender's read-only
+ * surface: what main, a cloud session or a missing Blender get
+ * (`blender-viewer/state`'s `editor`, `editorSurface.ts`), and, until Blender
+ * can open in the pane (C2), every other time too. The header is the shared
+ * `ViewerToolbar`, so it reads like Godot Editor and Play: the environment and
+ * file, freshness, actions, leave; the backend's reason is one line under it.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { reportPainted } from "@veistra/bridge";
@@ -17,6 +20,9 @@ import {
   RefreshCw,
   Square,
 } from "lucide-react";
+import { EditorReason } from "../../../shared/EditorReason";
+import { canLaunch } from "../../../shared/editorSurface";
+import { MarkupButton, type MarkupTrigger } from "../../../shared/MarkupTrigger";
 import { CommentPanel } from "../../../shared/CommentPanel";
 import {
   createComment,
@@ -28,7 +34,7 @@ import {
 import { useCommentsChanged } from "../../../shared/commentEvents";
 import { SegmentedControl } from "../../../shared/SegmentedControl";
 import { SendButton, SendFooter, useSendAction } from "../../../shared/SendFooter";
-import { ToolbarButton, ViewerToolbar } from "../../../shared/ViewerToolbar";
+import { ToolbarButton, ToolbarEnvChip, ViewerToolbar } from "../../../shared/ViewerToolbar";
 import {
   cancelExport,
   detectBlender,
@@ -157,6 +163,7 @@ export default function App() {
   const [draft, setDraft] = useState("");
   const [posting, setPosting] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [trigger, setTrigger] = useState<MarkupTrigger | null>(null);
   const autoStartedFor = useRef<number | null>(null);
   const lastSeenMtime = useRef<number | null>(null);
   const [root, setRoot] = useState<HTMLDivElement | null>(null);
@@ -316,6 +323,8 @@ export default function App() {
       setDraft("");
       await refreshComments();
       setCommentsOpen(true);
+    } catch (err) {
+      setError(message(err));
     } finally {
       setPosting(false);
     }
@@ -392,58 +401,66 @@ export default function App() {
     state.renders.find((r) => r.id !== "wire") ??
     null;
   const jobIsForThis = job.blend !== null && job.blend === state.rel;
+  const surface = state.editor ?? null;
+  const launchable = canLaunch(surface);
+  const showModel = mode === "model" && exported && modelView === "3d";
   const showJob = job.running || (jobIsForThis && job.outcome !== null && job.outcome !== "ok");
 
   return (
     <div className="bv" ref={setRoot}>
-      {/* Mark up is not here: it sits on the 3D view's own bar
-          (`apps/shared/MarkupScene.tsx`), which knows when the model can be
-          drawn on and says why not when it is stale. Export, Auto and Copy
-          .glb path stay in the footer beside the sends they feed. */}
+      {/* Export, Auto and Copy .glb path stay in the footer beside the sends
+          they feed. Mark up is in slot 4: the lazy 3D view reports how to
+          start drawing, and why not when the export is stale. */}
       <ViewerToolbar
         label="Blender"
         mode={{ value: mode, options: MODES, onChange: setMode }}
         subject={
-          state.blends.length > 1 ? (
-            <select
-              className="k-vtb__select"
-              aria-label=".blend file"
-              value={blend ?? ""}
-              onChange={(e) => {
-                setBlend(e.target.value);
-                setSelected(null);
-              }}
-            >
-              {state.blends.map((b) => (
-                <option key={b.path} value={b.path}>
-                  {b.rel}
-                </option>
-              ))}
-            </select>
-          ) : (
-            state.rel && <span className="bv__file">{state.rel}</span>
-          )
+          <>
+            <ToolbarEnvChip kind={state.environment?.kind} branch={state.environment?.branch} />
+            {state.blends.length > 1 ? (
+              <select
+                className="k-vtb__select"
+                aria-label=".blend file"
+                value={blend ?? ""}
+                onChange={(e) => {
+                  setBlend(e.target.value);
+                  setSelected(null);
+                }}
+              >
+                {state.blends.map((b) => (
+                  <option key={b.path} value={b.path}>
+                    {b.rel}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              state.rel && <span className="bv__file">{state.rel}</span>
+            )}
+          </>
         }
         status={exportChip(state)}
         actions={
           mode === "model" && exported ? (
-            <SegmentedControl
-              aria-label="Model view"
-              value={modelView}
-              onChange={setModelView}
-              options={MODEL_VIEWS}
-            />
+            <>
+              {modelView === "3d" && <MarkupButton trigger={showModel ? trigger : null} />}
+              <SegmentedControl
+                aria-label="Model view"
+                value={modelView}
+                onChange={setModelView}
+                options={MODEL_VIEWS}
+              />
+            </>
           ) : null
         }
         leave={
           <ToolbarButton
             icon={<ExternalLink size={14} strokeWidth={1.5} aria-hidden="true" />}
             label="Open in Blender"
-            disabled={!blend || !state.blender.found}
+            disabled={!blend || !launchable}
             title={
-              state.blender.found
+              launchable
                 ? `Open ${state.rel ?? "the file"} in Blender ${state.blender.version ?? ""}`
-                : "Blender was not found — set it up first"
+                : (surface?.reason ?? "Blender was not found — set it up first")
             }
             onClick={() => {
               if (!blend) return;
@@ -453,6 +470,12 @@ export default function App() {
           />
         }
       />
+
+      {/* No Blender has its own setup panel below, with the path field, so the
+          line is for the other reasons: main, a cloud session, a pop out. */}
+      {surface?.code !== "noEditor" && (
+        <EditorReason surface={surface} tool="blender" onError={setError} />
+      )}
 
       {!state.blender.found && (
         <section className="bv__setup" aria-label="Blender not found">
@@ -614,6 +637,7 @@ export default function App() {
                 onSelect={(name) => setSelected(state.parts.find((p) => p.name === name) ?? null)}
                 onMarkup={onMarkup}
                 onNotice={setError}
+                onTrigger={setTrigger}
                 canExport={state.blender.found && !job.running}
                 onExport={runExport}
                 fallback={
@@ -739,7 +763,12 @@ export default function App() {
                 type="button"
                 className="bv__composer-submit"
                 onClick={postComment}
-                disabled={posting || !draft.trim()}
+                disabled={posting || !draft.trim() || state.readOnly}
+                title={
+                  state.readOnly
+                    ? "Comments are kept in the checkout, and main is read-only. Open a worktree to comment."
+                    : undefined
+                }
               >
                 {posting ? "Posting…" : "Comment"}
               </button>

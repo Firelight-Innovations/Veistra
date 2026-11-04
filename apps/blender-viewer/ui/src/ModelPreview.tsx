@@ -12,6 +12,7 @@ import type { MarkupExport } from "@veistra/markup/layer";
 import { nodeLookup } from "../../../shared/sceneNodes";
 import { partNodeMap } from "./preview";
 import { useGlb } from "./useGlb";
+import type { MarkupTrigger } from "../../../shared/MarkupTrigger";
 import type { BlenderPart } from "./rpc";
 
 const MarkupScene = lazy(() => import("../../../shared/MarkupScene"));
@@ -33,6 +34,8 @@ export interface ModelPreviewProps {
   onSelect: (partName: string | null) => void;
   onMarkup: (result: MarkupExport) => void;
   onNotice: (message: string) => void;
+  /** How to start drawing, for the toolbar's Mark up; `null` while no 3D view shows. */
+  onTrigger: (trigger: MarkupTrigger | null) => void;
   /** Blender is there and no export is running: Export can be offered. */
   canExport: boolean;
   onExport: () => void;
@@ -79,7 +82,8 @@ function Reason({
 
 export default function ModelPreview(props: ModelPreviewProps) {
   const { blend, rel, model, exportedAt, blenderVersion, stale, parts, selected } = props;
-  const { onSelect, onMarkup, onNotice, canExport, onExport, fallback, children } = props;
+  const { onSelect, onMarkup, onNotice, onTrigger, canExport, onExport, fallback, children } =
+    props;
   const glb = useGlb(blend, model !== null, exportedAt);
   const nodeMap = useMemo(() => partNodeMap(parts), [parts]);
   const lookup = useMemo(() => nodeLookup(nodeMap), [nodeMap]);
@@ -137,6 +141,7 @@ export default function ModelPreview(props: ModelPreviewProps) {
             markupDisabled={stale ? STALE_MARKUP_NOTE : null}
             onMarkup={onMarkup}
             onNotice={onNotice}
+            onTrigger={onTrigger}
           />
         </Suspense>
       </div>

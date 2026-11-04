@@ -45,6 +45,7 @@ function mount(over: Partial<ModelPreviewProps> = {}) {
     onSelect: vi.fn(),
     onMarkup: vi.fn(),
     onNotice: vi.fn(),
+    onTrigger: vi.fn(),
     canExport: true,
     onExport: vi.fn(),
     ...over,
@@ -85,6 +86,7 @@ describe("ModelPreview", () => {
     expect(given.extra).toEqual({ engine: "blender", blend: "bed.blend", blender: "4.2" });
     expect(given.selectedPath).toBe("Bed/Frame");
     expect(given.markupDisabled).toBeNull();
+    expect(given.onTrigger).toBe(props.onTrigger);
     // A pick in the 3D view comes back as the part name.
     fireEvent.click(screen.getByText("stage"));
     expect(props.onSelect).toHaveBeenCalledWith("Frame");

@@ -791,6 +791,10 @@ pub const WRITE_METHODS: &[&str] = &[
     "schematify/transition",
     "schematify/ingest-run",
     "godot/open-editor",
+    // An editor opened on main could save into it; main shows the read-only
+    // viewer instead (`crate::editor_surface`).
+    "blender-viewer/open",
+    "files/open-in-blender",
     "play/addon-install",
     "play/addon-remove",
     "play/send",

@@ -19,12 +19,22 @@
  */
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { OPENED_EVENT, on, session } from "@veistra/bridge";
+import { editorBody, NOTHING_BUILT } from "../../../shared/editorSurface";
 import { errorText, getStatus, type GodotStatus } from "../../../shared/godot";
 import { useShellPlacement } from "../../../shared/useNativeBox";
 import { initialMode, MODES, readMode, writeMode, type GodotMode } from "./modes";
 import type { LiveNote } from "./play/Review";
 
 const SceneMode = lazy(() => import("./SceneMode"));
+
+/**
+ * Which Editor surfaces this app can draw besides the viewer. The status says
+ * where Editor mode shows (`editor`, DECISIONS X4), and `editorBody` turns
+ * that into what renders. Nothing but the viewer is built yet, so every answer
+ * is the viewer for now; C1 adds the editor in the pane and its popped-out
+ * state by turning these on and rendering them.
+ */
+const EDITOR_BUILT = NOTHING_BUILT;
 const PlayMode = lazy(() => import("./play/PlayMode"));
 
 /**
@@ -157,7 +167,9 @@ export default function App() {
           onRunHandled={onRunHandled}
         />
       ) : (
-        <SceneMode {...shared} onPlay={runInPlay} />
+        editorBody(status?.editor, EDITOR_BUILT) === "viewer" && (
+          <SceneMode {...shared} onPlay={runInPlay} />
+        )
       )}
     </Suspense>
   );

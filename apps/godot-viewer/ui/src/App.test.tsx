@@ -55,6 +55,21 @@ const STATE = {
   engineFound: false,
 };
 
+const MAIN_REASON =
+  "This is the main checkout, which is read-only here, so Godot does not open on it. Open a worktree to edit.";
+const NO_GODOT_REASON =
+  "Godot 4 was not found on this computer. Set its path under Settings, Godot.";
+
+/**
+ * `godot/status`'s `editor` as the backend decides it (`editor_surface.rs`),
+ * from the same facts this mock answers with, unless a test names one.
+ */
+function surfaceFor(readOnly: boolean, found: string | null) {
+  if (readOnly) return { surface: "viewer", code: "main", reason: MAIN_REASON };
+  if (!found) return { surface: "viewer", code: "noEditor", reason: NO_GODOT_REASON };
+  return { surface: "embedded", code: null, reason: null };
+}
+
 function backend(
   put: () => unknown = () => ({ key: "k" }),
   opts: {
@@ -62,6 +77,9 @@ function backend(
     comments?: unknown[];
     godotFound?: string | null;
     readOnly?: () => boolean;
+    editor?: object;
+    environment?: { kind: string | null; branch?: string | null; root?: string | null };
+    createComment?: () => unknown;
   } = {},
 ) {
   bridge.invoke.mockImplementation((method: string) => {
@@ -70,15 +88,26 @@ function backend(
         return Promise.resolve({ ...STATE, ...opts.state });
       case "godot-viewer/image":
         return Promise.resolve({ png: "AAAA" });
-      case "godot/status":
+      case "godot/status": {
+        const readOnly = opts.readOnly?.() ?? false;
         return Promise.resolve({
-          environment: { root: "C:/p", readOnly: opts.readOnly?.() ?? false },
+          environment: {
+            root: "C:/p",
+            readOnly,
+            kind: readOnly ? "main" : "localWorktree",
+            branch: readOnly ? "main" : "wt/hall",
+            ...opts.environment,
+          },
           executable: { found: opts.godotFound ?? null, problems: [], setting: "" },
           projects: [],
+          editor: opts.editor ?? surfaceFor(readOnly, opts.godotFound ?? null),
         });
+      }
       case "comments/list":
         // A new array each time, as the bridge's decoded answer is.
         return Promise.resolve([...(opts.comments ?? [])]);
+      case "comments/create":
+        return Promise.resolve(opts.createComment?.() ?? null);
       case "context/put":
         return Promise.resolve(put());
       default:
@@ -235,12 +264,15 @@ describe("Godot Viewer toolbar", () => {
     );
   });
 
+  // An embedder's answer still shows the viewer until C1 draws the editor in
+  // the pane, so the footer says where it opens instead.
   it("says the editor opens in its own window until it is embedded", async () => {
-    backend();
+    backend(undefined, { godotFound: "C:/godot.exe" });
     render(<App />);
     expect(
       await screen.findByText(/The Godot editor opens in its own window for now/),
     ).toBeTruthy();
+    expect(screen.queryByRole("note")).toBeNull();
   });
 
   it("will not play sample data", async () => {
@@ -311,5 +343,155 @@ describe("Godot Viewer toolbar", () => {
     await screen.findByText("Node3D");
     await screen.findByRole("button", { name: /Comments · 1 open/ });
     expect(screen.queryByRole("img", { name: /open comment/ })).toBeNull();
+  });
+});
+
+describe("Godot Editor surface (the backend's `editor`)", () => {
+  const toolbar = () => screen.getByRole("toolbar", { name: "Godot" });
+
+  // #318: opening the Godot app on the main checkout shows the read-only
+  // viewer and the reason, as one line under the toolbar.
+  it("on the main checkout shows the read-only viewer and the reason under the bar", async () => {
+    backend(undefined, { godotFound: "C:/godot.exe", readOnly: () => true });
+    render(<App />);
+    const note = await screen.findByRole("note");
+    expect(note.textContent).toContain("This is the main checkout, which is read-only here");
+    expect(toolbar().nextElementSibling).toBe(note);
+    // A fact, not a problem with a way out: nothing to press.
+    expect(within(note).queryByRole("button")).toBeNull();
+    // The viewer itself: the tree is read and shown.
+    await screen.findByText("Node3D");
+    const open = within(toolbar()).getByRole("button", {
+      name: "Open in Godot",
+    }) as HTMLButtonElement;
+    expect(open.disabled).toBe(true);
+    expect(open.title).toBe(MAIN_REASON);
+    const env = toolbar().querySelector(".k-vtb__env");
+    expect(env?.getAttribute("data-env-kind")).toBe("main");
+    // Editor mode's label stays Editor (DECISIONS X4), whatever it shows.
+    expect(within(toolbar()).getByRole("tab", { name: "Editor" })).toBeTruthy();
+    expect(screen.queryByText(/opens in its own window for now/)).toBeNull();
+  });
+
+  it("will not post a comment into the main checkout", async () => {
+    backend(undefined, { godotFound: "C:/godot.exe", readOnly: () => true });
+    render(<App />);
+    fireEvent.click(await screen.findByText("Node3D"));
+    fireEvent.change(screen.getByPlaceholderText("What should change about this node?"), {
+      target: { value: "brighter" },
+    });
+    const post = screen.getByRole("button", { name: "Comment" }) as HTMLButtonElement;
+    expect(post.disabled).toBe(true);
+    expect(post.title).toMatch(/main is read-only/);
+  });
+
+  // A refused comment was an unhandled rejection: the draft stayed and nothing
+  // said why.
+  it("says why a comment was refused", async () => {
+    backend(undefined, {
+      godotFound: "C:/godot.exe",
+      createComment: () => {
+        throw new Error("the store is locked");
+      },
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByText("Node3D"));
+    fireEvent.change(screen.getByPlaceholderText("What should change about this node?"), {
+      target: { value: "brighter" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+    expect(await screen.findByText(/the store is locked/)).toBeTruthy();
+  });
+
+  it("names a missing Godot once, with Open Settings on its section", async () => {
+    backend();
+    render(<App />);
+    const note = await screen.findByRole("note");
+    expect(note.textContent).toContain("Godot 4 was not found on this computer");
+    expect(note.textContent).toContain("The tree is read from the scene file");
+    await screen.findByText("Node3D");
+    // The old notice said the same thing again below.
+    expect(screen.queryByText(/Godot 4 was not found, so the tree/)).toBeNull();
+    const open = within(toolbar()).getByRole("button", {
+      name: "Open in Godot",
+    }) as HTMLButtonElement;
+    expect(open.disabled).toBe(true);
+    fireEvent.click(within(note).getByRole("button", { name: "Open Settings" }));
+    await waitFor(() => expect(calls("shell/open-settings")).toHaveLength(1));
+    expect(calls("shell/open-settings")[0]![1]).toEqual({ section: "godot" });
+  });
+
+  it("still names a missing Godot when main is the reason given", async () => {
+    backend(undefined, { readOnly: () => true });
+    render(<App />);
+    const note = await screen.findByRole("note");
+    expect(note.textContent).toContain("main checkout");
+    expect(await screen.findByText(/Godot 4 was not found, so the tree/)).toBeTruthy();
+  });
+
+  // Pop out: no embedder here (macOS, Linux, Wayland). Godot opens in its
+  // own window, and the line says so; the footer does not say it again.
+  it("pops out where there is no embedder, with the reason and Open in Godot", async () => {
+    backend(undefined, {
+      godotFound: "/usr/bin/godot",
+      editor: {
+        surface: "popOut",
+        code: "noEmbedder",
+        reason:
+          "Godot opens in its own window: Veistra cannot place it in the pane on Linux with Wayland yet.",
+      },
+    });
+    render(<App />);
+    const note = await screen.findByRole("note");
+    expect(note.textContent).toContain("Linux with Wayland");
+    expect(toolbar().nextElementSibling).toBe(note);
+    const open = within(toolbar()).getByRole("button", {
+      name: "Open in Godot",
+    }) as HTMLButtonElement;
+    await waitFor(() => expect(open.disabled).toBe(false));
+    expect(screen.queryByText(/opens in its own window for now/)).toBeNull();
+  });
+
+  // A cloud session's files are on its VM: nothing here can read them, so
+  // nothing is asked for, and the line says why.
+  it("reads nothing on a cloud session and says why", async () => {
+    backend(undefined, {
+      godotFound: "C:/godot.exe",
+      environment: { kind: "cloud", branch: "wt/cloud", root: null },
+      editor: {
+        surface: "viewer",
+        code: "cloud",
+        reason:
+          "This is a cloud session: its files are on the VM, not on this computer, so Godot cannot open them here. Open a local worktree to edit.",
+      },
+    });
+    render(<App />);
+    const note = await screen.findByRole("note");
+    expect(note.textContent).toContain("cloud session");
+    expect(await screen.findByText(/this session's files are on its VM/)).toBeTruthy();
+    expect(toolbar().querySelector(".k-vtb__env")?.getAttribute("data-env-kind")).toBe("cloud");
+    expect(calls("godot-viewer/state")).toHaveLength(0);
+    expect(calls("comments/list")).toHaveLength(0);
+  });
+
+  it("names the environment first in the subject, before the scene", async () => {
+    backend(undefined, { godotFound: "C:/godot.exe" });
+    render(<App />);
+    const picker = await screen.findByRole("combobox", { name: "Scene" });
+    const env = toolbar().querySelector(".k-vtb__env")!;
+    expect(env.textContent).toBe("wtwt/hall");
+    expect(env.compareDocumentPosition(picker) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  // Mark up was on the 3D view's own bar; it is slot 4 here, as in Play.
+  it("puts Mark up in the toolbar's actions, before the view switch", async () => {
+    backend(undefined, { godotFound: "C:/godot.exe" });
+    render(<App />);
+    await screen.findByRole("combobox", { name: "Scene" });
+    const actions = toolbar().querySelector(".k-vtb__actions")!;
+    const markup = within(actions as HTMLElement).getByRole("button", { name: "Mark up" });
+    const threeD = within(toolbar()).getByRole("tab", { name: "3D" });
+    expect(markup.compareDocumentPosition(threeD) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Mark up" })).toHaveLength(1);
   });
 });

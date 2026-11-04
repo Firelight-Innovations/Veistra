@@ -76,9 +76,14 @@ function backend(projects: unknown[] = []) {
         });
       case "godot/status":
         return Promise.resolve({
-          environment: { root: "C:/p", readOnly: false },
+          environment: { root: "C:/p", readOnly: false, kind: null, branch: null },
           executable: { found: null, problems: [], setting: "" },
           projects,
+          editor: {
+            surface: "viewer",
+            code: "noEditor",
+            reason: "Godot 4 was not found on this computer. Set its path under Settings, Godot.",
+          },
         });
       case "godot-viewer/state":
         return Promise.resolve({

@@ -6,6 +6,7 @@
  * `src-tauri/src/godot/rpc.rs` for the app id and its `play` alias alike.
  */
 import { invoke } from "@veistra/bridge";
+import type { EditorSurface, SurfaceEnvironment } from "./editorSurface";
 
 export type AddonState = "no" | "yes" | "partial";
 
@@ -29,9 +30,11 @@ export interface GodotProject {
 }
 
 export interface GodotStatus {
-  environment: { root: string | null; readOnly: boolean };
+  environment: SurfaceEnvironment & { root: string | null; readOnly: boolean };
   executable: { found: GodotFound | null; problems: string[]; setting: string };
   projects: GodotProject[];
+  /** Where Editor mode shows, and why when not in the pane (`editorSurface.ts`). */
+  editor: EditorSurface;
 }
 
 /** `refresh` forgets the remembered executable and searches again. */
