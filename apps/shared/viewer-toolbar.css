@@ -259,3 +259,10 @@
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+
+/* A mode that is on the board but not built yet (Compare): drawn, not chosen.
+   Its title says why. */
+.k-vtb .k-tab[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

@@ -19,6 +19,7 @@ import type { CameraPose } from "@veistra/markup";
 import type { MarkupController, MarkupExport } from "@veistra/markup/layer";
 import type { MarkupTrigger } from "./MarkupTrigger";
 import { projectRelative } from "./sceneNodes";
+import { useTheme } from "./useTheme";
 import "./markup.css";
 
 /** The layer exports a named component; `lazy` wants a default. */
@@ -43,20 +44,6 @@ export interface MarkupSceneProps {
   onNotice: (message: string) => void;
   /** How to start drawing, for the toolbar's Mark up; `null` once this view is gone. */
   onTrigger: (trigger: MarkupTrigger | null) => void;
-}
-
-function useTheme(): "dark" | "light" {
-  const read = () => (document.documentElement.dataset.theme === "light" ? "light" : "dark");
-  const [theme, setTheme] = useState<"dark" | "light">(read);
-  useEffect(() => {
-    const observer = new MutationObserver(() => setTheme(read()));
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["data-theme"],
-    });
-    return () => observer.disconnect();
-  }, []);
-  return theme;
 }
 
 export default function MarkupScene(props: MarkupSceneProps) {

@@ -73,6 +73,8 @@ fn sources() -> Vec<&'static str> {
         include_str!("trash.rs"),
         include_str!("canvas/mod.rs"),
         include_str!("blender_viewer.rs"),
+        // Blender in the pane, which `blender_viewer::call_for` hands on.
+        include_str!("../blender/editor.rs"),
         include_str!("agent_tab.rs"),
         include_str!("agents.rs"),
         include_str!("costs.rs"),
@@ -248,6 +250,8 @@ mod tests {
             "godot/status",
             "godot-viewer/state",
             "blender-viewer/export-start",
+            "blender-viewer/export-versions",
+            "blender-viewer/editor-open",
             "comments/create",
             "context/put",
             "context/insert",
