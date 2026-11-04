@@ -2,24 +2,25 @@
 #
 # Installed by Veistra (Play > Enable capture) and removable from the same
 # place. It does nothing unless the game was started by Veistra, which passes
-# --veistra-dir=<folder> after `--`, so an exported build is unaffected. It
-# never opens a socket and never touches the network; the whole channel is
-# files in one temp folder.
+# --veistra-dir=<folder> after `--`, and nothing at all in an exported build,
+# whatever its command line says. It never opens a socket and never touches
+# the network; the whole channel is files in one temp folder.
 #
 # Commands, in cmd.json, answered in res-<id>.json:
-#   {"id": 1, "action": "capture"}, "pause", "resume",
+#   {"id": 1, "action": "capture"}, "pause", "resume", "flush",
 #   {"id": 2, "action": "pick", "x": 640, "y": 360}   (pixels of the capture)
 #
 # Written to telemetry.jsonl, one JSON object a line, every line stamped with
 # wall-clock milliseconds in "t":
 #   a tick ten times a second: scene, camera, player, the longest frame since
 #     the tick before, the viewport, the window and the box in it that shows
-#     the viewport, the screen boxes of tracked nodes, and what the tick
-#     before cost in microseconds;
+#     the viewport, the mouse mode, the screen boxes of tracked nodes, what
+#     the tick before cost in microseconds, and, after the candidates were
+#     read again, what that cost;
 #   {"kind": "mark"} for F8, {"kind": "key", "key": "F7"} and "Ctrl Shift M",
 #     and {"kind": "scene", "scene": ...} when the current scene changes.
-# F7, F8 and Ctrl Shift M are handled here and marked handled, so the game
-# never sees them. Every other key goes to the game.
+# F7, F8 and Ctrl Shift M are handled here and marked handled, so the game's
+# input callbacks never see them. Every other key goes to the game.
 #
 # Written for Godot 4.0 through 4.5. Nothing calls Vector2.min or max, which
 # 4.0 lacks, or reads a property newer than 4.0.
@@ -45,29 +46,41 @@ var _flush_accum := 0.0
 var _refresh_accum := REFRESH_SEC
 var _frame_ms := 0.0
 var _tick_usec := 0
+# What the last read of the candidates cost, until a tick reports it.
+var _refresh_usec := -1
 var _log: FileAccess = null
 var _scene_path := ""
-# [node, local box, is 3D, path, class] for each candidate, read again only
-# when the tree has changed, and then at most once a second, so a tick never
-# walks the scene and a scene that holds still costs nothing to keep. Path
-# and class stay null until a tick first reports the node (_entry).
+# [node, local box, is 3D, path, class, box centre] for each candidate, read
+# again only when the tree has changed, and then at most once a second, so a
+# tick never walks the scene and a scene that holds still costs nothing to
+# keep. Path and class stay null until a tick first reports the node (_entry).
 var _candidates: Array = []
 var _tree_changed := true
 var _group_size := 0
 # The last capture's size: pick's point is in its pixels.
 var _capture_size := Vector2.ZERO
+# Picks waiting for the physics frame: [{id, at}].
+var _picks: Array = []
+# Keycodes of keys whose press was Veistra's, until they are released.
+var _held := {}
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
-	for arg in OS.get_cmdline_user_args():
-		if arg.begins_with("--veistra-dir="):
-			_dir = arg.substr("--veistra-dir=".length())
+	# "template" is set in every exported build and never in the editor
+	# binary Veistra runs a project with, so a shipped game stays inert even
+	# when someone passes it the argument by hand.
+	if not OS.has_feature("template"):
+		_dir = _arg_dir()
 	if _dir == "":
 		set_process(false)
+		set_physics_process(false)
 		set_process_input(false)
 		return
 	var path := _dir.path_join("telemetry.jsonl")
-	_log = FileAccess.open(path, FileAccess.READ_WRITE) if FileAccess.file_exists(path) else FileAccess.open(path, FileAccess.WRITE)
+	if FileAccess.file_exists(path):
+		_log = FileAccess.open(path, FileAccess.READ_WRITE)
+	else:
+		_log = FileAccess.open(path, FileAccess.WRITE)
 	if _log:
 		_log.seek_end()
 	_last_usec = Time.get_ticks_usec()
@@ -75,8 +88,15 @@ func _ready() -> void:
 	tree.node_added.connect(_on_node_added)
 	tree.node_removed.connect(_on_tree_changed)
 	tree.node_renamed.connect(_on_tree_changed)
-	_write("hello.json", {"pid": OS.get_process_id(), "godot": Engine.get_version_info().get("string", ""), "version": 2})
+	var godot: String = Engine.get_version_info().get("string", "")
+	_write("hello.json", {"pid": OS.get_process_id(), "godot": godot, "version": 2})
 	_to_front.call_deferred()
+
+func _arg_dir() -> String:
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--veistra-dir="):
+			return arg.substr("--veistra-dir=".length())
+	return ""
 
 # A node that joins the root (a new scene, or a level the game adds) goes
 # after this one. Deferred calls run before the frame ends, so this node is
@@ -99,22 +119,49 @@ func _to_front() -> void:
 
 func _input(event: InputEvent) -> void:
 	var key := event as InputEventKey
-	if key == null or not key.pressed or key.echo:
+	if key == null:
 		return
-	var which := ""
-	if key.keycode == KEY_F7:
-		which = "F7"
-	elif key.keycode == KEY_F8:
-		which = "F8"
-	elif key.keycode == KEY_M and key.ctrl_pressed and key.shift_pressed:
-		which = "Ctrl Shift M"
+	# A repeat or the release of a key whose press was Veistra's is Veistra's
+	# too, so the game never sees half of a key press.
+	if key.echo or not key.pressed:
+		if _held.has(key.keycode):
+			get_viewport().set_input_as_handled()
+			if not key.pressed:
+				_held.erase(key.keycode)
+		return
+	# A release lost to a change of focus would leave the key marked as ours,
+	# and the game's own next press of it would lose its release.
+	_held.erase(key.keycode)
+	var which := _veistra_key(key)
 	if which == "":
 		return
 	get_viewport().set_input_as_handled()
+	_held[key.keycode] = true
+	_release_actions(key)
 	if which == "F8":
 		_event({"kind": "mark"})
 	else:
 		_event({"kind": "key", "key": which})
+
+func _veistra_key(key: InputEventKey) -> String:
+	if key.keycode == KEY_F7:
+		return "F7"
+	if key.keycode == KEY_F8:
+		return "F8"
+	if key.keycode == KEY_M and key.ctrl_pressed and key.shift_pressed:
+		return "Ctrl Shift M"
+	return ""
+
+# Input took the press before any node saw it, so a game polling an action
+# bound to one of these keys would still find it held. Releasing the action
+# covers is_action_pressed. On 4.2 and later is_action_just_pressed still
+# answers true until the frame ends (Godot keeps taps shorter than a frame),
+# and Input.is_key_pressed reads the key itself; nothing a script does
+# reaches either.
+func _release_actions(key: InputEventKey) -> void:
+	for action in InputMap.get_actions():
+		if InputMap.event_is_action(key, action) and Input.is_action_pressed(action):
+			Input.action_release(action)
 
 # Every timer runs on the wall clock. delta is scaled by Engine.time_scale, so
 # a game that sets it to 0 for a pause menu or a hit-stop would stop the
@@ -135,7 +182,8 @@ func _process(_delta: float) -> void:
 	if _refresh_accum >= REFRESH_SEC:
 		_refresh_accum = 0.0
 		# Group membership can change with no node entering or leaving.
-		if _tree_changed or get_tree().get_nodes_in_group(TRACK_GROUP).size() != _group_size:
+		var group_size := get_tree().get_nodes_in_group(TRACK_GROUP).size()
+		if _tree_changed or group_size != _group_size:
 			_refresh_candidates()
 	if _tick_accum >= TICK_SEC:
 		_tick_accum = fmod(_tick_accum, TICK_SEC)
@@ -147,6 +195,16 @@ func _process(_delta: float) -> void:
 	if _poll_accum >= POLL_SEC:
 		_poll_accum = 0.0
 		_poll_command()
+
+# A pick's physics query runs here, the one place Godot makes the direct
+# space state safe to read: with physics on its own thread it refuses from
+# _process, and Jolt refuses while it steps. Physics frames come at their
+# own rate whatever Engine.time_scale is, and this node keeps processing
+# while the tree is paused, so a pick still answers during Mark up.
+func _physics_process(_delta: float) -> void:
+	while not _picks.is_empty():
+		var asked: Dictionary = _picks.pop_front()
+		_answer(asked["id"], _pick(asked["id"], asked["at"]))
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST or what == NOTIFICATION_PREDELETE:
@@ -191,13 +249,18 @@ func _node_path(node: Node) -> String:
 	return str(node.get_path())
 
 func _tick() -> void:
-	var started := Time.get_ticks_usec()
 	var root := _scene_root()
 	var scene := root.scene_file_path if root else ""
 	if scene != _scene_path:
 		_scene_path = scene
-		_event({"kind": "scene", "scene": scene})
+		# Between two scenes Godot has no current scene for part of a frame,
+		# and that is not a scene the run was in.
+		if scene != "":
+			_event({"kind": "scene", "scene": scene})
 		_refresh_candidates()
+	# Timed from here, so a refresh's walk is reported as refreshUs instead
+	# of swelling the tick's own cost.
+	var started := Time.get_ticks_usec()
 	var viewport := get_viewport()
 	var size := viewport.get_visible_rect().size
 	var win := get_window()
@@ -209,9 +272,14 @@ func _tick() -> void:
 		"frameMs": snappedf(_frame_ms, 0.1),
 		"viewport": [int(size.x), int(size.y)],
 		"window": [win.size.x, win.size.y],
-		"content": [int(content.position.x), int(content.position.y), int(content.size.x), int(content.size.y)],
+		"content": [int(content.position.x), int(content.position.y),
+				int(content.size.x), int(content.size.y)],
+		"mouse": Input.mouse_mode,
 		"tickUs": _tick_usec,
 	}
+	if _refresh_usec >= 0:
+		data["refreshUs"] = _refresh_usec
+		_refresh_usec = -1
 	var cam3 := viewport.get_camera_3d()
 	var cam2 := viewport.get_camera_2d()
 	if cam3:
@@ -248,26 +316,53 @@ func _content_box(win: Window, visible: Vector2) -> Rect2:
 	var box: Rect2 = win.get_final_transform() * Rect2(Vector2.ZERO, visible)
 	return Rect2(box.position.round(), box.size.round())
 
-# The group when it has members; otherwise physics bodies and visible meshes
-# (or their 2D counterparts). Each one's box is read here, so that a tick
-# reads only where things are.
+# The group when it has members; otherwise the defaults below. Each one's box
+# is read here, so that a tick reads only where things are.
 func _refresh_candidates() -> void:
+	var started := Time.get_ticks_usec()
 	_candidates.clear()
 	_tree_changed = false
 	var nodes: Array = get_tree().get_nodes_in_group(TRACK_GROUP)
 	_group_size = nodes.size()
-	var root := _scene_root()
-	if root == null:
-		return
 	if nodes.is_empty():
-		nodes = root.find_children("*", "CollisionObject3D", true, false)
-		nodes.append_array(root.find_children("*", "VisualInstance3D", true, false))
-		nodes.append_array(root.find_children("*", "CollisionObject2D", true, false))
-		nodes.append_array(root.find_children("*", "Sprite2D", true, false))
+		nodes = _default_candidates()
 	for node in nodes:
 		var box = _local_box(node)
 		if box != null:
-			_candidates.append([node, box, node is Node3D, null, null])
+			var is_3d: bool = node is Node3D
+			var centre = box.get_center() if is_3d else null
+			_candidates.append([node, box, is_3d, null, null, centre])
+	_refresh_usec = Time.get_ticks_usec() - started
+
+# Physics bodies, and the meshes and sprites that are not part of one. A
+# body's own mesh is the body: two boxes for one enemy would let the mesh's,
+# a little smaller, take a pin that should name the body. Geometry rather
+# than every VisualInstance3D, so lights, probes and decals stay out. With no
+# current scene (a game that builds its own tree) the whole tree is searched.
+func _default_candidates() -> Array:
+	var root := _scene_root()
+	if root == null:
+		root = get_tree().root
+	var found: Array = root.find_children("*", "CollisionObject3D", true, false)
+	found.append_array(root.find_children("*", "CollisionObject2D", true, false))
+	var loose: Array = root.find_children("*", "GeometryInstance3D", true, false)
+	loose.append_array(root.find_children("*", "Sprite2D", true, false))
+	loose.append_array(root.find_children("*", "AnimatedSprite2D", true, false))
+	for node in loose:
+		if not _in_body(node, root):
+			found.append(node)
+	return found
+
+# Whether a mesh or sprite sits under a body, below `root`. The root itself
+# does not count: a level whose root is a body would otherwise fold every
+# mesh in it into one box.
+func _in_body(node: Node, root: Node) -> bool:
+	var up := node.get_parent()
+	while up != null and up != root:
+		if up is CollisionObject3D or up is CollisionObject2D:
+			return true
+		up = up.get_parent()
+	return false
 
 # The box a candidate is measured by, in its own space, or null for a node
 # with no place on screen. Nothing here builds a mesh: Shape3D.get_debug_mesh()
@@ -275,25 +370,24 @@ func _refresh_candidates() -> void:
 # collider is seconds and tens of megabytes. A node whose size cannot be read
 # cheaply still gets a box, so every veistra_track member is tracked.
 func _local_box(node):
+	var box = null
 	if node is VisualInstance3D:
-		return node.get_aabb()
-	if node is CollisionObject3D:
-		var shapes = _shapes_box(node)
-		return shapes if shapes != null else _meshes_box(node)
-	if node is Node3D:
-		return _meshes_box(node)
-	if node is Sprite2D or node is AnimatedSprite2D:
-		return _sprite_rect(node)
-	if node is CollisionObject2D:
-		for child in node.get_children():
-			if child is CollisionShape2D and child.shape:
-				return child.transform * child.shape.get_rect()
-		return UNIT_RECT
-	if node is Control:
-		return Rect2(Vector2.ZERO, node.size)
-	if node is Node2D:
-		return _sprites_rect(node)
-	return null
+		box = node.get_aabb()
+	elif node is CollisionObject3D:
+		box = _shapes_box(node)
+		if box == null:
+			box = _meshes_box(node)
+	elif node is Node3D:
+		box = _meshes_box(node)
+	elif node is Sprite2D or node is AnimatedSprite2D:
+		box = _sprite_rect(node)
+	elif node is CollisionObject2D:
+		box = _body_rect(node)
+	elif node is Control:
+		box = Rect2(Vector2.ZERO, node.size)
+	elif node is Node2D:
+		box = _sprites_rect(node)
+	return box
 
 # A body's collision shapes, merged. A shape adds nothing when its size
 # would have to be walked out of its data (trimesh, heightmap) or it has none
@@ -345,6 +439,13 @@ func _meshes_box(node) -> AABB:
 		box = placed if box == null else box.merge(placed)
 	return box if box != null else UNIT_BOX
 
+# A 2D body's first collision shape, or a small box at its origin.
+func _body_rect(body) -> Rect2:
+	for child in body.get_children():
+		if child is CollisionShape2D and child.shape:
+			return child.transform * child.shape.get_rect()
+	return UNIT_RECT
+
 # A Sprite2D's rect, or an AnimatedSprite2D's worked out from its current
 # frame the way Sprite2D works out its own: AnimatedSprite2D exposes none.
 func _sprite_rect(sprite) -> Rect2:
@@ -392,9 +493,11 @@ func _tracked_rects(cam3: Camera3D, size: Vector2) -> Array:
 			var n3: Node3D = c[0]
 			if cam3 == null or not n3.is_inside_tree() or not n3.is_visible_in_tree():
 				continue
-			# One native call that rebuilds the frustum each time; testing the
-			# six planes here would be six GDScript calls instead.
-			var at := n3.global_position
+			# The box's centre rather than the origin, which for a character
+			# is often at its feet, below the frame when the camera shows the
+			# rest of it. One native call that rebuilds the frustum each time;
+			# testing the six planes here would be six GDScript calls instead.
+			var at: Vector3 = n3.global_transform * c[5]
 			if cam3.is_position_in_frustum(at):
 				near.append(Vector2(eye.distance_squared_to(at), i))
 		elif out.size() < MAX_NODES:
@@ -472,10 +575,21 @@ func _poll_command() -> void:
 		"resume":
 			get_tree().paused = false
 			result["ok"] = true
+		"flush":
+			# Stop copies the file straight away, and the ticks written since
+			# the last flush would otherwise be missing from the take's end.
+			if _log:
+				_log.flush()
+			result["ok"] = true
 		"pick":
-			result = _pick(id, Vector2(float(cmd.get("x", 0)), float(cmd.get("y", 0))))
+			_picks.append({"id": id, "at": Vector2(float(cmd.get("x", 0)), float(cmd.get("y", 0)))})
+			return
 		_:
 			result["error"] = "unknown action"
+	_answer(id, result)
+
+# Every answer also says when it was made and where the game was.
+func _answer(id: int, result: Dictionary) -> void:
 	result["time"] = Time.get_ticks_msec() / 1000.0
 	result["t"] = _now_ms()
 	var scene := _scene_root()
@@ -491,15 +605,17 @@ func _capture(id: int) -> Dictionary:
 	var err := image.save_png(path)
 	if err != OK:
 		return {"id": id, "ok": false, "error": "save_png failed: %d" % err}
-	_capture_size = Vector2(image.get_width(), image.get_height())
-	return {"id": id, "ok": true, "png": "cap-%d.png" % id, "width": image.get_width(), "height": image.get_height()}
+	var width := image.get_width()
+	var height := image.get_height()
+	_capture_size = Vector2(width, height)
+	return {"id": id, "ok": true, "png": "cap-%d.png" % id, "width": width, "height": height}
 
 # What is under a point of the last capture: a physics ray from the camera
 # first, then the smallest tracked box that holds the point. A capture is the
 # render target, which under canvas_items stretch is the size the window
 # shows rather than the visible rect's, so the point is scaled into the
 # visible rect first: rays, the 2D canvas and node boxes are all measured
-# there.
+# there. Called from _physics_process only.
 func _pick(id: int, on_capture: Vector2) -> Dictionary:
 	var result := {"id": id, "ok": true, "hit": null}
 	var viewport := get_viewport()
@@ -513,8 +629,7 @@ func _pick(id: int, on_capture: Vector2) -> Dictionary:
 		var query := PhysicsRayQueryParameters3D.create(from, to)
 		var hit := cam3.get_world_3d().direct_space_state.intersect_ray(query)
 		if not hit.is_empty() and hit["collider"] is Node:
-			var body = hit["collider"]
-			result["hit"] = {"nodePath": _node_path(body), "type": body.get_class(), "worldPoint": _v3(hit["position"]), "script": _script_of(body), "source": "ray"}
+			result["hit"] = _ray_hit(hit["collider"], _v3(hit["position"]))
 			return result
 	elif viewport.get_camera_2d():
 		var world: Vector2 = viewport.get_canvas_transform().affine_inverse() * at
@@ -522,8 +637,7 @@ func _pick(id: int, on_capture: Vector2) -> Dictionary:
 		params.position = world
 		var hits := viewport.world_2d.direct_space_state.intersect_point(params, 1)
 		if not hits.is_empty() and hits[0]["collider"] is Node:
-			var body2 = hits[0]["collider"]
-			result["hit"] = {"nodePath": _node_path(body2), "type": body2.get_class(), "worldPoint": _v2(world), "script": _script_of(body2), "source": "ray"}
+			result["hit"] = _ray_hit(hits[0]["collider"], _v2(world))
 			return result
 	var best = null
 	var best_area := INF
@@ -534,8 +648,22 @@ func _pick(id: int, on_capture: Vector2) -> Dictionary:
 			best_area = box.get_area()
 			best = item
 	if best != null:
-		result["hit"] = {"nodePath": best["path"], "type": best["type"], "worldPoint": best["pos"], "source": "rect"}
+		result["hit"] = {
+			"nodePath": best["path"],
+			"type": best["type"],
+			"worldPoint": best["pos"],
+			"source": "rect",
+		}
 	return result
+
+func _ray_hit(body: Node, world_point: Array) -> Dictionary:
+	return {
+		"nodePath": _node_path(body),
+		"type": body.get_class(),
+		"worldPoint": world_point,
+		"script": _script_of(body),
+		"source": "ray",
+	}
 
 func _write(file_name: String, data: Dictionary) -> void:
 	var tmp := _dir.path_join(file_name + ".tmp")

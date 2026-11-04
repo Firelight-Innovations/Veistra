@@ -336,7 +336,7 @@ fn valid_scene(scene: &str) -> bool {
 }
 
 fn channel_for(ctx: &Ctx, project: &GodotProject) -> Result<Option<PathBuf>, RpcError> {
-    if addon::status(&project.dir) != addon::Installed::Yes {
+    if !addon::status(&project.dir).usable() {
         return Ok(None);
     }
     let base = ctx.scratch.join("play");
@@ -544,7 +544,7 @@ fn addon_status(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
         .is_some_and(|r| r.is_running() && r.spec.channel.is_none());
     Ok(json!({
         "addon": to_value(&addon::status(&project.dir))?,
-        "needsRestart": running_without && addon::status(&project.dir) == addon::Installed::Yes,
+        "needsRestart": running_without && addon::status(&project.dir).usable(),
         "readOnly": ctx.read_only,
     }))
 }
@@ -1204,6 +1204,62 @@ mod tests {
 
         call(&c, "play/addon-remove", json!({})).unwrap();
         assert!(!w.root.join("game/addons").exists());
+        w.godot.shutdown();
+    }
+
+    /// Design §13 test 8: with the addon removed, Play still runs and nothing
+    /// throws. What needs the addon says so; the rest answers as before.
+    #[test]
+    fn a_run_after_the_addon_is_removed_has_no_channel_and_still_answers() {
+        let w = world(true);
+        let c = ctx(&w, false, &real_check);
+        call(&c, "play/addon-install", json!({})).unwrap();
+        let removed = call(&c, "play/addon-remove", json!({})).unwrap();
+        assert_eq!(removed["addon"], "no");
+
+        let started = call(&c, "play/run", json!({})).unwrap();
+        assert_eq!(started["run"]["state"]["kind"], "running");
+        assert_eq!(started["run"]["captureReady"], false);
+        let run = w.godot.runner.get("c1").unwrap();
+        assert_eq!(run.spec.channel, None);
+        wait_until("the fake's arguments", || {
+            run.log_since(0)
+                .lines
+                .iter()
+                .any(|l| l.text.starts_with("args:"))
+        });
+        assert!(run
+            .log_since(0)
+            .lines
+            .iter()
+            .all(|l| !l.text.contains("--veistra-dir")));
+
+        let state = call(&c, "play/state", json!({ "since": 0 })).unwrap();
+        let session = &state["live"]["session"];
+        assert_eq!(session["addon"], Value::Null);
+        assert_eq!(session["ticks"], 0);
+        assert_eq!(session["f8Marks"], 0);
+        assert_eq!(session["mouseCaptured"], false);
+        assert_eq!(session["take"]["state"], "off");
+        assert!(state["live"]["record"]["blocked"].is_string());
+        let marked = call(&c, "play/mark", json!({})).unwrap();
+        assert_eq!(marked["marks"].as_array().map(Vec::len), Some(1));
+        let pick = json!({ "x": 10, "y": 10 });
+        for (method, params) in [
+            ("play/pick", pick),
+            ("play/still", json!({})),
+            ("play/capture", json!({})),
+            ("play/pause", json!({ "paused": true })),
+        ] {
+            let err = call(&c, method, params).unwrap_err();
+            assert!(
+                err.message.contains("capture addon"),
+                "{method}: {}",
+                err.message
+            );
+        }
+        let stopped = call(&c, "play/stop", json!({})).unwrap();
+        assert_eq!(stopped["run"]["state"]["kind"], "stopped");
         w.godot.shutdown();
     }
 

@@ -8,6 +8,7 @@
 //! itself. [`Session::finish_take`] is that once; every path calls it and only
 //! the first does anything.
 
+use super::addon;
 use super::record::{self, Recorder};
 use super::runner::{now_ms, Run};
 use super::takes::{self, EnvInfo, VideoInfo};
@@ -17,6 +18,16 @@ use crate::sync::MutexExt;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+/// How long finishing a take waits for the game to write out its telemetry.
+/// It reads commands ten times a second, so a live game answers well inside
+/// this, and one that does not (a hung frame, an earlier script) costs no
+/// more than it.
+const FLUSH_WAIT: Duration = Duration::from_millis(600);
+
+/// `Input.mouse_mode` while the game holds the mouse (`MOUSE_MODE_CAPTURED`).
+const MOUSE_CAPTURED: u8 = 2;
 
 /// Where a take is.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -90,6 +101,9 @@ pub struct Session {
     toolbar_marks: Mutex<Vec<u64>>,
     keys: Mutex<Vec<KeyEvent>>,
     tail: Mutex<Option<Tail>>,
+    /// The mouse mode the last tick reported, `None` before the first tick
+    /// and from an addon that does not report one.
+    mouse: Mutex<Option<u8>>,
 }
 
 impl Session {
@@ -123,6 +137,7 @@ impl Session {
             f8_marks: Mutex::new(Vec::new()),
             toolbar_marks: Mutex::new(Vec::new()),
             keys: Mutex::new(Vec::new()),
+            mouse: Mutex::new(None),
         }
     }
 
@@ -224,6 +239,7 @@ impl Session {
         let state = match stopped {
             Ok(stopped) => match stopped.first_frame_ms {
                 Some(first) => {
+                    self.flush_telemetry(run);
                     self.poll();
                     let marks = self.take_marks();
                     let log = run.log_since(0).lines;
@@ -268,6 +284,21 @@ impl Session {
             Err(reason) => TakeState::Failed { reason },
         };
         *self.take.lock_or_panic() = state;
+    }
+
+    /// Have the game write out the ticks it holds before the take copies its
+    /// file: it flushes once a second, so the take's last second was
+    /// missing. Not once the game has exited, which flushed as it closed.
+    fn flush_telemetry(&self, run: &Run) {
+        let Some(channel) = self.channel.as_deref() else {
+            return;
+        };
+        if !run.is_running() {
+            return;
+        }
+        if let Err(e) = addon::flush(channel, FLUSH_WAIT) {
+            crate::veistra_log!("play: the game did not flush its telemetry: {e}");
+        }
     }
 
     /// The recording's last frame, for a still over the pane.
@@ -335,7 +366,21 @@ impl Session {
         self.tail.lock_or_panic().as_ref().map_or(0, |t| t.ticks)
     }
 
-    /// Read what the addon wrote since the last call: F8 marks and keys.
+    /// F8 marks so far: the pane counts the ones it has not seen, since
+    /// [`Session::marks`] mixes them with the toolbar's.
+    pub fn f8_count(&self) -> usize {
+        self.f8_marks.lock_or_panic().len()
+    }
+
+    /// Whether the game held the mouse at the last tick, for the live strip's
+    /// "F7 stops and opens the take": with the cursor captured there is no
+    /// pointer to reach the toolbar with.
+    pub fn mouse_captured(&self) -> bool {
+        *self.mouse.lock_or_panic() == Some(MOUSE_CAPTURED)
+    }
+
+    /// Read what the addon wrote since the last call: F8 marks, keys and the
+    /// mouse mode.
     pub fn poll(&self) {
         let lines = match self.tail.lock_or_panic().as_mut() {
             Some(tail) => tail.read(),
@@ -349,7 +394,8 @@ impl Session {
                     let seq = keys.last().map_or(0, |k| k.seq) + 1;
                     keys.push(KeyEvent { seq, key, t });
                 }
-                Line::Tick(_) | Line::Scene { .. } => {}
+                Line::Tick(tick) => *self.mouse.lock_or_panic() = tick.mouse,
+                Line::Scene { .. } => {}
             }
         }
     }
@@ -512,6 +558,7 @@ mod tests {
         .unwrap();
         s.poll();
         assert_eq!(s.marks(), vec![5, t]);
+        assert_eq!(s.f8_count(), 1, "the toolbar's mark is not F8's");
         let keys: Vec<(u64, String)> = s
             .keys_since(0)
             .into_iter()
@@ -680,6 +727,70 @@ mod tests {
             "finishing twice is harmless"
         );
         assert!(s.plan.lock_or_panic().is_none());
+    }
+
+    #[test]
+    fn finishing_asks_a_live_game_to_flush_and_leaves_an_exited_one_alone() {
+        use super::super::runner::{RunSpec, Runner};
+        let dir = TempDir::new().unwrap();
+        let channel = dir.path().join("chan");
+        let game = dir.path().join("game");
+        std::fs::create_dir_all(&channel).unwrap();
+        std::fs::create_dir_all(&game).unwrap();
+        let runner = Runner::default();
+        let start = |key: &str, linger: bool| {
+            let bin = dir.path().join(key);
+            std::fs::create_dir_all(&bin).unwrap();
+            let spec = RunSpec {
+                program: super::super::testing::fake_godot(&bin, linger),
+                project: game.clone(),
+                scene: None,
+                channel: Some(channel.clone()),
+                window: None,
+            };
+            runner.start(key, spec).unwrap()
+        };
+        let run = start("live", true);
+        let s = Session::new(run.id, Some(channel.clone()), None);
+        let answer = {
+            let channel = channel.clone();
+            std::thread::spawn(move || {
+                for _ in 0..200 {
+                    if let Ok(text) = std::fs::read_to_string(channel.join("cmd.json")) {
+                        std::fs::remove_file(channel.join("cmd.json")).unwrap();
+                        let cmd: serde_json::Value = serde_json::from_str(&text).unwrap();
+                        let id = cmd["id"].as_u64().unwrap();
+                        let reply = serde_json::json!({ "id": id, "ok": true });
+                        std::fs::write(channel.join(format!("res-{id}.json")), reply.to_string())
+                            .unwrap();
+                        return cmd["action"].as_str().map(str::to_string);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                None
+            })
+        };
+        s.flush_telemetry(&run);
+        assert_eq!(answer.join().unwrap().as_deref(), Some("flush"));
+        assert_eq!(runner.stop("live"), Ok(true));
+
+        // A game that ended by itself, which is also what a stopped one is by
+        // the time a take finishes.
+        let ended = start("ended", false);
+        for _ in 0..500 {
+            if !ended.is_running() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!ended.is_running(), "the fake exits by itself");
+        let asked = std::time::Instant::now();
+        s.flush_telemetry(&ended);
+        assert!(
+            asked.elapsed() < FLUSH_WAIT,
+            "an exited game is not waited for"
+        );
+        assert!(!channel.join("cmd.json").exists());
     }
 
     #[test]

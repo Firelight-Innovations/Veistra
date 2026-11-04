@@ -1,8 +1,10 @@
 //! What capture addon v2 writes while a game runs: one JSON object a line in
 //! `telemetry.jsonl` in the run's channel folder.
 //!
-//! A tick ten times a second (scene, camera, player, frame time, and the
-//! screen boxes of tracked nodes), plus events: a `mark` for F8, a `scene` when
+//! A tick ten times a second (scene, camera, player, frame time, mouse mode,
+//! the screen boxes of tracked nodes, and what the addon's own work cost:
+//! `tickUs`, and `refreshUs` after it read its candidates again), plus
+//! events: a `mark` for F8, a `scene` when
 //! the current scene changes, a `key` for F7 and Ctrl Shift M, which the addon
 //! handles itself so the game never sees them. Every line carries `t`, wall
 //! clock milliseconds, which is the one clock a take is built on (§5.3 of the
@@ -35,6 +37,8 @@ pub struct Tick {
     pub t: u64,
     pub scene: String,
     pub frame_ms: Option<f64>,
+    /// `Input.mouse_mode`: 0 visible, 1 hidden, 2 captured, 3 confined.
+    pub mouse: Option<u8>,
     pub raw: Value,
 }
 
@@ -48,6 +52,8 @@ struct Head {
     key: Option<String>,
     #[serde(default, rename = "frameMs")]
     frame_ms: Option<f64>,
+    #[serde(default)]
+    mouse: Option<u8>,
 }
 
 /// One line of the file, or `None` for a line that is not one this build reads.
@@ -63,6 +69,7 @@ pub fn parse_line(text: &str) -> Option<Line> {
             t,
             scene: head.scene.unwrap_or_default(),
             frame_ms: head.frame_ms,
+            mouse: head.mouse,
             raw,
         }),
         "mark" => Line::Mark { t },
@@ -138,15 +145,20 @@ pub struct SceneSpan {
 /// The scenes a take passed through, from scene events and from the scene
 /// each tick names (a game that changes scene between two ticks without the
 /// addon seeing the event still shows up). `t0` is the take's start in wall
-/// time and `duration` its length.
+/// time and `duration` its length. An empty scene is the moment between two
+/// that Godot passes through, which an earlier v2 wrote as an event; it is
+/// not a span.
 pub fn scene_spans(lines: &[Line], t0: u64, duration: u64) -> Vec<SceneSpan> {
     let mut spans: Vec<SceneSpan> = Vec::new();
     for line in lines {
         let (t, scene) = match line {
-            Line::Tick(tick) if !tick.scene.is_empty() => (tick.t, tick.scene.as_str()),
+            Line::Tick(tick) => (tick.t, tick.scene.as_str()),
             Line::Scene { t, scene } => (*t, scene.as_str()),
             _ => continue,
         };
+        if scene.is_empty() {
+            continue;
+        }
         let at = t.saturating_sub(t0).min(duration);
         match spans.last_mut() {
             Some(last) if last.path == scene => last.to_ms = last.to_ms.max(at),
@@ -196,6 +208,55 @@ pub fn worst_frame(lines: &[Line], from: u64, to: u64) -> Option<(u64, f64)> {
         .max_by(|a, b| a.1.total_cmp(&b.1))
 }
 
+/// How the addon kept up between `from` and `to` (wall ms): the numbers
+/// design §13 test 3 (nine ticks a second or more) and §5.5 (a tick costs
+/// 0.5 ms or less at 64 nodes) are checked against.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TickStats {
+    pub count: u64,
+    /// Ticks a second over the whole stretch, gaps included.
+    pub per_second: f64,
+    /// The 95th percentile of the addon's own `tickUs`, as it reported them.
+    pub tick_us_p95: u32,
+    /// The most nodes one tick tracked.
+    pub max_nodes: usize,
+}
+
+pub fn tick_stats(lines: &[Line], from: u64, to: u64) -> TickStats {
+    let ticks: Vec<&Tick> = lines
+        .iter()
+        .filter_map(|l| match l {
+            Line::Tick(tick) if tick.t >= from && tick.t <= to => Some(tick),
+            _ => None,
+        })
+        .collect();
+    let mut costs: Vec<u32> = ticks
+        .iter()
+        .filter_map(|t| t.raw["tickUs"].as_u64())
+        .map(|us| u32::try_from(us).unwrap_or(u32::MAX))
+        .collect();
+    costs.sort_unstable();
+    let seconds = to.saturating_sub(from) as f64 / 1000.0;
+    TickStats {
+        count: ticks.len() as u64,
+        per_second: if seconds > 0.0 {
+            ticks.len() as f64 / seconds
+        } else {
+            0.0
+        },
+        // Nearest rank: the smallest cost at least 95 % of ticks stay under.
+        tick_us_p95: match costs.len() {
+            0 => 0,
+            n => costs[(n * 95).div_ceil(100) - 1],
+        },
+        max_nodes: ticks
+            .iter()
+            .filter_map(|t| t.raw["nodes"].as_array().map(Vec::len))
+            .max()
+            .unwrap_or(0),
+    }
+}
+
 /// Copy the run's telemetry into a take folder. A run that wrote none leaves
 /// an empty file, so a take always has the five files the design lists.
 pub fn copy_into(channel: &Path, take_dir: &Path) -> std::io::Result<()> {
@@ -224,6 +285,12 @@ mod tests {
         assert_eq!(tick.scene, "res://levels/hallway.tscn");
         assert_eq!(tick.frame_ms, Some(16.4));
         assert_eq!(tick.raw["nodes"][0]["path"], "Hallway/Enemy_02");
+        assert_eq!(tick.mouse, None, "an addon that does not say");
+        let captured = TICK.replacen("\"frameMs\"", "\"mouse\":2,\"frameMs\"", 1);
+        let Some(Line::Tick(tick)) = parse_line(&captured) else {
+            panic!("a tick");
+        };
+        assert_eq!(tick.mouse, Some(2));
     }
 
     #[test]
@@ -280,6 +347,7 @@ mod tests {
             t,
             scene: scene.into(),
             frame_ms: Some(frame_ms),
+            mouse: None,
             raw: Value::Null,
         })
     }
@@ -311,6 +379,57 @@ mod tests {
             ]
         );
         assert!(scene_spans(&[], 0, 10).is_empty());
+    }
+
+    #[test]
+    fn the_empty_scene_between_two_is_not_a_span() {
+        let scene = |t: u64, scene: &str| Line::Scene {
+            t,
+            scene: scene.into(),
+        };
+        let lines = vec![
+            scene(1_000, "res://a.tscn"),
+            scene(4_000, ""),
+            tick(4_050, "", 16.0),
+            scene(4_100, "res://b.tscn"),
+        ];
+        let spans = scene_spans(&lines, 1_000, 9_000);
+        let paths: Vec<&str> = spans.iter().map(|s| s.path.as_str()).collect();
+        assert_eq!(paths, ["res://a.tscn", "res://b.tscn"]);
+        assert_eq!((spans[0].to_ms, spans[1].from_ms), (3_100, 3_100));
+    }
+
+    /// A tick with the addon's own cost and `nodes` tracked nodes.
+    fn costed(t: u64, tick_us: u64, nodes: usize) -> Line {
+        let raw = serde_json::json!({
+            "t": t,
+            "kind": "tick",
+            "tickUs": tick_us,
+            "nodes": vec![serde_json::json!({}); nodes],
+        });
+        parse_line(&raw.to_string()).unwrap()
+    }
+
+    #[test]
+    fn tick_stats_count_only_their_window_and_take_the_95th_cost() {
+        // Two seconds before the window, as when Record goes on mid-run, then
+        // ten seconds of ticks every 100 ms with one slow tick in twenty.
+        let mut lines: Vec<Line> = (0..20).map(|i| costed(i * 100, 900, 3)).collect();
+        for i in 0..100 {
+            let us = if i % 20 == 19 { 2_000 } else { 300 };
+            lines.push(costed(2_000 + i * 100, us, if i == 50 { 64 } else { 12 }));
+        }
+        let stats = tick_stats(&lines, 2_000, 12_000);
+        assert_eq!(stats.count, 100);
+        assert!((stats.per_second - 10.0).abs() < 1e-9);
+        assert_eq!(stats.tick_us_p95, 300, "5 slow ticks in 100 sit above it");
+        assert_eq!(stats.max_nodes, 64);
+
+        let slow = tick_stats(&lines[..60], 0, 6_000);
+        assert_eq!(slow.count, 60);
+        assert_eq!(slow.tick_us_p95, 900, "the costly ticks are inside now");
+        assert_eq!(tick_stats(&[], 0, 1_000), TickStats::default());
+        assert_eq!(tick_stats(&lines, 5_000, 5_000).per_second, 0.0);
     }
 
     #[test]
