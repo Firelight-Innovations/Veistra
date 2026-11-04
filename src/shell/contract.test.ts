@@ -8,7 +8,7 @@
  * the same state asked for and not.
  */
 import { describe, expect, it, vi } from "vitest";
-import { updateNotice } from "./contract";
+import { appPresentation, pluginPresentation, updateNotice } from "./contract";
 
 const install = () => {};
 
@@ -104,5 +104,27 @@ describe("the notice's own shape", () => {
         install,
       )?.label,
     ).toBe("Downloading…");
+  });
+});
+
+/**
+ * What makes the tool window push a pane its window rect and the overlays over
+ * it. Carried from the app registry, so the Godot app gets it before Play moves
+ * in, and never claimed for a plugin, whose window Rust does not place.
+ */
+describe("placing a native window over a pane", () => {
+  const app = (placesWindow: boolean) =>
+    appPresentation({ id: "godot-viewer", name: "Godot", description: "", url: "/", placesWindow });
+
+  it("is the app's own declaration", () => {
+    expect(app(true).placesWindow).toBe(true);
+    expect(app(false).placesWindow).toBe(false);
+  });
+
+  it("is never a plugin surface's", () => {
+    const surface = { id: "p", name: "P", description: "" } as Parameters<
+      typeof pluginPresentation
+    >[0];
+    expect(pluginPresentation(surface).placesWindow).toBe(false);
   });
 });

@@ -2,27 +2,22 @@
  * The game in the pane (design §4): the box the game window is placed over,
  * and the live strip under it.
  *
- * The box only reports where it is; the backend places the window. It sends
- * `play/embed-rect` in window CSS pixels whenever the box moves or resizes,
- * the shell's report of the iframe moves, or what covers it changes, at most
- * once a frame. Nothing of Veistra's may sit inside the box while the game
- * is shown (§4.3, the game paints above the WebView), so when an overlay
- * covers it, or live mark up is drawing on it, the window is hidden and the
- * box shows the game's last frame as a still instead.
+ * The box is `apps/shared/useNativeBox.ts`, the one the Godot editor and
+ * Blender use too: it reports `play/embed-rect` at most once a frame, hides the
+ * game while an overlay or something of the pane's own covers the box, and
+ * shows the game's last frame (`play/still`) there instead. Live mark up draws
+ * on the box itself, so the game is hidden then with no still.
  *
  * Opening review unmounts this, and the unmount hides the game. Keeping it
  * mounted under review with a `hidden` flag was the other way; it kept the
  * box's measuring, its still and the log running behind review for nothing.
- * Neither covers the page itself going away (the pane closed, or a cluster
- * switch reloading the frame), which runs no React cleanup: the backend hides
- * the game then from the shell's state (`live::sync_visibility`), and nothing
- * here can take that over.
  */
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef } from "react";
 import type { MarkupExport } from "@veistra/markup/layer";
+import type { WindowRect } from "../../../shared/nativeBox";
+import { useNativeBox } from "../../../shared/useNativeBox";
 import { clock } from "./frames";
-import { boxInWindow, covered, sameRect, type WindowRect } from "./geometry";
-import { embedRect, still, type LogLine, type Rect, type Session } from "./rpc";
+import { embedRect, still, type LogLine, type Session } from "./rpc";
 
 const FrameMarkup = lazy(() => import("./FrameMarkup"));
 
@@ -47,124 +42,23 @@ export interface LiveViewProps {
   onProblem: (message: string) => void;
 }
 
-/** What the backend was last told, so an unchanged box is not sent again. */
-interface Reported {
-  rect: Rect | null;
-  visible: boolean;
-  window?: string;
-  dpr?: number;
-}
-
 export function LiveView(props: LiveViewProps) {
-  const { session, frameRect, overlays, coveredHere, marking } = props;
-  const box = useRef<HTMLDivElement | null>(null);
-  const last = useRef<Reported>({ rect: null, visible: false });
-  const [stillUrl, setStillUrl] = useState<string | null>(null);
-  const [measured, setMeasured] = useState(0);
+  const { session, marking } = props;
   const embedded = session?.embed.kind === "embedded";
-
-  // Re-measure when the box resizes; a move without a resize comes in as a new frameRect.
-  useEffect(() => {
-    const el = box.current;
-    if (!el) return;
-    const observer = new ResizeObserver(() => setMeasured((m) => m + 1));
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-
-  // A move to a monitor of another scale changes devicePixelRatio and nothing
-  // measured in CSS pixels, so only this sees it. A resolution query matches
-  // one ratio, so each change watches the next.
-  useEffect(() => {
-    if (typeof window.matchMedia !== "function") return;
-    let query: MediaQueryList | null = null;
-    const changed = () => {
-      setMeasured((m) => m + 1);
-      watch();
-    };
-    const watch = () => {
-      query?.removeEventListener("change", changed);
-      query = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
-      query.addEventListener("change", changed);
-    };
-    watch();
-    return () => query?.removeEventListener("change", changed);
-  }, []);
-
-  // Leaving the live view hides the game: its window is above the WebView and
-  // would paint over whatever takes the box's place. The ref is cleared so a
-  // remount (StrictMode rehearses one) sends the box again.
-  useEffect(
-    () => () => {
-      const prev = last.current;
-      last.current = { rect: null, visible: false };
-      if (prev.rect && prev.visible) {
-        const dpr = prev.dpr ?? window.devicePixelRatio;
-        void embedRect(prev.rect, false, prev.window, dpr).catch(() => undefined);
-      }
-    },
-    [],
-  );
-
-  const rect = (() => {
-    const el = box.current;
-    if (!el || !frameRect) return null;
-    const r = el.getBoundingClientRect();
-    return boxInWindow(frameRect, r);
-  })();
-  const coveredNow = coveredHere || (rect !== null && covered(rect, overlays));
-  const visible = !coveredNow && marking === null && rect !== null && rect.w > 0 && rect.h > 0;
-
-  // One report a frame at most, and only when something changed.
-  useEffect(() => {
-    if (!rect) return;
-    const frame = requestAnimationFrame(() => {
-      const prev = last.current;
-      const dpr = window.devicePixelRatio;
-      if (
-        sameRect(prev.rect, rect) &&
-        prev.visible === visible &&
-        prev.window === frameRect?.window &&
-        prev.dpr === dpr
-      )
-        return;
-      last.current = { rect, visible, window: frameRect?.window, dpr };
-      void embedRect(rect, visible, frameRect?.window, dpr).catch(() => undefined);
-    });
-    return () => cancelAnimationFrame(frame);
-    // `measured` is what re-runs this after a resize the props did not see.
-  }, [rect?.x, rect?.y, rect?.w, rect?.h, visible, frameRect?.window, measured]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // While covered, the game's last frame stands in for it.
-  const wantStill = embedded && props.running && coveredNow && marking === null;
-  useEffect(() => {
-    if (!wantStill) return;
-    let live = true;
-    still()
-      .then(({ png }) => {
-        if (!live) return;
-        const bytes = Uint8Array.from(atob(png), (c) => c.charCodeAt(0));
-        const url = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
-        setStillUrl((old) => {
-          if (old) URL.revokeObjectURL(old);
-          return url;
-        });
-      })
-      .catch(() => undefined);
-    return () => {
-      live = false;
-    };
-  }, [wantStill]);
-  useEffect(
-    () => () => {
-      if (stillUrl) URL.revokeObjectURL(stillUrl);
-    },
-    [stillUrl],
-  );
+  const box = useNativeBox({
+    frameRect: props.frameRect,
+    overlays: props.overlays,
+    coveredHere: props.coveredHere,
+    hidden: marking !== null,
+    placed: embedded && props.running,
+    report: embedRect,
+    still,
+    generation: session?.runId ?? null,
+  });
 
   return (
     <div className="pl-live__viewport">
-      <div className="pl-live__box" ref={box} data-embedded={embedded || undefined}>
+      <div className="pl-live__box" ref={box.ref} data-embedded={embedded || undefined}>
         {marking ? (
           <Suspense fallback={null}>
             <FrameMarkup
@@ -176,8 +70,8 @@ export function LiveView(props: LiveViewProps) {
             />
           </Suspense>
         ) : embedded && props.running ? (
-          coveredNow && stillUrl ? (
-            <img className="pl-live__still" src={stillUrl} alt="The game's last frame" />
+          box.covered && box.stillUrl ? (
+            <img className="pl-live__still" src={box.stillUrl} alt="The game's last frame" />
           ) : (
             <span className="pl-sr">The game is shown here.</span>
           )

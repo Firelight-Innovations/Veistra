@@ -18,17 +18,19 @@
 
 use super::addon;
 use super::detect::{self, Found, GodotProject, Probe, Resolution};
-use super::embed::Owner;
 use super::preview;
-use super::runner::{RunSpec, Runner, WindowArgs};
+use super::runner::{now_ms, RunSpec, Runner, WindowArgs};
 use super::scene::{self, Refresh};
 use super::session::Session;
 use super::{scratch_root, Godot};
+use crate::embed::host::{HostSpec, Hosts, Orphan, Pane, Slot};
+use crate::embed::{self, Kind, Owner, OwnerFn};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 use veistra_rpc::{RpcError, INTERNAL_ERROR, INVALID_PARAMS, METHOD_NOT_FOUND};
 
@@ -37,10 +39,10 @@ const READ_ONLY: i32 = -32003;
 
 pub type Check<'a> = &'a dyn Fn(&Path) -> Result<String, String>;
 
-/// Where a Veistra window is, by label (`None` for the one the pane is in
-/// when it has not said): what [`super::embed`] places a game against. Shared
-/// with the thread that waits for the game's window, hence `Arc`.
-pub type OwnerFn = std::sync::Arc<dyn Fn(Option<&str>) -> Option<Owner> + Send + Sync>;
+/// A usage event from Rust: `telemetry::track` for the `godot` feature in
+/// the app, a recorder in the tests. Shared with the thread that settles the
+/// game's window, hence `Arc`.
+pub type Usage = std::sync::Arc<dyn Fn(&'static str, Value) + Send + Sync>;
 
 pub struct Ctx<'a> {
     pub godot: &'a Godot,
@@ -59,6 +61,14 @@ pub struct Ctx<'a> {
     /// Lets the page load files under this folder (a take's video) through
     /// the asset protocol.
     pub allow_asset: &'a dyn Fn(&Path),
+    /// Where placed windows and the panes' boxes are kept.
+    pub hosts: &'a Hosts,
+    /// The pane that called, or for a call with none (an agent's `app_call`)
+    /// the cluster's Play pane that last reported a box.
+    pub instance: Option<String>,
+    /// Whether a pane instance is on screen now, from the shell's state.
+    pub shown: &'a dyn Fn(&str) -> bool,
+    pub usage: Usage,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -360,9 +370,12 @@ fn start_run(ctx: &Ctx, project: &GodotProject, scene: Option<String>) -> Result
             "This project has no main scene. Set one in Project Settings > Application > Run, or choose a scene to play.",
         ));
     }
-    let pane = ctx.godot.pane(&ctx.key);
+    let instance = ctx.instance.clone();
+    let pane = instance
+        .as_deref()
+        .and_then(|i| ctx.hosts.box_of(&Slot::new(i, Kind::Game)));
     let owner = (ctx.owner)(pane.as_ref().and_then(|p| p.window.as_deref()));
-    let window = super::embed::SUPPORTED.then(|| launch_window(pane.as_ref(), owner));
+    let window = embed::SUPPORTED.then(|| launch_window(pane.as_ref(), owner.as_ref()));
     let channel = channel_for(ctx, project)?;
     let spec = RunSpec {
         program: found.for_logging().to_path_buf(),
@@ -376,10 +389,8 @@ fn start_run(ctx: &Ctx, project: &GodotProject, scene: Option<String>) -> Result
         .is_some()
         .then(|| super::live::plan_for(ctx, &project.dir, &project.rel, &found.version))
         .flatten();
-    let session = std::sync::Arc::new(Session::new(run.id, channel, plan));
-    if let Some(pane) = &pane {
-        session.embed.set_rect(pane.last(), None);
-    }
+    let embed = ctx.hosts.embed(Kind::Game);
+    let session = Arc::new(Session::with_embed(run.id, channel, plan, embed.clone()));
     ctx.godot.set_session(&ctx.key, session.clone());
     {
         let (session, run) = (session.clone(), run.clone());
@@ -388,22 +399,51 @@ fn start_run(ctx: &Ctx, project: &GodotProject, scene: Option<String>) -> Result
             session.embed.forget();
         }));
     }
-    let owner = super::live::pane_owner(ctx);
-    std::thread::spawn(move || super::session::attach(&session, &run, &owner));
+    let (usage, started) = (ctx.usage.clone(), run.started);
+    // Weak: the embed holding this hook is the session's own.
+    let settling = Arc::downgrade(&session);
+    embed.when_settled(Box::new(move |state| {
+        if let Some(session) = settling.upgrade() {
+            super::session::settled(&session, state);
+        }
+        if let Some((event, props)) = embed::usage_for(state, now_ms().saturating_sub(started)) {
+            usage(event, props);
+        }
+    }));
+    let shown = instance.as_deref().is_some_and(|i| (ctx.shown)(i));
+    let (attached, ended, alive) = (session.clone(), session.clone(), run.clone());
+    let (pid, stopped) = (run.pid, run.clone());
+    ctx.hosts.host(
+        ctx.owner.clone(),
+        shown,
+        HostSpec {
+            instance,
+            cluster: ctx.key.clone(),
+            embed,
+            pids: Box::new(move || super::session::process_tree(pid)),
+            alive: Arc::new(move || alive.is_running()),
+            on_attached: Some(Box::new(move |hwnd| {
+                super::session::attached(&attached, hwnd);
+            })),
+            // The pane closed under a running game: stopped, as at exit,
+            // its take saved first, rather than left running unseen.
+            on_orphan: Orphan::Stop(Box::new(move || {
+                ended.finish_take(&stopped);
+                stopped.kill();
+            })),
+        },
+    );
     Ok(play_state(ctx, 0))
 }
 
-/// Where and how big a game starts: off screen, at the pane's size in
+/// Where and how big a game starts: at the pane's screen rect, at its size in
 /// physical pixels, from the page's `devicePixelRatio` when it sent one.
-fn launch_window(pane: Option<&super::live::Pane>, owner: Option<Owner>) -> WindowArgs {
-    let scale = super::embed::scale_for(pane.and_then(|p| p.dpr), owner.map_or(1.0, |o| o.scale));
-    let (width, height) = super::embed::launch_size(pane.map(|p| p.rect), scale);
-    let (x, y) = WindowArgs::OFF_SCREEN;
+fn launch_window(pane: Option<&Pane>, owner: Option<&Owner>) -> WindowArgs {
+    let at = embed::launch_rect(pane.map(Pane::last), owner);
     WindowArgs {
-        width,
-        height,
-        x,
-        y,
+        width: at.width,
+        height: at.height,
+        position: at.position,
     }
 }
 
@@ -795,10 +835,26 @@ pub fn with_live<R>(
     context: &crate::apps::CallContext,
     f: impl FnOnce(&Ctx) -> R,
 ) -> R {
+    with_live_for(app, context, None, f)
+}
+
+/// The apps whose pane shows the game: Play, and the Godot app it moves into.
+const GAME_APPS: &[&str] = &["play", "godot-viewer"];
+
+/// [`with_live`] for a call from a pane instance, which keys the game's box
+/// and window. With none, the cluster's Play pane that last reported a box
+/// stands in for it, so an agent's `play/run` lands in that pane.
+pub fn with_live_for<R>(
+    app: &tauri::AppHandle,
+    context: &crate::apps::CallContext,
+    instance: Option<&str>,
+    f: impl FnOnce(&Ctx) -> R,
+) -> R {
     use tauri::Manager;
     let key = context.cluster_id.clone().unwrap_or_default();
+    let shell = app.state::<crate::shell_state::ShellState>();
     let read_only = context.cluster_id.as_deref().is_some_and(|cluster| {
-        app.state::<crate::shell_state::ShellState>()
+        shell
             .cluster_write_environment(cluster)
             .is_some_and(|env| env.is_main())
     });
@@ -809,8 +865,18 @@ pub fn with_live<R>(
         .unwrap_or_else(|_| scratch_root());
     let check = |p: &Path| detect::ask_version(p, Duration::from_secs(10));
     let godot = app.state::<Godot>();
+    let hosts = app.state::<Hosts>();
+    let instance = instance.map(str::to_string).or_else(|| {
+        let has_box = |i: &crate::shell_state::SurfaceInstance| {
+            GAME_APPS.contains(&i.app_id.as_str())
+                && hosts.box_of(&Slot::new(&i.id, Kind::Game)).is_some()
+        };
+        crate::embed::host::instance_for(&shell.snapshot(), &key, &has_box)
+    });
+    let shown = |i: &str| crate::embed::host::shown(&shell.snapshot(), i);
     let handle = app.clone();
-    let owner: OwnerFn = std::sync::Arc::new(move |label| owner_of(&handle, label));
+    let usage: Usage =
+        Arc::new(move |event, props| crate::telemetry::track(&handle, "godot", event, props));
     let allow_asset = |dir: &Path| {
         if let Err(e) = app.asset_protocol_scope().allow_directory(dir, true) {
             crate::veistra_log!("play: could not serve {}: {e}", dir.display());
@@ -825,42 +891,14 @@ pub fn with_live<R>(
         check: &check,
         cache_root,
         scratch: scratch_root(),
-        owner,
+        owner: crate::embed::host::owner_fn(app),
         allow_asset: &allow_asset,
+        hosts: &hosts,
+        instance,
+        shown: &shown,
+        usage,
     };
     f(&ctx)
-}
-
-/// The Veistra window `label` names (`main` when none), as the embedder
-/// needs it: its handle, where its WebView starts on the screen, and its
-/// scale. `None` off Windows, or for a window that is gone.
-pub fn owner_of(app: &tauri::AppHandle, label: Option<&str>) -> Option<Owner> {
-    use tauri::Manager;
-    let window = app.get_webview_window(label.unwrap_or("main"))?;
-    let origin = window.inner_position().ok()?;
-    let scale = window.scale_factor().ok()?;
-    #[cfg(windows)]
-    let hwnd = window.hwnd().ok()?.0 as isize;
-    #[cfg(not(windows))]
-    let hwnd = 0;
-    super::embed::SUPPORTED.then_some(Owner {
-        hwnd,
-        origin: (origin.x, origin.y),
-        scale,
-    })
-}
-
-/// Put every embedded game back over its pane: the Veistra window moved, and
-/// an owned window does not move with its owner.
-pub fn reposition_all(app: &tauri::AppHandle) {
-    use tauri::Manager;
-    let godot = app.state::<Godot>();
-    for (key, session) in godot.live_sessions() {
-        let label = godot.pane(&key).and_then(|p| p.window);
-        if let Some(owner) = owner_of(app, label.as_deref()) {
-            session.embed.reapply(&owner);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -874,6 +912,7 @@ mod tests {
         _dir: TempDir,
         root: PathBuf,
         godot: Godot,
+        hosts: Hosts,
         exe: PathBuf,
         scratch: PathBuf,
     }
@@ -898,6 +937,7 @@ mod tests {
             _dir: dir,
             root,
             godot: Godot::default(),
+            hosts: Hosts::with(embed::native(), false, false),
             exe,
             scratch,
         }
@@ -916,8 +956,12 @@ mod tests {
             check,
             cache_root: w.scratch.join("appdata"),
             scratch: w.scratch.clone(),
-            owner: std::sync::Arc::new(|_| None),
+            owner: Arc::new(|_| None),
             allow_asset: &|_| {},
+            hosts: &w.hosts,
+            instance: Some("play-1".into()),
+            shown: &|_| true,
+            usage: Arc::new(|_, _| {}),
         }
     }
 
@@ -1411,9 +1455,9 @@ mod tests {
     }
 
     #[test]
-    fn a_game_starts_at_the_pane_s_size_in_the_page_s_pixels() {
-        let pane = super::super::live::Pane {
-            rect: super::super::embed::CssRect {
+    fn a_game_starts_where_the_pane_is_at_its_size_in_the_page_s_pixels() {
+        let pane = Pane {
+            rect: embed::CssRect {
                 x: 0.0,
                 y: 0.0,
                 w: 800.0,
@@ -1425,19 +1469,20 @@ mod tests {
         };
         let owner = Owner {
             hwnd: 1,
-            origin: (0, 0),
+            origin: (40, 30),
             scale: 1.0,
         };
-        let w = launch_window(Some(&pane), Some(owner));
+        let w = launch_window(Some(&pane), Some(&owner));
         assert_eq!(
             (w.width, w.height),
             (1000, 500),
             "zoom 125 % on a 100 % monitor"
         );
-        let no_ratio = super::super::live::Pane { dpr: None, ..pane };
+        assert_eq!(w.position, Some((40, 30)), "over the pane, not off screen");
+        let no_ratio = Pane { dpr: None, ..pane };
         let w = launch_window(
             Some(&no_ratio),
-            Some(Owner {
+            Some(&Owner {
                 scale: 1.5,
                 ..owner
             }),
@@ -1447,6 +1492,32 @@ mod tests {
             (1200, 600),
             "the window's scale is the fallback"
         );
+        assert_eq!(launch_window(None, None).position, None, "Godot centres it");
+    }
+
+    #[test]
+    fn a_run_reports_off_windows_that_its_game_plays_in_its_own_window() {
+        let w = world(true);
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let c = Ctx {
+            usage: Arc::new(move |event, props| log.lock().unwrap().push((event, props))),
+            ..ctx(&w, false, &real_check)
+        };
+        call(&c, "play/run", json!({})).unwrap();
+        let session = w.godot.session("c1").expect("a session");
+        let state = serde_json::to_value(session.embed.state()).unwrap();
+        w.godot.shutdown();
+        assert_eq!(state["kind"], "ownWindow");
+        assert_eq!(state["cause"], "unsupported");
+        assert!(state["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("Playing in its own window"));
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1, "once per run: {seen:?}");
+        assert_eq!(seen[0].0, "play_embed_failed");
+        assert_eq!(seen[0].1, json!({ "cause": "unsupported" }));
     }
 
     #[test]

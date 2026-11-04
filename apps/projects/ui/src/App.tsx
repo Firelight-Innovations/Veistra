@@ -1,4 +1,5 @@
 import { on, reportPainted } from "@veistra/bridge";
+import { WINDOW_RECT_EVENT } from "@veistra/bridge/protocol";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { TroubleNote, describeFailure } from "../../../shared/trouble";
 import { absoluteBounds, isFrameRect, type FrameRect } from "./frameRect";
@@ -29,12 +30,12 @@ export default function App() {
   const frameRectRef = useRef<FrameRect | null>(null);
 
   // The shell's report of where this app's own iframe sits in the window —
-  // see `veistra/window-rect` in `src/shell/toolwindow/ToolWindow.tsx`. Needed
+  // see `WINDOW_RECT_EVENT` in `src/shell/toolwindow/ToolWindow.tsx`. Needed
   // because `paneRef`'s `getBoundingClientRect()` is relative to this iframe's
   // own viewport, not the window `add_child`/`set_position` place things in.
   useEffect(
     () =>
-      on("veistra/window-rect", (payload) => {
+      on(WINDOW_RECT_EVENT, (payload) => {
         if (!isFrameRect(payload)) return;
         frameRectRef.current = payload;
         setFrameRect(payload);

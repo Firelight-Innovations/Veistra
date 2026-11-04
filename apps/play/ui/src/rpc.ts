@@ -2,11 +2,14 @@
  * The wire shapes `play/*` answers with, restated from
  * `src-tauri/src/godot/runner.rs`, `rpc.rs`, `live.rs`, `session.rs` and
  * `takes.rs`. The pane polls `play/state` with a log cursor and a key cursor;
- * nothing is pushed.
+ * nothing is pushed. The game's box methods mirror the editors' `embed/*`
+ * (`apps/shared/nativeWindow.ts`), with take side effects of their own.
  */
 import { invoke } from "@veistra/bridge";
 import type { AddonState } from "../../../shared/godot";
 import type { Comment } from "../../../shared/comments";
+import type { Rect } from "../../../shared/nativeBox";
+import type { EmbedState } from "../../../shared/nativeWindow";
 import type { NotesDoc } from "./notes";
 
 export type RunState =
@@ -43,12 +46,8 @@ export interface LogSlice {
   truncated: boolean;
 }
 
-/** Where the game's window is (`embed::State`). */
-export type EmbedState =
-  | { kind: "waiting" }
-  | { kind: "embedded" }
-  | { kind: "poppedOut" }
-  | { kind: "ownWindow"; reason: string };
+/** Where the game's window is (`embed::State`), with the same causes as an editor's. */
+export type { EmbedCause, EmbedState } from "../../../shared/nativeWindow";
 
 /** Where this run's take is (`session::TakeState`). */
 export type TakeState =
@@ -153,12 +152,7 @@ export interface Sent {
   comments: [number, string][];
 }
 
-export interface Rect {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
+export type { Rect } from "../../../shared/nativeBox";
 
 /**
  * `project` is the pane's chosen project as `godot/status` names it, undefined

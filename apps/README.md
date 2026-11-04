@@ -446,6 +446,20 @@ sent to the agent as a feedback packet. Keys are bound on the app's own root
 element, not `window`, so they never fire while a different pane has focus.
 `docs/design-notes/godot-play.md` has the whole of it.
 
+**A window over the pane.** Play, the Godot Viewer, the Blender Viewer and
+Projects declare `places_window` in the registry (`src-tauri/src/apps/mod.rs`):
+Rust places a native window over the pane, so the shell pushes them
+`veistra/window-rect` and `veistra/overlays` (`docs/tool-protocol.md` §3). The
+game, the Godot editor and Blender share one embedder, `src-tauri/src/embed/`,
+keyed by the pane instance that shows the window; `embed/host.rs`'s module doc
+is the API an app hosting a window follows. The page side is
+`apps/shared/useNativeBox.ts`: it reports the box at most once a frame, hides
+the window under an overlay and shows its last frame there, and hides it on
+unmount. The game reports through `play/embed-rect`, `play/still`,
+`play/pop-out` and `play/dock`, because Play starts and saves takes around
+them; an editor uses the host's `embed/rect`, `embed/still`, `embed/pop-out`,
+`embed/dock` and `embed/state` with its `kind` (`apps/shared/nativeWindow.ts`).
+
 All three show an honest empty state everywhere they have nothing to show,
 rather than fabricating a render, a part list or a frame. Each has a single
 "Preview with sample data" toggle, off by default, that swaps in a fixture

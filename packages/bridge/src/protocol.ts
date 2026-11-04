@@ -150,6 +150,19 @@ export interface SearchEventPayload {
   value: string;
 }
 
+/** `{ x, y, width, height, window }` in window CSS pixels, to apps that declare `placesWindow`. */
+export const WINDOW_RECT_EVENT = "veistra/window-rect";
+
+/**
+ * `{ rects }`: the shell's open overlays in the same space, to the same apps.
+ * Rects, not a flag, so a pane hides its window only for one over its box.
+ */
+export const OVERLAYS_EVENT = "veistra/overlays";
+
+/** On the shell's own `window` as the first overlay opens and the last closes (§4.3.2). */
+export const OVERLAY_OPEN_EVENT = "veistra:overlay-open";
+export const OVERLAY_CLOSE_EVENT = "veistra:overlay-close";
+
 /** What arrives with a `veistra:topic/*` event. */
 export interface PublishedTopic {
   value: unknown;

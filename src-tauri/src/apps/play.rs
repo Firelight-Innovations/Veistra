@@ -19,10 +19,22 @@ pub fn call(
     method: &str,
     params: Option<Value>,
 ) -> Result<Value, RpcError> {
+    call_for(app, context, None, method, params)
+}
+
+/// [`call`] from a pane instance: the game's box and window are the pane's
+/// (`crate::embed::host`), so `play/embed-rect` needs to know which.
+pub fn call_for(
+    app: &AppHandle,
+    context: &CallContext,
+    instance: Option<&str>,
+    method: &str,
+    params: Option<Value>,
+) -> Result<Value, RpcError> {
     if let Some(result) = crate::comments::call(context, method, params.as_ref()) {
         return result;
     }
-    crate::godot::rpc::with_live(app, context, |ctx| {
+    crate::godot::rpc::with_live_for(app, context, instance, |ctx| {
         crate::godot::rpc::play(ctx, method, params.as_ref())
     })
     .unwrap_or_else(|| {

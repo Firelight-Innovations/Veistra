@@ -1,5 +1,5 @@
 //! What one Play run holds beyond its process ([`super::runner`]): where its
-//! window is ([`super::embed`]), whether it is being recorded
+//! window is ([`crate::embed`]), whether it is being recorded
 //! ([`super::record`]), and the marks and keys capture addon v2 reported.
 //!
 //! A take is planned when the run starts (its id, number and folder), begun
@@ -8,11 +8,11 @@
 //! itself. [`Session::finish_take`] is that once; every path calls it and only
 //! the first does anything.
 
-use super::embed::{Embed, Owner, State as EmbedState};
 use super::record::{self, Recorder};
 use super::runner::{now_ms, Run};
 use super::takes::{self, EnvInfo, VideoInfo};
 use super::telemetry::{self, Line, Tail};
+use crate::embed::{Cause, Embed, State as EmbedState};
 use crate::sync::MutexExt;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -77,7 +77,8 @@ struct Active {
 
 pub struct Session {
     pub run_id: u64,
-    pub embed: Embed,
+    /// Shared with the run's registration in [`crate::embed::host::Hosts`].
+    pub embed: Arc<Embed>,
     pub channel: Option<PathBuf>,
     plan: Mutex<Option<Plan>>,
     take: Mutex<TakeState>,
@@ -92,7 +93,19 @@ pub struct Session {
 }
 
 impl Session {
+    /// A session with an embed of its own, for the tests; a run's comes from
+    /// the registry ([`Self::with_embed`]).
+    #[cfg(test)]
     pub fn new(run_id: u64, channel: Option<PathBuf>, plan: Option<Plan>) -> Self {
+        Self::with_embed(run_id, channel, plan, Arc::new(Embed::default()))
+    }
+
+    pub fn with_embed(
+        run_id: u64,
+        channel: Option<PathBuf>,
+        plan: Option<Plan>,
+        embed: Arc<Embed>,
+    ) -> Self {
         let take = match &plan {
             Some(p) => TakeState::Starting {
                 number: takes::next_number(&p.takes_dir),
@@ -101,7 +114,7 @@ impl Session {
         };
         Self {
             run_id,
-            embed: Embed::default(),
+            embed,
             tail: Mutex::new(channel.as_ref().map(|c| Tail::new(c.join(telemetry::FILE)))),
             channel,
             plan: Mutex::new(plan),
@@ -412,33 +425,37 @@ pub fn process_tree(root: u32) -> Vec<u32> {
     descendants(root, &procs)
 }
 
-/// Find the game's window, place it, and start the take if one is planned.
-/// Runs on its own thread for the run's first seconds.
-pub fn attach(
-    session: &Arc<Session>,
-    run: &Arc<Run>,
-    owner: &(dyn Fn() -> Option<Owner> + Send + Sync),
-) {
-    if !super::embed::SUPPORTED {
-        session.embed.give_up("Playing in its own window.");
-        if session.plan.lock_or_panic().is_some() {
-            *session.take.lock_or_panic() = TakeState::Failed {
-                reason: record::unavailable()
-                    .unwrap_or("Recording is not available here.")
-                    .to_string(),
-            };
-        }
-        return;
+/// The search for the game's window ended ([`crate::embed::host::HostSpec`]'s
+/// `on_attached`): start the take if one is planned, or say why it cannot.
+pub fn attached(session: &Session, hwnd: Option<isize>) {
+    match hwnd {
+        Some(hwnd) => session.begin_take(hwnd),
+        None => settled(session, &session.embed.state()),
     }
-    let pid = run.pid;
-    let hwnd = session
-        .embed
-        .attach(&|| process_tree(pid), owner, &|| run.is_running());
-    if let Some(hwnd) = hwnd {
-        session.begin_take(hwnd);
-    } else if session.plan.lock_or_panic().take().is_some() {
+}
+
+/// The first attempt to place the game's window has an outcome
+/// ([`Embed::when_settled`]). A planned take that cannot be recorded says so
+/// now: a window that shows only after the wait is still looked for until the
+/// game exits, and its take would read "starting" all that time.
+pub fn settled(session: &Session, state: &EmbedState) {
+    let reason = match state {
+        EmbedState::Embedded | EmbedState::Waiting | EmbedState::PoppedOut => return,
+        EmbedState::OwnWindow {
+            cause: Cause::Unsupported,
+            ..
+        } => record::unavailable().unwrap_or("Recording is not available here."),
+        EmbedState::OwnWindow {
+            cause: Cause::Exited,
+            ..
+        } => "The game showed no window to record.",
+        EmbedState::OwnWindow { .. } => {
+            "Recording needs the game in the pane, and this one is playing in its own window."
+        }
+    };
+    if session.plan.lock_or_panic().take().is_some() {
         *session.take.lock_or_panic() = TakeState::Failed {
-            reason: "The game showed no window to record.".into(),
+            reason: reason.to_string(),
         };
     }
 }
@@ -556,7 +573,7 @@ mod tests {
             TakeState::Starting { number: 1 },
             "still being placed: attaching starts it"
         );
-        s.embed.give_up("Playing in its own window.");
+        s.embed.give_up(Cause::NoWindow);
         s.begin_take(7);
         let TakeState::Failed { reason } = s.take_state() else {
             panic!("a decorated window is not recorded");
@@ -569,6 +586,48 @@ mod tests {
             ))
         );
         assert_eq!(not_recordable(&EmbedState::Embedded), None);
+    }
+
+    /// A game whose window is still being looked for after the wait (a slow
+    /// first import) must not read "waiting to start recording" until it exits.
+    #[test]
+    fn a_take_that_cannot_start_says_so_when_the_window_s_outcome_is_known() {
+        let dir = TempDir::new().unwrap();
+        let s = Session::new(1, None, Some(plan(dir.path())));
+        settled(&s, &EmbedState::Embedded);
+        assert_eq!(
+            s.take_state(),
+            TakeState::Starting { number: 1 },
+            "placed: attach starts it"
+        );
+        let late = EmbedState::OwnWindow {
+            reason: String::new(),
+            cause: Cause::NoWindow,
+        };
+        settled(&s, &late);
+        let TakeState::Failed { reason } = s.take_state() else {
+            panic!("the take is given up at once");
+        };
+        assert!(reason.contains("its own window"), "{reason}");
+        s.begin_take(7);
+        assert!(
+            matches!(s.take_state(), TakeState::Failed { .. }),
+            "the late window starts none"
+        );
+
+        let gone = Session::new(2, None, Some(plan(dir.path())));
+        attached(&gone, None);
+        assert_eq!(
+            gone.take_state(),
+            TakeState::Starting { number: 1 },
+            "still waiting"
+        );
+        gone.embed.give_up(Cause::Exited);
+        attached(&gone, None);
+        let TakeState::Failed { reason } = gone.take_state() else {
+            panic!("no window, no take");
+        };
+        assert_eq!(reason, "The game showed no window to record.");
     }
 
     #[test]
