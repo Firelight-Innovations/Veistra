@@ -40,12 +40,21 @@ the design canvas exist because that is the work it was made for. The rest
 (clusters, terminals, files, git, MCP servers) is not tied to games, so with
 some tweaks it works for ordinary software too.
 
-Coding agents are limited by two things: the context they are given, and
-whether they can check their own work. Without those, you do both by hand, and
-every loop waits on you. Veistra supplies both, so the agent can close the loop
-itself.
+Coding agents run a ReAct loop: reason, act, observe, repeat. The model in the
+middle is very capable. What limits it is what goes in, the **context** it is
+given, and what comes out, the **validation** that tells it whether its work is
+right. Both start and end with a person, and a person is the narrowest part of
+the loop.
 
-![A funnel: a very capable model narrows to a neck made of context and validation, and Veistra widens that neck](assets/bottleneck.svg)
+![The ReAct loop: a person gives context, Veistra widens it into the model, the model reasons and acts, and Veistra widens validation back out to a person](assets/react-loop.svg)
+
+A person's attention does not get faster. Veistra does not try to speed it up.
+It takes your judgement and writes it down once, as a design on the canvas, a
+document, a workflow or a check, so the agent can use it on every loop instead
+of waiting for you. On the way out, checkers, Play takes and viewer renders
+boil the agent's work down to something you can judge at a glance.
+
+![Your judgement, kept in designs, documents and workflows, widens the context going in; checkers, takes and renders narrow the validation coming out to a verdict](assets/throughput.svg)
 
 Veistra is a development tool. It does not run the software you build with it.
 
