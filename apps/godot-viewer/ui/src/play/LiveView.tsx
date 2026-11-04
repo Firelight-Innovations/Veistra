@@ -164,7 +164,7 @@ export function LiveStrip(props: LiveStripProps) {
           title="Stop the game and open this take for review (F7)"
           onClick={props.onStopAndReview}
         >
-          Stop and review
+          Stop and review <kbd className="pl-strip__kbd">F7</kbd>
         </button>
       </div>
     );
@@ -192,9 +192,10 @@ export function LiveStrip(props: LiveStripProps) {
         {take?.state === "saving" ? "Saving take…" : "Not recording"}
       </span>
       <span className="pl-strip__message">{message}</span>
-      {running && marks.length > 0 && (
+      {running && (marks.length > 0 || errors.length > 0) && (
         <span className="pl-strip__counts">
-          {marks.length} {marks.length === 1 ? "mark" : "marks"}
+          {marks.length} {marks.length === 1 ? "mark" : "marks"} · {errors.length}{" "}
+          {errors.length === 1 ? "error" : "errors"}
         </span>
       )}
       <button

@@ -22,6 +22,14 @@ describe("narrow panes", () => {
     expect(rule(toolbar, ".k-vtb__btn")).toContain("white-space: nowrap");
   });
 
+  it("Play's project and scene pickers give way rather than push the chip down", () => {
+    expect(rule(play, ".pl-pickers")).toContain("min-width: 0");
+    const picker = rule(play, ".pl-pickers .k-vtb__select");
+    expect(picker).toContain("min-width: 0");
+    expect(picker).toMatch(/max-width: (\d+)px/);
+    expect(Number(/max-width: (\d+)px/.exec(picker)?.[1])).toBeLessThan(260);
+  });
+
   it("the live strip and the review wrap rather than overlap", () => {
     expect(rule(play, ".pl-strip")).toContain("flex-wrap: wrap");
     expect(rule(play, ".pl-review")).toContain("flex-wrap: wrap");

@@ -171,6 +171,24 @@ interface Key {
   t: number;
 }
 
+interface Line {
+  seq: number;
+  stream: "stdout" | "stderr";
+  level: "info" | "warning" | "error";
+  text: string;
+  at: number;
+}
+
+const line = (seq: number, level: Line["level"], text: string): Line => ({
+  seq,
+  stream: level === "info" ? "stdout" : "stderr",
+  level,
+  text,
+  at: 2000 + seq,
+});
+
+const FOUND = { path: "C:/godot.exe", source: "path", version: "4.3.stable", major: 4, minor: 3 };
+
 /** What the backend holds; a test changes it and the next poll sees the change. */
 interface World {
   run: { id: number; state: { kind: string; code?: number | null } } | null;
@@ -185,6 +203,12 @@ interface World {
   held: (() => void)[] | null;
   /** Whether the cluster is on the read-only main checkout, as `godot/status` says. */
   readOnly: boolean;
+  /** Whether Godot 4 was found, which Run needs. */
+  found: boolean;
+  /** The game's output so far; each poll answers the lines after its cursor. */
+  lines: Line[];
+  /** The scenes `godot-viewer/state` lists for every project. */
+  scenes: string[];
 }
 
 function liveBackend(over: Partial<World> = {}): World {
@@ -198,11 +222,18 @@ function liveBackend(over: Partial<World> = {}): World {
     embed: SESSION.embed,
     held: null,
     readOnly: false,
+    found: false,
+    lines: [],
+    scenes: [],
     ...over,
   };
-  const state = (keySince: number) => ({
+  const state = (keySince: number, since = 0) => ({
     run: world.run && { ...RUN, ...world.run },
-    log: { lines: [], nextSeq: 0, truncated: false },
+    log: {
+      lines: world.lines.filter((l) => l.seq >= since),
+      nextSeq: world.lines.reduce((n, l) => Math.max(n, l.seq + 1), since),
+      truncated: false,
+    },
     live: {
       record: world.record,
       session: world.run && {
@@ -228,10 +259,14 @@ function liveBackend(over: Partial<World> = {}): World {
     switch (method) {
       case "play/state": {
         const keySince = Number(params?.keySince ?? 0);
+        const since = Number(params?.since ?? 0);
         const held = world.held;
-        if (held) return new Promise((answer) => held.push(() => answer(state(keySince))));
-        return Promise.resolve(state(keySince));
+        if (held) return new Promise((answer) => held.push(() => answer(state(keySince, since))));
+        return Promise.resolve(state(keySince, since));
       }
+      case "play/run":
+        world.run = { id: (world.run?.id ?? 0) + 1, state: { kind: "running" } };
+        return Promise.resolve(state(0));
       case "play/record":
         world.record = { ...world.record, on: params?.on === true };
         if (params?.on !== true) save();
@@ -253,8 +288,14 @@ function liveBackend(over: Partial<World> = {}): World {
       case "godot/status":
         return Promise.resolve({
           environment: { root: "C:/p", readOnly: world.readOnly },
-          executable: { found: null, problems: [], setting: "" },
+          executable: { found: world.found ? FOUND : null, problems: [], setting: "" },
           projects: world.projects,
+        });
+      case "godot-viewer/state":
+        return Promise.resolve({
+          project: params?.project ?? ".",
+          scenes: world.scenes,
+          scene: world.scenes.includes("res://main.tscn") ? "res://main.tscn" : null,
         });
       case "play/addon-status":
         return Promise.resolve({ addon: "no", needsRestart: false, readOnly: world.readOnly });
@@ -482,7 +523,10 @@ describe("Play live view", () => {
     liveBackend({ take: { state: "off" }, embed: { kind: "ownWindow", reason, cause: "forced" } });
     render(<App />);
     expect(await screen.findByText(reason)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Pop out into its own window" })).toBeNull();
+    // Slot 5 keeps its button, disabled with the reason, so nothing shifts.
+    const pop = screen.getByRole("button", { name: "Pop out into its own window" });
+    expect((pop as HTMLButtonElement).disabled).toBe(true);
+    expect(pop.title).toMatch(/playing in its own window/);
     placeBox();
     await waitFor(() => expect(calls("play/embed-rect").length).toBeGreaterThan(0));
     events.get("veistra/overlays")?.({ rects: [{ x: 100, y: 100, width: 50, height: 50 }] });
@@ -563,7 +607,7 @@ describe("Play live view", () => {
     liveBackend();
     render(<App />);
     await screen.findByText("Playing");
-    fireEvent.click(screen.getByRole("button", { name: "Mark up" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Mark up/ }));
     // The markup layer is loaded on first use, which can take a while in jsdom.
     await screen.findByAltText("The frame being marked up", undefined, { timeout: 5000 });
     fireEvent.keyDown(pane(), { key: "F5", shiftKey: true });
@@ -682,5 +726,238 @@ describe("Play live view", () => {
     const rec = await screen.findByRole("button", { name: /^Rec(?!ord)/ });
     await waitFor(() => expect(rec.getAttribute("aria-pressed")).toBe("true"));
     expect(screen.queryByText(blocked)).toBeNull();
+  });
+});
+
+const IDLE = { run: null, take: { state: "off" } } as const;
+const BLOCKED = "Recording needs the capture addon, version 2. Enable capture, then run the game.";
+
+describe("Play toolbar", () => {
+  afterEach(() => {
+    Element.prototype.getBoundingClientRect = realRect;
+  });
+
+  it("lists the project's scenes with the main one chosen, and runs the one picked", async () => {
+    liveBackend({
+      ...IDLE,
+      found: true,
+      projects: [
+        { ...project("game"), mainScene: "res://main.tscn", mainScenePath: "res://main.tscn" },
+      ],
+      scenes: ["res://levels/a.tscn", "res://main.tscn"],
+    });
+    render(<App />);
+    const picker = (await screen.findByRole("combobox", { name: "Scene" })) as HTMLSelectElement;
+    await waitFor(() => expect(picker.value).toBe("res://main.tscn"));
+    expect([...picker.options].map((o) => o.text)).toEqual(["levels/a.tscn", "main.tscn (main)"]);
+    fireEvent.change(picker, { target: { value: "res://levels/a.tscn" } });
+    fireEvent.keyDown(pane(), { key: "F5" });
+    await waitFor(() => expect(calls("play/run")).toHaveLength(1));
+    expect(calls("play/run")[0][1]).toEqual({ project: "game", scene: "res://levels/a.tscn" });
+  });
+
+  it("shows the running scene in the picker and holds it until the run stops", async () => {
+    liveBackend({
+      projects: [project("game")],
+      scenes: ["res://levels/a.tscn", "res://main.tscn"],
+    });
+    render(<App />);
+    await screen.findByText("Playing");
+    const picker = (await screen.findByRole("combobox", { name: "Scene" })) as HTMLSelectElement;
+    expect(picker.disabled).toBe(true);
+    expect(picker.value).toBe(RUN.scene);
+  });
+
+  // The native dropdown is drawn under the game's window, so the game steps
+  // aside while a picker is open, as it does for the project and take pickers.
+  it("hides the game while the scene picker is open", async () => {
+    liveBackend({ projects: [project("game")], scenes: ["res://main.tscn"] });
+    render(<App />);
+    await screen.findByText("Playing");
+    placeBox();
+    await waitFor(() => expect(lastParams("play/embed-rect")?.visible).toBe(true));
+    fireEvent.focus(await screen.findByRole("combobox", { name: "Scene" }));
+    await waitFor(() => expect(lastParams("play/embed-rect")?.visible).toBe(false));
+  });
+
+  it("keeps Pop out in place with no game, disabled with the reason", async () => {
+    liveBackend(IDLE);
+    render(<App />);
+    const pop = await screen.findByRole("button", { name: "Pop out into its own window" });
+    expect((pop as HTMLButtonElement).disabled).toBe(true);
+    expect(pop.title).toMatch(/needs a game in the pane/);
+    // Open in Godot is Editor's to show; Play's slot 5 is Pop out alone.
+    expect(screen.queryByRole("button", { name: /Open in Godot/ })).toBeNull();
+  });
+
+  describe("Rec's four states", () => {
+    it("off: Record, not pressed, and a click turns it on", async () => {
+      liveBackend({ take: { state: "off" }, record: { on: false, blocked: null } });
+      render(<App />);
+      await screen.findByText("Playing");
+      const rec = screen.getByRole("button", { name: /^Record/ });
+      expect(rec.getAttribute("aria-pressed")).toBe("false");
+      expect(rec.title).toContain("Ctrl R");
+      fireEvent.click(rec);
+      await waitFor(() => expect(calls("play/record")).toHaveLength(1));
+      expect(calls("play/record")[0][1]).toMatchObject({ on: true });
+    });
+
+    it("recording: Rec, pressed, with the take's time", async () => {
+      liveBackend();
+      render(<App />);
+      await screen.findByText("Playing");
+      const rec = await screen.findByRole("button", { name: /^Rec(?!ord)/ });
+      await waitFor(() => expect(rec.getAttribute("aria-pressed")).toBe("true"));
+      expect(rec.querySelector(".pl-rec-clock")?.textContent).toMatch(/^\d+:\d\d/);
+    });
+
+    it("saving: disabled while the take is written", async () => {
+      liveBackend({ take: { state: "saving", id: TAKE_ID, number: 4 } });
+      render(<App />);
+      await screen.findByText("Playing");
+      const saving = screen.getAllByRole("button", { name: "Saving take…" });
+      expect(saving.every((b) => (b as HTMLButtonElement).disabled)).toBe(true);
+    });
+
+    it("blocked: disabled with its reason, and neither a click nor Ctrl R records", async () => {
+      liveBackend({ take: { state: "off" }, record: { on: false, blocked: BLOCKED } });
+      render(<App />);
+      await screen.findByText("Playing");
+      const rec = screen.getByRole("button", { name: /^Record/ }) as HTMLButtonElement;
+      await waitFor(() => expect(rec.disabled).toBe(true));
+      expect(rec.title).toBe(BLOCKED);
+      fireEvent.click(rec);
+      fireEvent.keyDown(pane(), { key: "r", ctrlKey: true });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(calls("play/record")).toHaveLength(0);
+      expect(screen.queryByRole("dialog", { name: "Enable capture" })).toBeNull();
+    });
+  });
+
+  it("shows F7 on Stop and review, and Ctrl Shift M on Mark up", async () => {
+    liveBackend();
+    render(<App />);
+    await screen.findByText("Playing");
+    const review = screen.getByRole("button", { name: /^Stop and review/ });
+    expect(review.querySelector("kbd")?.textContent).toBe("F7");
+    const markup = screen.getByRole("button", { name: /^Mark up/ });
+    expect(markup.querySelector("kbd")?.textContent).toBe("Ctrl Shift M");
+  });
+
+  it("counts this run's errors in the strip while not recording", async () => {
+    liveBackend({
+      take: { state: "off" },
+      record: { on: false, blocked: null },
+      lines: [line(1, "info", "ready"), line(2, "error", "boom"), line(3, "warning", "slow")],
+    });
+    render(<App />);
+    expect(await screen.findByText("0 marks · 1 error")).toBeTruthy();
+  });
+});
+
+describe("Play output drawer", () => {
+  const LINES = [
+    line(1, "info", "ready"),
+    line(2, "warning", "slow frame"),
+    line(3, "error", "boom"),
+    line(4, "info", "last words"),
+  ];
+  const tab = (name: string) => screen.getByRole("button", { name: new RegExp(`^${name}`) });
+
+  it("is closed, with each tab's count and the last line", async () => {
+    liveBackend({ lines: LINES });
+    render(<App />);
+    await screen.findByText("last words");
+    for (const name of ["Output", "Errors", "Notes"]) {
+      expect(tab(name).getAttribute("aria-expanded")).toBe("false");
+    }
+    expect(tab("Output").textContent).toBe("Output4");
+    // The count is what the tab lists: warnings with the errors.
+    expect(tab("Errors").textContent).toBe("Errors2");
+    fireEvent.click(tab("Errors"));
+    expect(tab("Errors").getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("slow frame")).toBeTruthy();
+    expect(screen.getByText("boom")).toBeTruthy();
+    expect(screen.queryByText("ready")).toBeNull();
+  });
+});
+
+describe("Play keys while the pane has focus", () => {
+  // Each key's RPCs, with the game running unless the row says idle.
+  it.each([
+    ["F5 runs the project", { key: "F5" }, true, ["play/run"]],
+    ["F5 restarts the run", { key: "F5" }, false, ["play/restart"]],
+    ["Shift F5 stops", { key: "F5", shiftKey: true }, false, ["play/stop"]],
+    ["F6 pauses", { key: "F6" }, false, ["play/pause"]],
+    ["F7 stops for review", { key: "F7" }, false, ["play/stop"]],
+    ["F8 marks", { key: "F8" }, false, ["play/mark"]],
+    ["Ctrl R turns Record off", { key: "r", ctrlKey: true }, false, ["play/record"]],
+    [
+      "Ctrl Shift M pauses and takes the frame",
+      { key: "M", ctrlKey: true, shiftKey: true },
+      false,
+      ["play/pause", "play/capture"],
+    ],
+  ])("%s", async (_, key, idle, sent) => {
+    URL.createObjectURL = vi.fn(() => "blob:frame");
+    URL.revokeObjectURL = vi.fn();
+    liveBackend({ ...(idle ? IDLE : {}), found: true, projects: [project("game")] });
+    render(<App />);
+    if (!idle) await screen.findByText("Playing");
+    else await screen.findByRole("button", { name: "Run" });
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: /^(Run|Restart)$/ }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+    const before = new Set(bridge.invoke.mock.calls.map((c) => c[0] as string));
+    expect(fireEvent.keyDown(pane(), key)).toBe(false);
+    for (const method of sent) {
+      await waitFor(() => expect(calls(method).length).toBeGreaterThan(0));
+    }
+    const other = [
+      "play/run",
+      "play/restart",
+      "play/stop",
+      "play/pause",
+      "play/mark",
+      "play/record",
+    ];
+    for (const method of other.filter((m) => !sent.includes(m) && !before.has(m))) {
+      expect(calls(method)).toHaveLength(0);
+    }
+    if (key.key === "F7") await screen.findByText("Reviewing");
+  });
+
+  it("keeps Ctrl R from reloading the pane while a note is typed, and records nothing", async () => {
+    liveBackend({ take: { state: "off" } });
+    render(<App />);
+    await screen.findByText("Playing");
+    const captureButton = screen.getByRole("button", { name: /Capture this frame/ });
+    await waitFor(() => expect((captureButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(captureButton);
+    const note = await screen.findByPlaceholderText("What's wrong with this moment?");
+    expect(fireEvent.keyDown(note, { key: "r", ctrlKey: true })).toBe(false);
+    expect(calls("play/record")).toHaveLength(0);
+  });
+
+  it("takes F5 back once Back to live has dropped the focus", async () => {
+    // jsdom forgets the document had the focus when the focused element goes;
+    // a browser does not.
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    liveBackend({ takes: [LISTED], found: true, projects: [project("game")] });
+    render(<App />);
+    await screen.findByText("Playing");
+    fireEvent.click(await screen.findByRole("button", { name: /Takes · 1/ }));
+    await screen.findByText("Reviewing");
+    const back = screen.getByRole("button", { name: "Back to live" });
+    back.focus();
+    fireEvent.click(back);
+    await screen.findByText("Playing");
+    await waitFor(() => expect(document.activeElement).toBe(pane()));
+    fireEvent.keyDown(document.activeElement!, { key: "F5" });
+    await waitFor(() => expect(calls("play/restart")).toHaveLength(1));
+    hasFocus.mockRestore();
   });
 });

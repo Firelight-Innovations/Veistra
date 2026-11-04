@@ -50,6 +50,20 @@ export function writeMode(instanceId: string | null, mode: GodotMode): void {
   }
 }
 
+/**
+ * Each mode binds its keys on its root. When the focused element goes away
+ * with the view or mode it sat in, the focus falls to the page, and F5 there
+ * is WebView2's reload rather than the pane's; this puts it back on `root`.
+ * Only then, and only while this frame has the focus, so a pane never takes
+ * it from another.
+ */
+export function focusIfDropped(root: HTMLElement | null): void {
+  const at = document.activeElement;
+  if (root && (at === null || at === document.body) && document.hasFocus()) {
+    root.focus({ preventScroll: true });
+  }
+}
+
 /** What the shell hands both modes. */
 export interface ModeProps {
   /** Slot 1 of the toolbar: switches this pane between the modes. */

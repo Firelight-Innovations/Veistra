@@ -13,8 +13,13 @@
  * One poll loop drives the live view: `play/state` every half second, with a
  * cursor for the log and one for the keys the addon handled (F7 stops and
  * opens review; Ctrl Shift M marks up the live frame).
+ *
+ * The toolbar keeps the board's five slots in both views, and keeps every
+ * button in place: one that cannot act now (Record with capture missing, Pop
+ * out with no game in the pane) is disabled and says why, rather than gone.
  */
 import {
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -26,7 +31,6 @@ import {
 import { reportPainted } from "@veistra/bridge";
 import {
   Camera,
-  ExternalLink,
   Flag,
   Maximize2,
   MessageSquarePlus,
@@ -87,7 +91,8 @@ import {
 } from "./rpc";
 import { dragContext, putLog, putShot } from "./context";
 import type { RunRequest } from "../App";
-import type { ModeProps } from "../modes";
+import { focusIfDropped, type ModeProps } from "../modes";
+import { getState as readScenes } from "../rpc";
 import "./play.css";
 
 /** Lines kept in the pane; the backend keeps its own, larger, bound. */
@@ -103,6 +108,10 @@ type Drawer = "closed" | "output" | "errors" | "notes";
 const PLAY_TARGET = { app: "play", label: "Play" };
 
 const leaf = (p: string | null | undefined) => (p ? p.slice(p.lastIndexOf("/") + 1) : "");
+
+/** A scene as the picker lists it: its path in the project, and which is the main one. */
+const sceneLabel = (scene: string, main: string | null | undefined) =>
+  `${scene.replace(/^res:\/\//, "")}${scene === main ? " (main)" : ""}`;
 
 /** Why a run that ended has no take: Record off, unable to record, or never in the pane. */
 function notRecorded(recordOn: boolean, blocked: string | null): string {
@@ -166,6 +175,11 @@ export default function PlayMode(props: PlayModeProps) {
   >(null);
   const [drawer, setDrawer] = useState<Drawer>("closed");
   const [now, setNow] = useState(() => Date.now());
+  /** The chosen project's scenes, for slot 2, and the project they are of. */
+  const [scenes, setScenes] = useState<{ rel: string; list: string[] } | null>(null);
+  /** What Run plays: the scene picked in slot 2, or the last one run here, with its project. */
+  const [picked, setPicked] = useState<{ rel: string; scene: string } | null>(null);
+  const root = useRef<HTMLDivElement>(null);
   const cursor = useRef(0);
   const keyCursor = useRef(0);
   const runId = useRef<number | null>(null);
@@ -236,6 +250,36 @@ export default function PlayMode(props: PlayModeProps) {
   useEffect(() => {
     if (chosenRel !== undefined) void loadAddon(chosenRel);
   }, [chosenRel, loadAddon, epoch]);
+
+  // Slot 2 lists the project's scenes. The main scene is chosen first, as
+  // Godot's own F5 would run it; a pick that is still in the list is kept.
+  useEffect(() => {
+    if (chosenRel === undefined) return;
+    let live = true;
+    readScenes(undefined, chosenRel)
+      .then((s) => {
+        if (!live) return;
+        setScenes({ rel: chosenRel, list: s.scenes });
+        setPicked((p) =>
+          p?.rel === chosenRel && s.scenes.includes(p.scene)
+            ? p
+            : s.scene
+              ? { rel: chosenRel, scene: s.scene }
+              : null,
+        );
+      })
+      .catch(() => {
+        if (live) setScenes({ rel: chosenRel, list: [] });
+      });
+    return () => {
+      live = false;
+    };
+  }, [chosenRel, epoch]);
+
+  // The keys are bound on the pane's root. A focused button that goes with
+  // the view it sat in (Back to live, Stop and review, a mode tab) drops the
+  // focus to the page, where F5 is WebView2's reload and not Play's.
+  useEffect(() => focusIfDropped(root.current), [view]);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -342,14 +386,20 @@ export default function PlayMode(props: PlayModeProps) {
   const start = useCallback(
     (scene?: string, projectRel?: string) =>
       guarded(async () => {
-        const s = await run(projectRel ?? chosenRel, scene);
+        const rel = projectRel ?? chosenRel;
+        const s = await run(
+          rel,
+          scene ?? (picked && picked.rel === rel ? picked.scene : undefined),
+        );
+        // Played from elsewhere (Play scene, review), the scene is what F5 runs next.
+        if (scene && rel !== undefined) setPicked({ rel, scene });
         setInfo(s.run);
         setLive(s.live ?? null);
         setShot(null);
         setMarking(null);
         setView({ kind: "live" });
       }),
-    [chosenRel, guarded],
+    [chosenRel, guarded, picked],
   );
 
   // Play scene, from Editor mode or another pane, names its project: a
@@ -526,20 +576,18 @@ export default function PlayMode(props: PlayModeProps) {
     markup: () => void startLiveMarkup(),
   };
 
-  const canEnableCapture = addon !== null && addon.addon !== "yes" && !readOnly;
-
-  /** Record, and the blocked Record: off and blocked offers Enable capture; on, it always turns off. */
+  /**
+   * Record and Ctrl R. Off and blocked, Record is disabled and Ctrl R does
+   * nothing; the strip says why, and Enable capture is in the footer. On, it
+   * always turns off, blocked or not.
+   */
   const toggleRecord = useCallback(() => {
-    if (!recordOn && recordBlocked) {
-      if (canEnableCapture) setConsentOpen(true);
-      else setProblem(recordBlocked);
-      return;
-    }
+    if (!recordOn && recordBlocked) return;
     void guarded(async () => {
       await setRecord(!recordOn, chosenRel);
       setLive((l) => (l ? { ...l, record: { ...l.record, on: !recordOn } } : l));
     });
-  }, [recordOn, recordBlocked, canEnableCapture, guarded, chosenRel]);
+  }, [recordOn, recordBlocked, guarded, chosenRel]);
 
   const onLiveNotesTaken = useCallback(
     (id: string) => setLiveNotes((notes) => notes.filter((n) => n.take !== id)),
@@ -586,6 +634,8 @@ export default function PlayMode(props: PlayModeProps) {
     [comments],
   );
   const errors = useMemo(() => lines.filter((l) => l.level === "error"), [lines]);
+  /** What the drawer's Errors tab lists: the warnings too. */
+  const problems = useMemo(() => lines.filter((l) => l.level !== "info"), [lines]);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const action = liveAction({
@@ -594,6 +644,9 @@ export default function PlayMode(props: PlayModeProps) {
       shiftKey: e.shiftKey,
       typing: isTyping(e.target),
     });
+    // Ctrl R is WebView2's reload, which would unload the pane. Typed into a
+    // note it does nothing at all; anywhere else in the pane it is Record.
+    if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "r") e.preventDefault();
     if (view.kind === "review") {
       if (action === "run-or-restart" && canRun) {
         e.preventDefault();
@@ -668,16 +721,16 @@ export default function PlayMode(props: PlayModeProps) {
         Saving take…
       </ToolbarButton>
     ) : recordBlocked && !recording ? (
-      // Record on with capture gone records nothing, so it shows as blocked
-      // too (§5.1), and its click turns the setting off. A take already
-      // going keeps its clock: removing the script does not stop it.
+      // The fourth state (§5.1): disabled, with the reason as its title. Record
+      // on with capture gone records nothing, so it shows as blocked too, but
+      // stays clickable so that one click turns the setting off. A take
+      // already going keeps its clock: removing the script does not stop it.
       <ToolbarButton
+        disabled={!recordOn}
         title={
           recordOn
             ? `${recordBlocked} Record is on, but nothing is recorded until then. Click to turn Record off (Ctrl R).`
-            : canEnableCapture
-              ? `${recordBlocked} Click to enable capture.`
-              : recordBlocked
+            : recordBlocked
         }
         onClick={toggleRecord}
       >
@@ -710,6 +763,45 @@ export default function PlayMode(props: PlayModeProps) {
     return `Take ${t.number} · ${clock(t.durationMs)} · ${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
   };
 
+  const sceneList = scenes && scenes.rel === chosenRel ? scenes.list : [];
+  const shownScene =
+    running && info?.scene
+      ? info.scene
+      : picked && picked.rel === chosenRel
+        ? picked.scene
+        : undefined;
+  const main = chosen?.mainScenePath ?? chosen?.mainScene;
+  const scenePicker =
+    sceneList.length > 0 ? (
+      <select
+        className="k-vtb__select"
+        aria-label="Scene"
+        value={shownScene ?? ""}
+        disabled={running}
+        title={
+          running
+            ? "The scene running now. Stop to choose another; Restart (F5) runs this one again."
+            : "The scene Run (F5) plays"
+        }
+        onFocus={() => setPickerOpen(true)}
+        onBlur={() => setPickerOpen(false)}
+        onChange={(e) =>
+          chosenRel !== undefined && setPicked({ rel: chosenRel, scene: e.target.value })
+        }
+      >
+        {shownScene && !sceneList.includes(shownScene) && (
+          <option value={shownScene}>{sceneLabel(shownScene, main)}</option>
+        )}
+        {sceneList.map((s) => (
+          <option key={s} value={s}>
+            {sceneLabel(s, main)}
+          </option>
+        ))}
+      </select>
+    ) : (
+      <span className="pl-subject">{leaf(info?.scene ?? main) || "no scene"}</span>
+    );
+
   const subject =
     view.kind === "review" ? (
       <select
@@ -727,25 +819,26 @@ export default function PlayMode(props: PlayModeProps) {
         ))}
         {!takes.some((t) => t.id === view.take) && <option value={view.take}>{view.take}</option>}
       </select>
-    ) : projects.length > 1 ? (
-      <select
-        className="k-vtb__select"
-        aria-label="Godot project"
-        value={chosen?.rel ?? ""}
-        disabled={running}
-        onFocus={() => setPickerOpen(true)}
-        onBlur={() => setPickerOpen(false)}
-        onChange={(e) => setProject(e.target.value)}
-      >
-        {projects.map((p) => (
-          <option key={p.rel} value={p.rel}>
-            {p.name} ({p.rel})
-          </option>
-        ))}
-      </select>
     ) : (
-      <span className="pl-subject">
-        {leaf(info?.scene ?? chosen?.mainScenePath ?? chosen?.mainScene) || "no scene"}
+      <span className="pl-pickers">
+        {projects.length > 1 && (
+          <select
+            className="k-vtb__select"
+            aria-label="Godot project"
+            value={chosen?.rel ?? ""}
+            disabled={running}
+            onFocus={() => setPickerOpen(true)}
+            onBlur={() => setPickerOpen(false)}
+            onChange={(e) => setProject(e.target.value)}
+          >
+            {projects.map((p) => (
+              <option key={p.rel} value={p.rel}>
+                {p.name} ({p.rel})
+              </option>
+            ))}
+          </select>
+        )}
+        {scenePicker}
       </span>
     );
 
@@ -793,8 +886,11 @@ export default function PlayMode(props: PlayModeProps) {
     </>
   );
 
+  // Keyed apart, so React does not reuse a review button for a live one: a
+  // focused Back to live would otherwise become a focused Mark up, which
+  // Enter then presses.
   const liveActions = (
-    <>
+    <Fragment key="live">
       {recButton}
       <ToolbarButton
         kbd="F8"
@@ -812,16 +908,17 @@ export default function PlayMode(props: PlayModeProps) {
             ? `Mark up needs the capture addon - ${needsAddon}`
             : "Pause and draw on this frame (Ctrl Shift M)"
         }
+        kbd="Ctrl Shift M"
         icon={<PenLine size={16} strokeWidth={1.5} aria-hidden="true" />}
         onClick={() => void startLiveMarkup()}
       >
         Mark up
       </ToolbarButton>
-    </>
+    </Fragment>
   );
 
   const reviewActions = (
-    <>
+    <Fragment key="review">
       <ToolbarButton
         kbd="F5"
         disabled={!canRun}
@@ -833,38 +930,34 @@ export default function PlayMode(props: PlayModeProps) {
       </ToolbarButton>
       {recordOn && <ToolbarChip tone="danger" label="Record on" />}
       <ToolbarButton onClick={() => setView({ kind: "live" })}>Back to live</ToolbarButton>
-    </>
+    </Fragment>
   );
 
+  // Slot 5 is Pop out alone, always there. Open in Godot is Editor's leave
+  // now; Ctrl Shift O still opens the editor from here until C1 embeds it.
+  const canPop = view.kind === "live" && running && (embedded || popped);
   const leave = (
-    <>
-      {view.kind === "live" && running && (embedded || popped) && (
-        <ToolbarButton
-          label={popped ? "Dock into the pane" : "Pop out into its own window"}
-          icon={
-            popped ? (
-              <Maximize2 size={16} strokeWidth={1.5} aria-hidden="true" />
-            ) : (
-              <PictureInPicture2 size={16} strokeWidth={1.5} aria-hidden="true" />
-            )
-          }
-          onClick={() => void guarded(() => (popped ? dock() : popOut()))}
-        />
-      )}
-      <ToolbarButton
-        label="Open in Godot (Ctrl Shift O)"
-        disabled={!found || !chosen || readOnly}
-        title={
-          readOnly
-            ? "The default branch is read-only; open a worktree to edit."
-            : found
-              ? "Open this project in the Godot editor (Ctrl Shift O)"
-              : "Godot 4 was not found."
-        }
-        icon={<ExternalLink size={16} strokeWidth={1.5} aria-hidden="true" />}
-        onClick={() => void doOpenEditor()}
-      />
-    </>
+    <ToolbarButton
+      label={popped ? "Dock into the pane" : "Pop out into its own window"}
+      disabled={!canPop}
+      title={
+        canPop
+          ? undefined
+          : view.kind === "review"
+            ? "Pop out is for the live game. Back to live first."
+            : running
+              ? "Pop out needs the game in the pane, and it is playing in its own window."
+              : "Pop out needs a game in the pane. Run it first (F5)."
+      }
+      icon={
+        popped ? (
+          <Maximize2 size={16} strokeWidth={1.5} aria-hidden="true" />
+        ) : (
+          <PictureInPicture2 size={16} strokeWidth={1.5} aria-hidden="true" />
+        )
+      }
+      onClick={() => void guarded(() => (popped ? dock() : popOut()))}
+    />
   );
 
   const showNotices =
@@ -880,7 +973,7 @@ export default function PlayMode(props: PlayModeProps) {
       : "Nothing is running.";
 
   return (
-    <div className="pl" tabIndex={0} onKeyDown={onKeyDown}>
+    <div className="pl" ref={root} tabIndex={0} onKeyDown={onKeyDown}>
       <ViewerToolbar
         label="Godot"
         mode={props.modeSwitch}
@@ -1028,8 +1121,13 @@ export default function PlayMode(props: PlayModeProps) {
                   onClick={() => setDrawer((now) => (now === d ? "closed" : d))}
                 >
                   {d === "output" ? "Output" : d === "errors" ? "Errors" : "Notes"}
-                  {d === "errors" && errors.length > 0 && (
-                    <span className="pl-count pl-count--danger">{errors.length}</span>
+                  {d === "output" && lines.length > 0 && (
+                    <span className="pl-count">{lines.length}</span>
+                  )}
+                  {d === "errors" && problems.length > 0 && (
+                    <span className={`pl-count${errors.length > 0 ? " pl-count--danger" : ""}`}>
+                      {problems.length}
+                    </span>
                   )}
                   {d === "notes" && openCount > 0 && <span className="pl-count">{openCount}</span>}
                 </button>
@@ -1045,10 +1143,7 @@ export default function PlayMode(props: PlayModeProps) {
             )}
             {drawer === "errors" && (
               <div className="pl-drawer__body">
-                <LogView
-                  lines={lines.filter((l) => l.level !== "info")}
-                  hint="No errors or warnings."
-                />
+                <LogView lines={problems} hint="No errors or warnings." />
               </div>
             )}
             {drawer === "notes" && (

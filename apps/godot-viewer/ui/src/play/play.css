@@ -238,6 +238,22 @@
   white-space: nowrap;
 }
 
+/* Slot 2 in live Play: the project, when there are several, then the scene.
+   Two pickers at the toolbar's usual width would push the chip onto a second
+   row in a 1024 px window, so each gives way and the path is cut instead. */
+.pl-pickers {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pl-pickers .k-vtb__select {
+  min-width: 0;
+  max-width: 200px;
+  text-overflow: ellipsis;
+}
+
 /* --- the Record button's dot ------------------------------------------- */
 
 .pl-rec-ring {
@@ -376,6 +392,14 @@
 
 .pl-strip__counts {
   white-space: nowrap;
+}
+
+/* The key on Stop and review, as the toolbar shows its keys, on the primary fill. */
+.pl-strip__kbd {
+  margin-left: 6px;
+  font: 400 11px/1 var(--mono);
+  color: inherit;
+  opacity: 0.75;
 }
 
 .pl-strip__message {
