@@ -31,10 +31,11 @@ const target = (over: Partial<MenuTarget>): MenuTarget => ({
   ...over,
 });
 
-function open(t: MenuTarget) {
+function open(t: MenuTarget, readOnly = false) {
   render(
     <ContextMenu
       target={t}
+      readOnly={readOnly}
       rootPath={"C:\\game"}
       onCreate={() => {}}
       onRename={() => {}}
@@ -110,5 +111,26 @@ describe("the menu over blank space (the project root)", () => {
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("files/reveal", { path: "C:\\game\\src\\a.ts" }),
     );
+  });
+});
+
+// Blender can save into the file it opens, so the backend refuses
+// `files/open-in-blender` on main as a write (#318); the menu says so first.
+describe("Open in Blender", () => {
+  const blend = target({ path: "C:\\game\\art\\bed.blend", name: "bed.blend" });
+
+  it("is offered for a .blend in a worktree", () => {
+    open(blend);
+    const item = screen.getByRole("menuitem", { name: "Open in Blender" }) as HTMLButtonElement;
+    expect(item.disabled).toBe(false);
+  });
+
+  it("is off on the read-only main checkout, with the reason", () => {
+    open(blend, true);
+    const item = screen.getByRole("menuitem", { name: "Open in Blender" }) as HTMLButtonElement;
+    expect(item.disabled).toBe(true);
+    expect(item.title).toMatch(/read-only/);
+    fireEvent.click(item);
+    expect(invoke).not.toHaveBeenCalled();
   });
 });

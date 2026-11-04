@@ -6,6 +6,7 @@
  */
 import type { MarkupExport } from "@veistra/markup/layer";
 import MarkupScene from "../../../shared/MarkupScene";
+import type { MarkupTrigger } from "../../../shared/MarkupTrigger";
 import type { NodeLookup } from "./preview";
 
 export interface Scene3DProps {
@@ -23,6 +24,8 @@ export interface Scene3DProps {
   onMarkup: (result: MarkupExport) => void;
   /** Something this view could not do, in words for the person. */
   onNotice: (message: string) => void;
+  /** How to start drawing, for the toolbar's Mark up. */
+  onTrigger: (trigger: MarkupTrigger | null) => void;
 }
 
 export default function Scene3D(props: Scene3DProps) {

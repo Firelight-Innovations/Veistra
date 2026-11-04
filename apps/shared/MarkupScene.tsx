@@ -8,15 +8,16 @@
  * should say about the source, and translates selection to and from its own
  * node names.
  * Excalidraw is a second, nested lazy load: opening the 3D view costs three.js,
- * and only pressing "Mark up" costs Excalidraw.
+ * and only pressing "Mark up" costs Excalidraw. The button itself is on the
+ * app's toolbar (`MarkupTrigger.tsx`); this view reports how to start drawing.
  */
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { PenLine } from "lucide-react";
 import { SceneView } from "@veistra/scene-view";
 import type { SceneViewHandle } from "@veistra/scene-view";
 import { poseMatches, sceneHost } from "@veistra/markup";
 import type { CameraPose } from "@veistra/markup";
 import type { MarkupController, MarkupExport } from "@veistra/markup/layer";
+import type { MarkupTrigger } from "./MarkupTrigger";
 import { projectRelative } from "./sceneNodes";
 import "./markup.css";
 
@@ -40,6 +41,8 @@ export interface MarkupSceneProps {
   onMarkup: (result: MarkupExport) => void;
   /** Something this view could not do, in words for the person. */
   onNotice: (message: string) => void;
+  /** How to start drawing, for the toolbar's Mark up; `null` once this view is gone. */
+  onTrigger: (trigger: MarkupTrigger | null) => void;
 }
 
 function useTheme(): "dark" | "light" {
@@ -58,6 +61,7 @@ function useTheme(): "dark" | "light" {
 
 export default function MarkupScene(props: MarkupSceneProps) {
   const { glb, glbPath, extra, selectedPath, onSelect, markupDisabled, onMarkup, onNotice } = props;
+  const { onTrigger } = props;
   // Callers build `extra` inline; its content, not its identity, decides the host.
   const extraKey = JSON.stringify(extra);
   const theme = useTheme();
@@ -87,11 +91,16 @@ export default function MarkupScene(props: MarkupSceneProps) {
     handle?.setInteractive(!marking);
   }, [handle, marking]);
 
-  const begin = () => {
+  const begin = useCallback(() => {
     startedAt.current = handle?.getCamera() ?? null;
     setLayerLoaded(true);
     setMarking(true);
-  };
+  }, [handle]);
+
+  useEffect(() => {
+    onTrigger({ begin, ready: handle !== null && !marking, disabled: markupDisabled ?? null });
+  }, [onTrigger, begin, handle, marking, markupDisabled]);
+  useEffect(() => () => onTrigger(null), [onTrigger]);
 
   // Done, or the camera leaving the view being drawn. Either way the layer has
   // already left markup mode; what is left is deciding whether to keep the result.
@@ -127,18 +136,6 @@ export default function MarkupScene(props: MarkupSceneProps) {
   return (
     <div className="k-markup__scene">
       <div className="k-markup__bar">
-        <button
-          type="button"
-          className="k-markup__action"
-          disabled={!handle || marking || !!markupDisabled}
-          onClick={begin}
-          title={
-            markupDisabled ?? "Draw on the view and pin notes to nodes, then send it to the agent"
-          }
-        >
-          <PenLine size={13} strokeWidth={1.5} aria-hidden="true" />
-          Mark up
-        </button>
         <span className="k-markup__hint">
           {marking
             ? "Drawing. The camera is locked until you press Done."

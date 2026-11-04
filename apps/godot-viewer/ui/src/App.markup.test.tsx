@@ -90,9 +90,14 @@ function backend(opts: { values?: Record<string, unknown>; saved?: unknown } = {
         return Promise.resolve(STATE);
       case "godot/status":
         return Promise.resolve({
-          environment: { root: "C:/p", readOnly: false },
+          environment: { root: "C:/p", readOnly: false, kind: null, branch: null },
           executable: { found: null, problems: [], setting: "" },
           projects: [],
+          editor: {
+            surface: "viewer",
+            code: "noEditor",
+            reason: "Godot 4 was not found on this computer. Set its path under Settings, Godot.",
+          },
         });
       case "settings/all":
         return Promise.resolve({ groups, values: opts.values ?? {} });

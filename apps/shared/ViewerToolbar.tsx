@@ -4,19 +4,19 @@
  * the order, so the three surfaces read as one product:
  *
  * 1. **Mode**: Editor · Play, or Model · Renders · Compare.
- * 2. **What you see**: the scene, take or `.blend` picker.
+ * 2. **What you see**: the environment chip (`ToolbarEnvChip`, in an Editor
+ *    surface), then the scene, take or `.blend` picker.
  * 3. **State**: one chip with one word (Playing, Reviewing, Up to date, Changed).
- * 4. **Actions**: Rec, Mark, Mark up, a view switch.
+ * 4. **Actions**: Rec, Mark, Mark up, a view switch. Mark up is here in every
+ *    surface, never on a bar of its own (DECISIONS X4).
  * 5. **Leave**: Pop out, Open in Godot or Blender.
  *
  * Play also has transport buttons, which sit between the picker and the chip
  * (`controls`), as the board draws them. Everything else an app wants on its
  * header goes in one of the five; a sixth slot is how three toolbars start to
- * drift apart again, which is what this module exists to stop.
- *
- * The slots take nodes rather than descriptions of buttons. Each app's actions
- * are different verbs with different disabled rules and tooltips, and a
- * config object able to express all of them would be a second, worse JSX.
+ * drift apart again, which is what this module exists to stop. Why an editor
+ * is not here (main, a cloud session, no editor installed) is one line under
+ * the bar, `ToolbarReason`, not a slot.
  */
 import type { ReactNode } from "react";
 import { SegmentedControl } from "./SegmentedControl";
@@ -55,6 +55,11 @@ export interface ViewerToolbarProps<T extends string> {
   leave?: ReactNode;
 }
 
+/**
+ * The slots take nodes rather than descriptions of buttons. Each app's actions
+ * are different verbs with different disabled rules and tooltips, and a
+ * config object able to express all of them would be a second, worse JSX.
+ */
 export function ViewerToolbar<T extends string>({
   label,
   mode,
@@ -159,5 +164,63 @@ export function ToolbarButton({
       {children}
       {kbd && <kbd className="k-vtb__kbd">{kbd}</kbd>}
     </button>
+  );
+}
+
+/** A cluster's environment as the backend names it (`environments.rs`, `kind()`). */
+export type ToolbarEnvKind = "localWorktree" | "cloud" | "main" | "design";
+
+/** The badge's word, the shell's own (`src/shell/environment.ts`, `ENVIRONMENT_LABEL`). */
+const ENV_LABEL: Record<ToolbarEnvKind, string> = {
+  localWorktree: "wt",
+  cloud: "cloud",
+  main: "main",
+  design: "design",
+};
+
+/**
+ * The environment, first in slot 2: a short badge and the branch, so a read-only
+ * view says whose files it shows. Nothing for a plain folder (`kind` null).
+ */
+export function ToolbarEnvChip({
+  kind,
+  branch,
+}: {
+  kind?: ToolbarEnvKind | null;
+  branch?: string | null;
+}) {
+  if (!kind) return null;
+  return (
+    <span className="k-vtb__env" data-env-kind={kind}>
+      <span className="k-vtb__env-kind">{ENV_LABEL[kind]}</span>
+      {branch && <span className="k-vtb__env-branch">{branch}</span>}
+    </span>
+  );
+}
+
+/**
+ * The one line under the bar that says why the editor is not in the pane, with
+ * at most one way out (Open Settings). A note, not an alert: it describes the
+ * view, and is there for as long as the reason holds.
+ */
+export function ToolbarReason({
+  tone = "info",
+  children,
+  action,
+}: {
+  tone?: "info" | "warning";
+  children: ReactNode;
+  action?: { label: string; onClick: () => void };
+}) {
+  return (
+    <div className={`k-vtb-reason k-vtb-reason--${tone}`} role="note">
+      <span className="k-vtb__dot" aria-hidden="true" />
+      <span className="k-vtb-reason__text">{children}</span>
+      {action && (
+        <button type="button" className="k-vtb-reason__link" onClick={action.onClick}>
+          {action.label}
+        </button>
+      )}
+    </div>
   );
 }

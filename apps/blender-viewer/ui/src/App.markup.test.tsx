@@ -73,6 +73,8 @@ const BASE = {
   },
   project: true,
   readOnly: false,
+  editor: { surface: "embedded", reason: null, code: null },
+  environment: { kind: "localWorktree", branch: "wt/bed" },
   blends: [{ path: "C:/p/bed.blend", rel: "bed.blend", mtime: 1, size: 1 }],
   blend: "C:/p/bed.blend",
   rel: "bed.blend",

@@ -9,7 +9,7 @@
  * the way the `play` id opens it, with `?mode=play`.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 const bridge = vi.hoisted(() => ({ invoke: vi.fn() }));
 
@@ -58,9 +58,14 @@ function backend(putResult: () => unknown = () => ({ key: "k" })) {
         });
       case "godot/status":
         return Promise.resolve({
-          environment: { root: "C:/p", readOnly: false },
+          environment: { root: "C:/p", readOnly: false, kind: null, branch: null },
           executable: { found: null, problems: [], setting: "" },
           projects: [],
+          editor: {
+            surface: "viewer",
+            code: "noEditor",
+            reason: "Godot 4 was not found on this computer. Set its path under Settings, Godot.",
+          },
         });
       case "comments/list":
         return Promise.resolve([]);
@@ -208,6 +213,8 @@ interface World {
   held: (() => void)[] | null;
   /** Whether the cluster is on the read-only main checkout, as `godot/status` says. */
   readOnly: boolean;
+  /** Whether the cluster is a cloud session, whose files are on its VM. */
+  cloud?: boolean;
   /** Whether Godot 4 was found, which Run needs. */
   found: boolean;
   /** The game's output so far; each poll answers the lines after its cursor. */
@@ -295,9 +302,16 @@ function liveBackend(over: Partial<World> = {}): World {
         return Promise.resolve({ png: "AAAA", width: 4, height: 3, time: 1, scene: "" });
       case "godot/status":
         return Promise.resolve({
-          environment: { root: "C:/p", readOnly: world.readOnly },
+          environment: world.cloud
+            ? { root: null, readOnly: false, kind: "cloud", branch: "wt/cloud" }
+            : { root: "C:/p", readOnly: world.readOnly, kind: world.readOnly ? "main" : null },
           executable: { found: world.found ? FOUND : null, problems: [], setting: "" },
-          projects: world.projects,
+          projects: world.cloud ? [] : world.projects,
+          editor: world.cloud
+            ? { surface: "viewer", code: "cloud", reason: "This is a cloud session." }
+            : world.readOnly
+              ? { surface: "viewer", code: "main", reason: "This is the main checkout." }
+              : { surface: "embedded", code: null, reason: null },
         });
       case "godot-viewer/state":
         return Promise.resolve({
@@ -381,6 +395,9 @@ describe("Play after the cluster's project moves", () => {
     const world = liveBackend({ readOnly: true, projects: [project("game")] });
     render(<App />);
     await screen.findByText(/This is the main checkout, which is read-only here/);
+    // The line under the bar, placed and worded as Editor's is.
+    const note = screen.getByRole("note");
+    expect(screen.getByRole("toolbar", { name: "Godot" }).nextElementSibling).toBe(note);
     expect(screen.queryByRole("button", { name: "Enable capture" })).toBeNull();
     world.readOnly = false;
     events.get("project:changed")?.({ clusterId: "c1", projectPath: "C:/p-worktree" });
@@ -397,6 +414,33 @@ describe("Play after the cluster's project moves", () => {
     events.get("project:changed")?.({ clusterId: "c1" });
     await waitFor(() => expect(calls("play/takes").length).toBeGreaterThan(takes));
     expect(calls("comments/list").length).toBeGreaterThan(notes);
+  });
+});
+
+describe("Play on a cloud session", () => {
+  it("says the game cannot run here, keeps Run off, and claims no missing project", async () => {
+    liveBackend({ run: null, cloud: true, found: true });
+    render(<App />);
+    const note = await screen.findByRole("note");
+    expect(note.textContent).toContain("cloud session");
+    expect(note.textContent).toContain("cannot run here");
+    const run = (await screen.findByRole("button", { name: /^Run/ })) as HTMLButtonElement;
+    expect(run.disabled).toBe(true);
+    expect(screen.queryByText(/No project\.godot/)).toBeNull();
+  });
+});
+
+describe("Play review toolbar", () => {
+  it("keeps one state chip, with Record on said on Play again instead", async () => {
+    liveBackend({ takes: [LISTED] });
+    render(<App />);
+    await screen.findByText("Playing");
+    fireEvent.click(await screen.findByRole("button", { name: /Takes · 1/ }));
+    await screen.findByText("Reviewing");
+    const bar = screen.getByRole("toolbar", { name: "Godot" });
+    expect(within(bar).getAllByRole("status")).toHaveLength(1);
+    const again = within(bar).getByRole("button", { name: /Play again/ });
+    expect(again.getAttribute("title")).toContain("Record is on");
   });
 });
 
