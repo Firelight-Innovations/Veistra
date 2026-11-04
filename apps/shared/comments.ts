@@ -38,9 +38,20 @@ export interface TakeAnchor {
 }
 
 /** Where a comment points: the three anchors the written spec names, and a note on a take. */
+/** A note on a Blender part. `blend` and `version`, the export newest when
+ *  it was written, are how Compare finds the notes left on version A; notes
+ *  from before them have neither. */
+export interface MeshAnchor {
+  kind: "mesh";
+  part: string;
+  material: string;
+  blend?: string;
+  version?: number;
+}
+
 export type Anchor =
   | { kind: "node"; path: string }
-  | { kind: "mesh"; part: string; material: string }
+  | MeshAnchor
   | { kind: "scene"; scene: string; time: number; screenshot: boolean }
   | TakeAnchor;
 
@@ -49,7 +60,7 @@ export type Anchor =
  *  actually wrote one, not by what a draft claims. */
 export type AnchorInput =
   | { kind: "node"; path: string }
-  | { kind: "mesh"; part: string; material: string }
+  | MeshAnchor
   | { kind: "scene"; scene: string; time: number };
 
 export type Author = "user" | "agent";

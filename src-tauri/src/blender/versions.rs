@@ -134,6 +134,43 @@ impl Version {
 struct Asset {
     blend: String,
     next: u32,
+    /// The version Compare's Keep B chose (#319). [`retain`] never prunes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kept: Option<u32>,
+}
+
+/// In a version's folder: the `.blend` that version was exported from, when
+/// it was written beside the person's file rather than being it. Compare's
+/// Go back to A opens it; nothing writes one yet (an agent's edits of a
+/// `.blend` are an open question, X12).
+pub const BLEND_COPY: &str = "source.blend";
+
+fn read_asset(asset: &Path) -> Option<Asset> {
+    let raw = std::fs::read_to_string(asset.join("asset.json")).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+/// The version Keep B chose, if it is still there.
+pub fn kept(asset: &Path) -> Option<u32> {
+    read_asset(asset)?
+        .kept
+        .filter(|n| read(asset, *n).is_some())
+}
+
+/// Keep B: record version `n` as the one this `.blend` keeps. Writes only
+/// `asset.json`; versions are append-only and the `.blend` is not touched.
+pub fn keep(asset: &Path, n: u32) -> Result<(), String> {
+    let version = read(asset, n).ok_or_else(|| format!("there is no version {n} to keep"))?;
+    let mut meta = read_asset(asset).unwrap_or(Asset {
+        blend: version.blend,
+        next: next_number(asset),
+        kept: None,
+    });
+    meta.kept = Some(n);
+    write_atomic(
+        &asset.join("asset.json"),
+        &serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?,
+    )
 }
 
 /// `<project>/.veistra/exports`, or a folder under `outside` keyed by the
@@ -197,10 +234,7 @@ pub fn newest(asset: &Path) -> Option<Version> {
 /// The next number: past the counter and past every folder, so a version that
 /// was pruned, or half-written before a crash, is never numbered again.
 pub fn next_number(asset: &Path) -> u32 {
-    let counter = std::fs::read_to_string(asset.join("asset.json"))
-        .ok()
-        .and_then(|raw| serde_json::from_str::<Asset>(&raw).ok())
-        .map_or(1, |a| a.next.max(1));
+    let counter = read_asset(asset).map_or(1, |a| a.next.max(1));
     let past_folders = folders(asset).last().map_or(1, |(n, _)| n + 1);
     counter.max(past_folders)
 }
@@ -224,6 +258,7 @@ pub fn commit(
     let counter = Asset {
         blend: template.blend.clone(),
         next: n + 1,
+        kept: read_asset(asset).and_then(|a| a.kept),
     };
     // The number is taken before anything else is written, so a crash part
     // way through leaves a gap and never two versions called v6.
@@ -279,8 +314,10 @@ pub fn commit(
 
 /// Remove all but the newest `keep` finished versions, and any unfinished
 /// folder older than the newest finished one (a run that died mid-commit).
+/// The version Keep B chose stays, beyond the count if need be.
 pub fn retain(asset: &Path, keep: usize) {
     let all = folders(asset);
+    let pinned = read_asset(asset).and_then(|a| a.kept);
     let finished: Vec<u32> = all
         .iter()
         .filter(|(_, dir)| dir.join("export.json").is_file())
@@ -288,7 +325,11 @@ pub fn retain(asset: &Path, keep: usize) {
         .collect();
     let newest = finished.last().copied().unwrap_or(0);
     let cut = finished.len().saturating_sub(keep);
-    let drop: Vec<u32> = finished[..cut].to_vec();
+    let drop: Vec<u32> = finished[..cut]
+        .iter()
+        .copied()
+        .filter(|n| Some(*n) != pinned)
+        .collect();
     for (n, dir) in all {
         let unfinished = !finished.contains(&n) && n < newest;
         if drop.contains(&n) || unfinished {
@@ -514,6 +555,41 @@ pub(crate) mod tests {
         assert_eq!(ns, (3..=12).rev().collect::<Vec<_>>());
         assert!(!version_dir(&asset, 2).exists());
         assert_eq!(newest(&asset).map(|v| v.n), Some(12));
+    }
+
+    #[test]
+    fn the_kept_version_outlives_the_count_and_later_exports() {
+        let env = TempDir::new().unwrap();
+        let asset = asset_dir(env.path(), "props/bed.blend", None);
+        for _ in 0..3 {
+            export(&asset, env.path(), Author::Human);
+        }
+        keep(&asset, 2).unwrap();
+        assert_eq!(kept(&asset), Some(2));
+        for _ in 0..12 {
+            export(&asset, env.path(), Author::Agent);
+        }
+        let ns: Vec<u32> = list(&asset).iter().map(|v| v.n).collect();
+        // The newest ten, and v2 as well.
+        assert_eq!(ns.len(), KEEP + 1);
+        assert!(ns.contains(&2) && !ns.contains(&1) && !ns.contains(&3));
+        assert_eq!(kept(&asset), Some(2), "a commit keeps the pin");
+        assert_eq!(next_number(&asset), 16);
+    }
+
+    #[test]
+    fn keeping_writes_only_the_asset_file_and_refuses_a_missing_version() {
+        let env = TempDir::new().unwrap();
+        let asset = asset_dir(env.path(), "props/bed.blend", None);
+        let v = export(&asset, env.path(), Author::Human);
+        let before = std::fs::read(version_dir(&asset, v.n).join("export.json")).unwrap();
+        assert!(keep(&asset, 9).unwrap_err().contains("no version 9"));
+        keep(&asset, v.n).unwrap();
+        let after = std::fs::read(version_dir(&asset, v.n).join("export.json")).unwrap();
+        assert_eq!(before, after, "the version itself is append-only");
+        // A pin to a version that has gone since reads as no pin.
+        std::fs::remove_dir_all(version_dir(&asset, v.n)).unwrap();
+        assert_eq!(kept(&asset), None);
     }
 
     #[test]

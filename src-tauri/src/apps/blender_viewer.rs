@@ -12,7 +12,8 @@
 //! is the RPC surface over it.
 //!
 //! Methods: `state`, `image`, `glb`, `detect`, `set-executable`,
-//! `export-start`, `export-versions`, `export-status`, `export-cancel`,
+//! `export-start`, `export-versions`, `version-keep` (Compare's Keep B, #319),
+//! `export-status`, `export-cancel`,
 //! `open` (detached, refused on a locked file), `markup`, `markup-save` and
 //! the `editor-*` seven. Comments anchored to a mesh part (§3.4) go through
 //! [`crate::comments`], shared with every other viewer.
@@ -242,6 +243,7 @@ pub fn dispatch(
         }
         "blender-viewer/export-start" => export_start(context, services, params.as_ref()),
         "blender-viewer/export-versions" => export_versions(context, services, params.as_ref()),
+        "blender-viewer/version-keep" => version_keep(context, services, params.as_ref()),
         "blender-viewer/export-status" => Ok(json!(services.jobs.snapshot())),
         "blender-viewer/export-cancel" => Ok(json!({ "cancelled": services.jobs.cancel() })),
         // On main `apps::WRITE_METHODS` refuses this before it gets here.
@@ -528,18 +530,50 @@ fn export_versions(
         .map(|v| {
             let dir = versions::version_dir(&asset, v.n);
             let model = v.glb.as_ref().map(|g| dir.join(g).display().to_string());
+            let copy = dir.join(versions::BLEND_COPY);
             let mut entry = json!(v);
             entry["dir"] = json!(dir.display().to_string());
             entry["model"] = json!(model);
+            entry["blendCopy"] = json!(copy.is_file().then(|| copy.display().to_string()));
             entry
         })
         .collect();
     Ok(json!({
         "rel": rel,
         "keep": versions::KEEP,
+        "kept": versions::kept(&asset),
         "locked": lock_json(services.lock(project, &rel).as_ref()),
         "versions": list,
     }))
+}
+
+/// `version-keep`: Compare's Keep B, the minimum X12 settles on. It pins the
+/// version so pruning never takes it and says so in the list; it does not
+/// touch the `.blend`, open or not, and it removes no version. The person's
+/// call, like a verdict on a note, so an agent is refused. Refused on main
+/// (`apps::WRITE_METHODS`), here as well as there.
+fn version_keep(
+    context: &CallContext,
+    services: &Services,
+    params: Option<&Value>,
+) -> Result<Value, RpcError> {
+    if services.read_only {
+        return Err(RpcError::new(
+            crate::apps::READ_ONLY,
+            "main is read-only: keep a version in a worktree",
+        ));
+    }
+    if actor(params)? != Author::Human {
+        return Err(invalid(
+            "only the person keeps a version: an agent can export one, not choose it",
+        ));
+    }
+    let project = project_of(context, services)?;
+    let (_, rel) = resolve_blend(project, &required_str(params, "blend")?)?;
+    let n = version_param(params)?.ok_or_else(|| invalid("`version` is required"))?;
+    let asset = services.asset(project, &rel);
+    versions::keep(&asset, n).map_err(invalid)?;
+    Ok(json!({ "rel": rel, "kept": n }))
 }
 
 /// Keeps the markup picture and JSON for a `.blend`, beside its export cache.
@@ -1435,6 +1469,157 @@ mod tests {
             assert!(err.message.contains("actor"), "{}", err.message);
         }
         assert!(!fx.jobs.snapshot().running, "nothing was started");
+    }
+
+    /// Compare's Keep B (X12's minimum): the version is pinned and listed as
+    /// kept, the `.blend` is not touched even while Blender holds it, and no
+    /// version is removed.
+    #[test]
+    fn keeping_a_version_pins_it_and_leaves_the_blend_and_the_other_versions_alone() {
+        let env = TempDir::new().unwrap();
+        let bed = env.path().join("bed.blend");
+        std::fs::write(&bed, b"BLENDER-v402 the person's work").unwrap();
+        let before = versions::sha256_file(&bed).unwrap();
+        let fx = Fixture::new();
+        let ctx = context(env.path());
+        let services = fx.services(Config::default(), false);
+        seed_versions(&services, env.path(), "bed.blend", 3);
+        let _held = lock::acquire(
+            env.path(),
+            "bed.blend",
+            std::process::id(),
+            Some("c1"),
+            None,
+        )
+        .unwrap();
+
+        let listed = |services: &Services| {
+            dispatch(
+                &ctx,
+                services,
+                "blender-viewer/export-versions",
+                Some(json!({ "blend": "bed.blend" })),
+            )
+            .unwrap()
+        };
+        assert_eq!(listed(&services)["kept"], Value::Null);
+        let kept = dispatch(
+            &ctx,
+            &services,
+            "blender-viewer/version-keep",
+            Some(json!({ "actor": "human", "blend": "bed.blend", "version": 2 })),
+        )
+        .unwrap();
+        assert_eq!(kept, json!({ "rel": "bed.blend", "kept": 2 }));
+        let after = listed(&services);
+        assert_eq!(after["kept"], 2);
+        assert_eq!(after["versions"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            versions::sha256_file(&bed).unwrap(),
+            before,
+            "bed.blend was written"
+        );
+
+        let err = dispatch(
+            &ctx,
+            &services,
+            "blender-viewer/version-keep",
+            Some(json!({ "actor": "human", "blend": "bed.blend", "version": 9 })),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, INVALID_PARAMS);
+        assert!(err.message.contains("no version 9"), "{}", err.message);
+        assert_eq!(
+            listed(&services)["kept"],
+            2,
+            "a refused keep changes nothing"
+        );
+    }
+
+    #[test]
+    fn only_the_person_keeps_a_version_and_never_on_main() {
+        let env = TempDir::new().unwrap();
+        std::fs::write(env.path().join("bed.blend"), b"b").unwrap();
+        let fx = Fixture::new();
+        let ctx = context(env.path());
+        let services = fx.services(Config::default(), false);
+        seed_versions(&services, env.path(), "bed.blend", 2);
+        for (params, says) in [
+            (json!({ "blend": "bed.blend", "version": 1 }), "actor"),
+            (
+                json!({ "actor": "system", "blend": "bed.blend", "version": 1 }),
+                "actor",
+            ),
+            (
+                json!({ "actor": "agent", "blend": "bed.blend", "version": 1 }),
+                "only the person",
+            ),
+            (
+                json!({ "actor": "human", "blend": "bed.blend" }),
+                "`version` is required",
+            ),
+        ] {
+            let err =
+                dispatch(&ctx, &services, "blender-viewer/version-keep", Some(params)).unwrap_err();
+            assert_eq!(err.code, INVALID_PARAMS);
+            assert!(err.message.contains(says), "{}", err.message);
+        }
+
+        let main = fx.services(Config::default(), true);
+        seed_versions(&main, env.path(), "bed.blend", 2);
+        let err = dispatch(
+            &ctx,
+            &main,
+            "blender-viewer/version-keep",
+            Some(json!({ "actor": "human", "blend": "bed.blend", "version": 1 })),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, crate::apps::READ_ONLY);
+        assert!(crate::apps::is_write_method("blender-viewer/version-keep"));
+        for services in [&services, &main] {
+            let listed = dispatch(
+                &ctx,
+                services,
+                "blender-viewer/export-versions",
+                Some(json!({ "blend": "bed.blend" })),
+            )
+            .unwrap();
+            assert_eq!(listed["kept"], Value::Null);
+        }
+    }
+
+    /// Go back to A opens the version's own copy of the `.blend`, so the list
+    /// says where it is, or `null` for a version that kept none.
+    #[test]
+    fn the_list_names_a_version_s_blend_copy_only_when_it_has_one() {
+        let env = TempDir::new().unwrap();
+        std::fs::write(env.path().join("bed.blend"), b"b").unwrap();
+        let fx = Fixture::new();
+        let ctx = context(env.path());
+        let services = fx.services(Config::default(), false);
+        seed_versions(&services, env.path(), "bed.blend", 2);
+        let asset = services.asset(env.path(), "bed.blend");
+        let copy = versions::version_dir(&asset, 1).join(versions::BLEND_COPY);
+        std::fs::write(&copy, b"BLENDER-v402 as v1 was").unwrap();
+
+        let listed = dispatch(
+            &ctx,
+            &services,
+            "blender-viewer/export-versions",
+            Some(json!({ "blend": "bed.blend" })),
+        )
+        .unwrap();
+        let by_n = |n: u64| {
+            listed["versions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["n"] == n)
+                .unwrap()["blendCopy"]
+                .clone()
+        };
+        assert_eq!(by_n(2), Value::Null);
+        assert_eq!(by_n(1), json!(copy.display().to_string()));
     }
 
     #[test]
