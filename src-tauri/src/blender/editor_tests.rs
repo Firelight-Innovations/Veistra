@@ -463,3 +463,70 @@ fn unsaved_changes_are_read_from_the_blender_that_has_the_file() {
     assert_eq!(w.editors.dirty(&w.root, "props/bed.blend"), Some(true));
     assert_eq!(w.editors.dirty(&w.root, "props/lamp.blend"), None);
 }
+
+#[test]
+fn the_tab_shows_the_open_file_s_notes_and_its_events_reach_the_pane_once() {
+    use crate::comments::{self, Anchor, Draft};
+    let w = World::new();
+    let editor = w.open("props/bed.blend");
+    let context = crate::apps::CallContext {
+        cluster_id: Some("c1".into()),
+        project: Some(w.root.clone()),
+    };
+    for (blend, body) in [
+        ("props/bed.blend", "frame sags"),
+        ("props/lamp.blend", "lamp"),
+    ] {
+        comments::create(
+            &context,
+            Draft {
+                anchor: Anchor::Mesh {
+                    part: "Frame".into(),
+                    material: "Oak".into(),
+                    blend: Some(blend.into()),
+                    version: None,
+                },
+                body: body.into(),
+                screenshot_png: None,
+            },
+        )
+        .unwrap();
+    }
+    let notes = |dir: &Path| -> Value {
+        serde_json::from_str(&std::fs::read_to_string(dir.join("notes.json")).unwrap()).unwrap()
+    };
+    w.call("blender-viewer/editor-state", json!({})).unwrap();
+    let shown = notes(&editor.channel);
+    assert_eq!(shown["notes"].as_array().map(Vec::len), Some(1));
+    assert_eq!(shown["notes"][0]["body"], "frame sags");
+
+    // File > Open: the tab follows the file Blender reports.
+    report(
+        &editor,
+        &w.root.join("props/lamp.blend").display().to_string(),
+        false,
+    );
+    w.call("blender-viewer/editor-state", json!({})).unwrap();
+    assert_eq!(notes(&editor.channel)["notes"][0]["body"], "lamp");
+
+    std::fs::write(
+        editor.channel.join("events.jsonl"),
+        "{\"n\":3,\"kind\":\"markup\"}\n",
+    )
+    .unwrap();
+    let state = w
+        .call("blender-viewer/editor-state", json!({ "eventsSince": 0 }))
+        .unwrap();
+    assert_eq!(state["editor"]["events"][0]["kind"], "markup");
+    let again = w
+        .call("blender-viewer/editor-state", json!({ "eventsSince": 1 }))
+        .unwrap();
+    assert_eq!(again["editor"]["events"], json!([]));
+    w.call(
+        "blender-viewer/editor-ack",
+        json!({ "n": 3, "ok": false, "message": "Blender has not started yet" }),
+    )
+    .unwrap();
+    assert_eq!(notes(&editor.channel)["acks"][0]["ok"], false);
+    assert!(w.call("blender-viewer/editor-ack", json!({})).is_err());
+}

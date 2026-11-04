@@ -19,6 +19,7 @@
 //! `.blend` ([`super::versions`]).
 
 use super::lock::{self, Lock};
+use crate::editor_notes::{self, Ack, Scope};
 use crate::embed::host::{HostSpec, Hosts, Orphan};
 use crate::embed::{Embed, Kind, OwnerFn};
 use crate::sync::MutexExt;
@@ -75,6 +76,8 @@ pub struct Editor {
     /// A file Blender opened that another Blender holds, so this one could
     /// not lock it. Two editors on it may write over each other's saves.
     conflict: Mutex<Option<String>>,
+    /// The Veistra tab's `notes.json` and `events.jsonl` (#320).
+    tab: Mutex<editor_notes::Channel>,
 }
 
 impl Editor {
@@ -298,7 +301,8 @@ pub fn call(ctx: &Ctx, method: &str, params: Option<&Value>) -> Option<Result<Va
     }
     Some(match method {
         "blender-viewer/editor-open" => open(ctx, params),
-        "blender-viewer/editor-state" => Ok(state(ctx)),
+        "blender-viewer/editor-state" => Ok(with_tab(ctx, state(ctx), params)),
+        "blender-viewer/editor-ack" => ack(ctx, params),
         "blender-viewer/editor-close" => close(ctx),
         "blender-viewer/editor-capture" => capture(ctx),
         "blender-viewer/editor-pick" => pick(ctx, params),
@@ -414,6 +418,7 @@ fn open(ctx: &Ctx, params: Option<&Value>) -> Result<Value, RpcError> {
         project,
         opened: rel.clone(),
         blender: version,
+        tab: Mutex::new(editor_notes::Channel::new(channel.clone())),
         channel,
         embed: ctx.hosts.embed(Kind::Blender),
         cluster: ctx.cluster.clone(),
@@ -521,6 +526,62 @@ pub fn state(ctx: &Ctx) -> Value {
             "view": view,
         },
     })
+}
+
+fn call_context(ctx: &Ctx) -> crate::apps::CallContext {
+    crate::apps::CallContext {
+        cluster_id: Some(ctx.cluster.clone()),
+        project: ctx.project.clone(),
+    }
+}
+
+/// The Veistra tab's half of a poll (#320): `notes.json` brought up to date
+/// for the open file, and the tab's events after `eventsSince` as
+/// `editor.events`, for the pane to act on.
+fn with_tab(ctx: &Ctx, mut state: Value, params: Option<&Value>) -> Value {
+    let Some(editor) = running(ctx).filter(|_| state["editor"].is_object()) else {
+        return state;
+    };
+    let since = params
+        .and_then(|p| p.get("eventsSince"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let file = editor.file();
+    let mut tab = editor.tab.lock_or_panic();
+    tab.poll();
+    let scope = Scope::Blender {
+        file: file.as_deref(),
+    };
+    if let Err(e) = tab.sync(&call_context(ctx), scope) {
+        crate::veistra_log!("Blender editor notes: {e}");
+    }
+    state["editor"]["events"] = Value::Array(tab.since(since));
+    state
+}
+
+/// `blender-viewer/editor-ack {n, ok, message}`: the pane's answer to tab
+/// event `n`, which the tab shows from the `notes.json` written here.
+fn ack(ctx: &Ctx, params: Option<&Value>) -> Result<Value, RpcError> {
+    let editor = running(ctx).ok_or_else(|| fail("Blender is not open in this cluster"))?;
+    let field = |k: &str| params.and_then(|p| p.get(k));
+    let n = field("n")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| invalid("editor-ack needs `n`"))?;
+    let file = editor.file();
+    let mut tab = editor.tab.lock_or_panic();
+    tab.ack(Ack {
+        n,
+        ok: field("ok").and_then(Value::as_bool).unwrap_or(false),
+        message: field("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+    });
+    let scope = Scope::Blender {
+        file: file.as_deref(),
+    };
+    tab.sync(&call_context(ctx), scope).map_err(fail)?;
+    Ok(json!({ "acked": n }))
 }
 
 fn close(ctx: &Ctx) -> Result<Value, RpcError> {

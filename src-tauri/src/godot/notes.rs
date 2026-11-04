@@ -197,6 +197,7 @@ mod tests {
             Draft {
                 anchor: Anchor::Node {
                     path: "Hallway".into(),
+                    scene: None,
                 },
                 body: "not a play note".into(),
                 screenshot_png: None,
@@ -246,6 +247,8 @@ mod tests {
                 anchor: Anchor::Mesh {
                     part: "p".into(),
                     material: "m".into(),
+                    blend: None,
+                    version: None,
                 },
                 body: "b".into(),
                 screenshot_png: None,

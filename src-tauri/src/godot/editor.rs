@@ -25,6 +25,7 @@ use super::plugin;
 use super::rpc::{self, fail, Ctx, READ_ONLY};
 use super::runner::{self, now_ms};
 use super::session::{self, Proc};
+use crate::editor_notes::{self, Ack, Scope};
 use crate::embed::host::{HostSpec, Orphan, Pane, Slot};
 use crate::embed::{self, Embed, Kind, LaunchRect};
 use crate::sync::MutexExt;
@@ -73,6 +74,9 @@ pub struct Editor {
     pub plugin_problem: Option<String>,
     pub channel: PathBuf,
     pub embed: Arc<Embed>,
+    /// The Veistra dock's `notes.json` and `events.jsonl` (#320). Shared with
+    /// the editor a restart starts, which keeps the channel.
+    tab: Arc<Mutex<editor_notes::Channel>>,
     /// Seconds since the epoch when this process started.
     started: u64,
     process: Mutex<Process>,
@@ -126,6 +130,7 @@ impl Editor {
             plugin_problem: self.plugin_problem.clone(),
             channel: self.channel.clone(),
             embed,
+            tab: self.tab.clone(),
             started,
             process: Mutex::new(Process::Adopted(pid)),
         }
@@ -214,6 +219,12 @@ struct Params {
     y: Option<f64>,
     paths: Vec<String>,
     scene: Option<String>,
+    /// `editor-state`: the last dock event the pane has acted on.
+    events_since: u64,
+    /// `editor-ack`: the event, whether it went through, and what to say.
+    n: Option<u64>,
+    ok: bool,
+    message: Option<String>,
 }
 
 fn params(raw: Option<&Value>) -> Result<Params, RpcError> {
@@ -232,7 +243,8 @@ pub fn call(ctx: &Ctx, method: &str, raw: Option<&Value>) -> Option<Result<Value
     }
     Some(params(raw).and_then(|p| match method {
         "godot/editor-open" => open(ctx, &p),
-        "godot/editor-state" => Ok(state(ctx)),
+        "godot/editor-state" => Ok(with_tab(ctx, state(ctx), p.events_since)),
+        "godot/editor-ack" => ack(ctx, &p),
         "godot/editor-close" => close(ctx),
         "godot/editor-selection" => selection(ctx),
         "godot/editor-capture" => capture(ctx, &p),
@@ -317,6 +329,7 @@ fn open(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
         rel: project.rel.clone(),
         godot: found.version.clone(),
         plugin_problem: plugin::too_old(found.major, found.minor),
+        tab: Arc::new(Mutex::new(editor_notes::Channel::new(channel.clone()))),
         channel,
         embed: ctx.hosts.embed(Kind::GodotEditor),
         started: now_ms() / 1000,
@@ -409,6 +422,45 @@ pub fn state(ctx: &Ctx) -> Value {
         },
         "agent": agent,
     })
+}
+
+fn call_context(ctx: &Ctx) -> crate::apps::CallContext {
+    crate::apps::CallContext {
+        cluster_id: Some(ctx.key.clone()),
+        project: ctx.root.clone(),
+    }
+}
+
+/// The Veistra dock's half of a poll (#320): `notes.json` brought up to date
+/// for the dock, and its events after `since` as `editor.events`, for the
+/// pane to act on.
+fn with_tab(ctx: &Ctx, mut state: Value, since: u64) -> Value {
+    let Some(editor) = running(ctx).filter(|_| state["editor"].is_object()) else {
+        return state;
+    };
+    let mut tab = editor.tab.lock_or_panic();
+    tab.poll();
+    if let Err(e) = tab.sync(&call_context(ctx), Scope::Godot) {
+        crate::veistra_log!("Godot editor notes: {e}");
+    }
+    state["editor"]["events"] = Value::Array(tab.since(since));
+    state
+}
+
+/// `godot/editor-ack {n, ok, message}`: the pane's answer to dock event `n`,
+/// which the dock shows from the `notes.json` written here.
+fn ack(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
+    let editor = running(ctx).ok_or_else(|| fail("no Godot editor is open in this cluster"))?;
+    let n =
+        p.n.ok_or_else(|| RpcError::new(INVALID_PARAMS, "editor-ack needs `n`"))?;
+    let mut tab = editor.tab.lock_or_panic();
+    tab.ack(Ack {
+        n,
+        ok: p.ok,
+        message: p.message.clone().unwrap_or_default(),
+    });
+    tab.sync(&call_context(ctx), Scope::Godot).map_err(fail)?;
+    Ok(json!({ "acked": n }))
 }
 
 fn close(ctx: &Ctx) -> Result<Value, RpcError> {

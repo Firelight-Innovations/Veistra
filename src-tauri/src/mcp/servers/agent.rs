@@ -112,7 +112,8 @@ pub fn blocked_reason(method: &str) -> Option<String> {
 }
 
 /// The Godot editor in the pane is the person's (#316): an agent may read
-/// what it shows, but not open, close, save or steer it under them.
+/// what it shows, but not open, close, save or steer it under them, nor
+/// answer the Veistra dock for the pane (#320).
 const ACTS_ON_THE_EDITOR: &[&str] = &[
     "godot/editor-open",
     "godot/editor-close",
@@ -120,15 +121,18 @@ const ACTS_ON_THE_EDITOR: &[&str] = &[
     "godot/editor-select",
     "godot/editor-open-scene",
     "godot/editor-viewport-only",
+    "godot/editor-ack",
 ];
 
 /// Blender in the pane is the person's (#317): an agent may read what it
-/// shows and export the file, but not open, close or steer it under them.
+/// shows and export the file, but not open, close or steer it under them,
+/// nor answer the Veistra tab for the pane (#320).
 const STEERS_BLENDER: &[&str] = &[
     "blender-viewer/editor-open",
     "blender-viewer/editor-close",
     "blender-viewer/editor-select",
     "blender-viewer/editor-viewport-only",
+    "blender-viewer/editor-ack",
 ];
 
 /// The methods that raise a native dialog, and what to reach for instead.

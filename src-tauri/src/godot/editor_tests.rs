@@ -329,3 +329,71 @@ fn an_open_is_counted_once_with_whether_the_plugin_is_enabled() {
     );
     end(&w);
 }
+
+#[test]
+fn the_dock_gets_its_notes_and_its_ask_reaches_the_pane_once_with_the_picture() {
+    use crate::comments::{self, Anchor, Draft};
+    let w = world();
+    let c = ctx(&w, "c1");
+    call(&c, "godot/editor-open", json!({})).unwrap();
+    let dir = channel(&w);
+    let made = comments::create(
+        &call_context(&c),
+        Draft {
+            anchor: Anchor::Node {
+                path: "Hallway/Enemy_02".into(),
+                scene: Some("res://levels/hallway.tscn".into()),
+            },
+            body: "floats".into(),
+            screenshot_png: None,
+        },
+    )
+    .unwrap();
+
+    // The first poll writes the note where the dock reads it.
+    let state = call(&c, "godot/editor-state", json!({})).unwrap();
+    assert_eq!(state["editor"]["events"], json!([]));
+    let notes: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("notes.json")).unwrap()).unwrap();
+    assert_eq!(notes["notes"][0]["id"], made.id.as_str());
+    assert_eq!(notes["notes"][0]["path"], "Hallway/Enemy_02");
+
+    // Ask the agent from the dock: the picture first, then the line.
+    std::fs::write(dir.join("ask-5.png"), b"PNG").unwrap();
+    std::fs::write(
+        dir.join("events.jsonl"),
+        "{\"n\":5,\"kind\":\"ask\",\"text\":\"why does it float?\",\"scene\":\"res://levels/hallway.tscn\",\"nodes\":[\"Hallway/Enemy_02\"],\"png\":\"ask-5.png\"}\n",
+    )
+    .unwrap();
+    let state = call(&c, "godot/editor-state", json!({ "eventsSince": 0 })).unwrap();
+    let events = state["editor"]["events"].as_array().unwrap().clone();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["nodes"][0], "Hallway/Enemy_02");
+    assert_eq!(events[0]["pngBase64"], BASE64.encode(b"PNG"));
+    let seq = events[0]["seq"].as_u64().unwrap();
+    let again = call(&c, "godot/editor-state", json!({ "eventsSince": seq })).unwrap();
+    assert_eq!(again["editor"]["events"], json!([]), "acted on once");
+
+    // The pane's answer is in notes.json for the dock's status line.
+    let err = call(&c, "godot/editor-ack", json!({})).unwrap_err();
+    assert_eq!(err.code, INVALID_PARAMS);
+    call(
+        &c,
+        "godot/editor-ack",
+        json!({ "n": 5, "ok": true, "message": "Sent to the agent" }),
+    )
+    .unwrap();
+    let notes: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("notes.json")).unwrap()).unwrap();
+    assert_eq!(
+        notes["acks"],
+        json!([{ "n": 5, "ok": true, "message": "Sent to the agent" }])
+    );
+    assert!(
+        !dir.join("ask-5.png").exists(),
+        "an answered ask's picture goes"
+    );
+    end(&w);
+    let err = call(&c, "godot/editor-ack", json!({ "n": 6 })).unwrap_err();
+    assert!(err.message.contains("no Godot editor"), "{err:?}");
+}
