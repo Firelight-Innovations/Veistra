@@ -64,7 +64,7 @@ pub fn valid_id(id: &str) -> bool {
 
 /// Year, month, day, hour and minute of a UTC epoch-milliseconds stamp
 /// (Howard Hinnant's civil-from-days, so no date crate is needed for a name).
-fn utc_minute(ms: u64) -> (i64, u32, u32, u32, u32) {
+pub(crate) fn utc_minute(ms: u64) -> (i64, u32, u32, u32, u32) {
     let secs = (ms / 1000) as i64;
     let days = secs.div_euclid(86_400);
     let rem = secs.rem_euclid(86_400);

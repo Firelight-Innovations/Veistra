@@ -33,6 +33,11 @@ schematify = ["dep:schematify-core"]
 # comment store and the `veistra-design` MCP server, and `VEISTRA_DESIGN_MODE=1`
 # restores its Vite entry. See `docs/design-notes/design-mode.md`.
 design-mode = []
+# The R1/R2 embed spike (#308, `src/godot/spike.rs`): an ignored test that only
+# exists in test builds with this feature, run on Windows 11 by
+# `pnpm spike:embed`. It adds the two `windows-sys` modules the spike's stand-in
+# Veistra window paints and reads the screen with; nothing shipped needs them.
+embed-spike = ["windows-sys/Win32_Graphics_Gdi", "windows-sys/Win32_UI_HiDpi"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

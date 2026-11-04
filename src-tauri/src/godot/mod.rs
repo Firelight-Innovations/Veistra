@@ -34,6 +34,11 @@ pub mod runner;
 pub mod scene;
 /// One run's window, take, marks and keys.
 pub mod session;
+/// The R1/R2 embed spike (#308): an ignored Windows test, built only with the
+/// `embed-spike` feature.
+#[cfg(test)]
+#[cfg(feature = "embed-spike")]
+mod spike;
 /// Recorded runs on disk, their summary, drafts and retention.
 pub mod takes;
 /// What capture addon v2 writes while a game runs.

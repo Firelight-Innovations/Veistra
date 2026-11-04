@@ -10,9 +10,9 @@
 //! [`Embed::reapply`] on `WindowEvent::Moved`). What it buys is the reason
 //! the design recommends it: the recorder captures the game window alone and
 //! never Veistra's own UI, with no crop. R1 (`SetParent` into the Veistra
-//! window) was not built; the design's Day 1 spike is where `CreateForWindow`
-//! on a child window gets tried, and `docs/design-notes/godot-play.md` keeps
-//! the decision row.
+//! window) exists only in the embed spike (`spike.rs`, `pnpm spike:embed` on
+//! Windows 11), which runs both against this code unchanged; the decision row
+//! in `docs/design-notes/godot-play.md` records which one stays.
 //!
 //! Everything here except [`sys`] is plain arithmetic and state, tested on any
 //! host through a fake [`WindowSystem`]. [`sys`] is Win32 on Windows and a
