@@ -71,6 +71,13 @@ Left to right, `padding-left: 12px`, no right padding (window controls are flush
 - **Window controls**, flush right, three `46×38` ghost buttons (Minimise / Maximise / Close), icon
   `12×12`, `color #afb3b6` (txt-tertiary), `aria-label` on each.
 
+**In the build (#336).** No board draws these, but the build has them. The search field sits right
+after the pill, and the two form one middle group centred on the window. The right-hand actions
+(Upgrade, new agent session, terminal, Agents, Clusters, Settings) sit before the window controls.
+In a narrow window they fold into one overflow button below 1440px, before the menus fold into the
+hamburger below 1180px. The window controls never fold. Short of room, search narrows to its icon
+and `Ctrl K` before the pill's chip truncates. `docs/design-notes/shell-chrome.md` has the widths.
+
 ### 1.3 Cluster switcher row (40px)
 
 `padding: 0 56px 6px 6px` (the `56px` right pad roughly reserves the same width the 44px page-rail
@@ -710,6 +717,8 @@ tree rows, buttons, inputs) · `control-lg` 32px (settings inputs, commit button
    feature isn't dropped from the product — but no v0.3 board shows where it now lives (was it
    demoted into a command palette invoked purely by the shortcut, with no persistent search box?).
    Needs a v0.3 mock or explicit statement that it's shortcut-only.
+   **Answered in the build:** the box persists, in the title bar. It sat in the right cell at first,
+   and since #336 it sits beside the pill, centred with it (§1.2).
 
 10. **`w-panel-collapsed` (40px) vs the 44px project-page rail — same thing or not?** The token
     describes "the right panel collapsed to its icon rail," which sounds exactly like the always-

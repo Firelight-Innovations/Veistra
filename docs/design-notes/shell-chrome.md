@@ -97,6 +97,81 @@ does not toggle one.
 Closing the last real cluster never lands on a page. The window shows
 `NoClustersState`, with the page chips still there to click.
 
+## src/shell/titlebar/useNarrowTitlebar.ts and titlebar.css
+
+### The title bar's collapse order (#336)
+
+The decision is Braden's, on #336. Four things share the bar. The menus are on
+the left. The project pill and the search field form one middle group, centred
+on the window. The right-hand actions follow: Upgrade, new agent session,
+terminal, Agents, Clusters and Settings, plus the tool-health badge while
+something is unhealthy. The window controls come last. Nothing may draw over
+anything else at any width down to the window's minimum, and the middle group
+may not leave the centre to make room. As the window narrows, the bar gives way
+in this order:
+
+1. Below **1440px** the right-hand actions fold into one overflow button
+   (`TitleBarActions`, `OverflowMenu`). Each row runs the same action and shows
+   the same shortcut, because both forms are drawn from one list
+   (`titleBarActions`). The tool-health badge becomes the menu's first row, with
+   its tools and Re-scan in a submenu. The button then carries the badge's dot
+   and says so in its accessible name.
+2. Below **1180px** the six menus fold into the hamburger, as they always have.
+3. If the middle group still has less room than it wants, search narrows to its
+   icon and Ctrl+K, then to its icon alone (`search.css`, by the field's own
+   width). Then the pill's environment chip or count truncates, and then the
+   project name (`projectPill.css`).
+
+The window controls never fold. They sit outside the actions slot
+(`TitleBar.tsx`), so nothing that collapses can take them with it.
+
+**Why 1440, and why the buttons first.** A box centred on the window can be at
+most the bar's width less twice the *wider* side. Measured in Chromium, with
+the fallback font because Inter is not bundled:
+
+| Piece | Width |
+|---|---|
+| Left: logo and inline menus | 360px |
+| Left: logo and hamburger | 65px |
+| Right: Upgrade, five icon buttons, window controls | 446px |
+| Right: overflow button and window controls | 182px |
+| Middle, the issue's example: pill (297px), gap, full search (240px) | 545px |
+
+With everything inline, the example group needs 545 + 2 × 446 = 1437px, so
+1440 is where the bar stops fitting all of it at once. The buttons go first
+because the right is the wider side. Folding the menus would gain nothing while
+the right still takes 446px. With the buttons folded, the menus are the wider
+side and the group gets the bar less 720px: at 1180px the example's search has
+narrowed to 153px. With both folded it gets the bar less 364px, which is 536px
+at the main window's 900px minimum, so search sits at 231px with its label
+still showing.
+
+**Steps on the window's width, the bound measured.** The two steps use
+`matchMedia` on the window's width (range syntax, so 1179.5px is below 1180),
+for the reason the spec gives for the hamburger. The middle group's bound is
+measured instead. `TitleBar`'s `useSideReserve` writes the wider side's width to
+`--titlebar-side`, and `.titlebar__middle` takes `100cqw` less twice that. The
+sides change with the font (Segoe UI on Windows), with which step the window is
+at, and with the badge, so a width written into the stylesheet would be wrong
+somewhere.
+
+**What this replaced.** Commit 82403361 tried to clear the overlap another way.
+Below 1000px it let the pill leave the centre, below 900px it hid Upgrade, and
+it clipped the right cell instead of letting it spill. Search lived in the
+right cell and became an icon below 1240px. Measured with the issue's example,
+the right cell's buttons still drew under the pill from 800px to 1180px, and
+search was cut off or out of reach. All of that is gone.
+`titlebar/titlebarCollapse.test.ts` and `titlebarMiddleGroup.test.ts` pin what
+replaced it. The old cap on the pill (a third of the bar) went too: the group's
+bound keeps the pill clear of both sides, and search gives way first, so a cap
+would only cut a name short while there was still room for it.
+
+**Known edge.** A detached window can be 480px wide. With the overflow button
+and the hamburger at that width, the middle group gets 116px. Search is an icon,
+and the chip keeps its 36px floor (glyph and ellipsis), so the project's name
+can shrink to nothing before the chip does. That follows the order #336 asked
+for, but it is the one width where it reads oddly.
+
 ## src/shell/titlebar/useEditTarget.ts
 
 ### Paste is disabled on both branches
