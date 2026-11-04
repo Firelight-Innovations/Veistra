@@ -6,6 +6,7 @@
  * (`apps/shared/nativeWindow.ts`), keyed by this pane and `godotEditor`.
  */
 import { invoke } from "@veistra/bridge";
+import type { EditorEvent } from "../../../../shared/editorEvents";
 import type { AddonState } from "../../../../shared/godot";
 import type { EmbedState } from "../../../../shared/nativeWindow";
 
@@ -57,6 +58,8 @@ export interface EditorInfo {
   };
   /** `null` until the plugin first writes its state. */
   view: EditorView | null;
+  /** Presses in the editor's Veistra dock after `eventsSince` not yet answered (#320). */
+  events?: EditorEvent[];
 }
 
 export interface EditorState {
@@ -96,7 +99,13 @@ export interface PluginStatus {
 export const openEditor = (project?: string) =>
   invoke<EditorState>("godot/editor-open", { project });
 
-export const editorState = () => invoke<EditorState>("godot/editor-state", {});
+/** The poll; `eventsSince` is the last dock event the pane has taken. */
+export const editorState = (eventsSince = 0) =>
+  invoke<EditorState>("godot/editor-state", { eventsSince });
+
+/** The pane's answer to dock event `n`, which the dock then shows. */
+export const editorAck = (n: number, ok: boolean, message: string) =>
+  invoke<{ acked: number }>("godot/editor-ack", { n, ok, message });
 
 /** Asks, as the window's close button would: Godot offers to save first. */
 export const closeEditor = () =>

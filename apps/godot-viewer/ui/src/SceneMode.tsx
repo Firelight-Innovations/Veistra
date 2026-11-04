@@ -245,7 +245,13 @@ export default function SceneMode({ modeSwitch, status, epoch, onPlay }: SceneMo
     if (!selected || !draft.trim()) return;
     setPosting(true);
     try {
-      await createComment({ anchor: { kind: "node", path: selected }, body: draft.trim() });
+      // The scene goes with the path, so the editor's dock shows the note
+      // on this scene only (#320).
+      const scene = state?.scene;
+      const anchor = scene
+        ? { kind: "node" as const, path: selected, scene }
+        : { kind: "node" as const, path: selected };
+      await createComment({ anchor, body: draft.trim() });
       setDraft("");
       await refreshComments();
       setCommentsOpen(true);
