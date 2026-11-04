@@ -45,7 +45,7 @@ import { nodeLookup } from "./preview";
 import { usePreview, type PreviewState } from "./usePreview";
 import { sceneChip } from "./chip";
 import { openNotesByNode } from "./notes";
-import "./App.css";
+import "./SceneMode.css";
 
 /**
  * three.js and Excalidraw live behind this import and nowhere else, so the
@@ -69,7 +69,7 @@ const VIEWS: readonly { value: View; label: string }[] = [
 
 const POLL_MS = 600;
 
-export default function App() {
+export default function SceneMode() {
   const [mode, setMode] = useState<Mode>("scene");
   const [state, setState] = useState<GodotViewerState | null>(null);
   const [scene, setScene] = useState<string | undefined>(undefined);

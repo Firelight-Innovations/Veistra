@@ -21,7 +21,7 @@ vi.mock("@veistra/bridge", () => ({
   openIn: (appId: string, payload?: unknown) => bridge.invoke("veistra/open", { appId, payload }),
 }));
 
-import App from "./App";
+import App from "./SceneMode";
 
 const STATE = {
   project: ".",

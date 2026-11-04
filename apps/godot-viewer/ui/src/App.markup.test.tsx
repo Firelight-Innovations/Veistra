@@ -52,7 +52,7 @@ vi.mock("./Scene3D", () => ({
   ),
 }));
 
-import App from "./App";
+import App from "./SceneMode";
 
 const STATE = {
   project: ".",
