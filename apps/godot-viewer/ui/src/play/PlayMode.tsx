@@ -43,6 +43,7 @@ import {
 } from "lucide-react";
 import type { MarkupExport } from "@veistra/markup/layer";
 import { CommentPanel } from "../../../../shared/CommentPanel";
+import { useCommentsChanged } from "../../../../shared/commentEvents";
 import {
   createComment,
   listComments,
@@ -61,9 +62,11 @@ import {
   ViewerToolbar,
   type ToolbarStatus,
 } from "../../../../shared/ViewerToolbar";
+import { track } from "../../../../shared/telemetry";
 import { clock } from "./frames";
 import { isTyping, liveAction } from "./keys";
 import { LiveStrip, LiveView, LogView, type LiveMarking } from "./LiveView";
+import { newF8Marks, type MarkCount } from "./markTelemetry";
 import type { Target } from "./notes";
 import Review, { type LiveNote } from "./Review";
 import {
@@ -185,6 +188,8 @@ export default function PlayMode(props: PlayModeProps) {
   const runId = useRef<number | null>(null);
   /** Whether a poll has answered since this pane opened. */
   const primed = useRef(false);
+  /** The game's own marks the poll has reported, for `mark_dropped`. */
+  const f8Marks = useRef<MarkCount | null>(null);
   /** The last saved take the poll saw, so a take saved anywhere refreshes Takes. */
   const savedTake = useRef<string | null>(null);
   /** The chosen project, for the poll, which outlives every render. */
@@ -221,6 +226,17 @@ export default function PlayMode(props: PlayModeProps) {
       setCommentsLoading(false);
     }
   }, []);
+
+  // An agent's fix or a verdict made elsewhere changes the drawer's list and
+  // its count. Listed again quietly: no spinner, and a failure keeps the list.
+  useCommentsChanged(() => {
+    listComments()
+      .then((next) => {
+        setComments(next);
+        setCommentsError(null);
+      })
+      .catch(() => {});
+  });
 
   const loadAddon = useCallback(async (rel: string | undefined) => {
     try {
@@ -337,7 +353,17 @@ export default function PlayMode(props: PlayModeProps) {
           const fresh = s.log.lines;
           setLines((prev) => [...prev, ...fresh].slice(-LOG_KEEP));
         }
-        const keys = s.live?.session?.keys ?? [];
+        const sess = s.live?.session;
+        const keys = sess?.keys ?? [];
+        // F8 pressed in the game never reaches the page; its count does.
+        if (sess && typeof sess.f8Marks === "number") {
+          const seen = newF8Marks(f8Marks.current, sess.runId, sess.f8Marks, opening);
+          f8Marks.current = seen.next;
+          const recording = sess.take.state === "recording";
+          for (let i = 0; i < seen.report; i++) {
+            track("mark_dropped", { source: "game", recording });
+          }
+        }
         // Keys from before this pane opened were for whoever had it then;
         // replaying an old F7 would stop the game.
         if (opening) {
@@ -487,12 +513,15 @@ export default function PlayMode(props: PlayModeProps) {
     setCapturing(false);
   }, [guarded]);
 
+  /** Mark and F8 with the pane focused; the game's own F8 is counted by the poll. */
   const doMark = useCallback(
-    () =>
+    (fromKey: boolean) =>
       guarded(async () => {
         await mark();
+        const recording = take?.state === "recording";
+        track("mark_dropped", { source: fromKey ? "pane_key" : "button", recording });
       }),
-    [guarded],
+    [guarded, take],
   );
 
   /** Ctrl Shift M and Mark up: pause, take the frame, draw on it. */
@@ -676,7 +705,7 @@ export default function PlayMode(props: PlayModeProps) {
         void stopAndReview();
         break;
       case "mark":
-        if (running) void doMark();
+        if (running) void doMark(true);
         break;
       case "markup":
         void startLiveMarkup();
@@ -897,7 +926,7 @@ export default function PlayMode(props: PlayModeProps) {
         disabled={!running}
         title="Drop a mark on the recording without stopping (F8)"
         icon={<Flag size={16} strokeWidth={1.5} aria-hidden="true" />}
-        onClick={() => void doMark()}
+        onClick={() => void doMark(false)}
       >
         Mark
       </ToolbarButton>

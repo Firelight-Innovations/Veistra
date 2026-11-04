@@ -520,8 +520,9 @@ of every cluster on that environment. A pane subscribes with one call,
 burst (Send files one comment per note) into one refresh. That is how an agent's
 `resolve_play_note`, which no frame sees, turns an open card to "Fixed, check it".
 The payload names the comment and its old and new status, never its text. The
-Blender Viewer subscribes today; Play and the Godot Viewer are wired when they
-become one app (#313), and until then Play's review sees a fix by its 2 s poll.
+Blender Viewer and both modes of the Godot app subscribe: Editor and Play's
+drawer list again on any change, and Play's review lists its take's notes when a
+change names that take, keeping its 2 s poll only as the fallback.
 
 "Send to agent now" is on every comment panel, and it is always disabled: it
 is drawn now so the layout is right, but nothing reads `.veistra/comments/` into

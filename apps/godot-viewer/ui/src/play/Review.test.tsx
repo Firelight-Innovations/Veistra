@@ -9,8 +9,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
-const bridge = vi.hoisted(() => ({ invoke: vi.fn() }));
-vi.mock("@veistra/bridge", () => ({ invoke: bridge.invoke }));
+const bridge = vi.hoisted(() => ({
+  invoke: vi.fn(),
+  handlers: new Map<string, (payload: unknown) => void>(),
+}));
+vi.mock("@veistra/bridge", () => ({
+  invoke: bridge.invoke,
+  on: (event: string, cb: (payload: unknown) => void) => {
+    bridge.handlers.set(event, cb);
+    return () => bridge.handlers.delete(event);
+  },
+}));
 vi.mock("./frames", async (real) => {
   const actual = await real<typeof import("./frames")>();
   const png = () => Promise.resolve(new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }));
@@ -71,7 +80,7 @@ const copy = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 
 function backend(
   notes: unknown[] = [{ n: 1, kind: "frame", atMs: 41_000, body: "The door light flickers" }],
-  over: { insertMs?: number; deleteMs?: number } = {},
+  over: { insertMs?: number; deleteMs?: number; filed?: unknown[] } = {},
 ): Disk {
   const disk: Disk = {
     notes: { version: 1, notes: copy(notes) as Record<string, unknown>[], nextN: 3, dismissed: [] },
@@ -89,7 +98,7 @@ function backend(
         disk.notes = copy(params?.notes) as Disk["notes"];
         return Promise.resolve({ saved: true });
       case "play/notes":
-        return Promise.resolve({ notes: [FIXED] });
+        return Promise.resolve({ notes: copy(over.filed ?? [FIXED]) });
       case "play/send":
         // `mark_sent`: the notes on disk that were sent get their stamps.
         disk.notes.notes = disk.notes.notes.map((n) =>
@@ -143,6 +152,7 @@ async function retype(body: string) {
 
 beforeEach(() => {
   bridge.invoke.mockReset();
+  bridge.handlers.clear();
   globalThis.fetch = vi.fn(() => Promise.resolve(new Response(""))) as unknown as typeof fetch;
   globalThis.ResizeObserver = class {
     observe() {}
@@ -230,6 +240,38 @@ describe("Review", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Play hallway.tscn" }));
     expect(props.onPlayScene).toHaveBeenCalledWith("res://levels/hallway.tscn");
+  });
+
+  // Review saw an agent's fix only by its 2 s poll. The push comes at once,
+  // and a change to another take's note lists nothing.
+  it("shows a fix as soon as the change is pushed, before the poll", async () => {
+    const filed = [{ ...FIXED, status: "working", resolution: undefined }];
+    backend(
+      [
+        {
+          n: 2,
+          kind: "range",
+          atMs: 102_180,
+          inMs: 98_000,
+          outMs: 106_000,
+          body: "wall",
+          commentId: "c2",
+        },
+      ],
+      { filed },
+    );
+    mount();
+    await screen.findByText("wall");
+    await waitFor(() => expect(calls("play/notes").length).toBeGreaterThan(0));
+    const listed = calls("play/notes").length;
+    const push = bridge.handlers.get("comments:changed");
+
+    push?.({ id: "x9", kind: "take", take: "2026-10-30-1500-aaaa", status: "fixed", from: "open" });
+    await new Promise((r) => setTimeout(r, 250));
+    expect(calls("play/notes")).toHaveLength(listed);
+    filed[0] = FIXED;
+    push?.({ id: "c2", kind: "take", take: TAKE.id, status: "fixed", from: "working" });
+    expect(await screen.findByText("Fixed, check it", undefined, { timeout: 1000 })).toBeTruthy();
   });
 
   // Typing and then sending inside the debounce left a write of the

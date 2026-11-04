@@ -84,6 +84,11 @@ export interface Session {
    * (#312); absent from a backend without it, which reads as not captured.
    */
   mouseCaptured?: boolean;
+  /**
+   * The marks made with F8 in the game, apart from the toolbar's (#312), so
+   * the page can report `mark_dropped` for them. Absent from an older backend.
+   */
+  f8Marks?: number;
 }
 
 export interface Live {

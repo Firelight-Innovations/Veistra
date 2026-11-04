@@ -21,6 +21,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { invoke } from "@veistra/bridge";
 import { Pause, Play as PlayIcon, SkipBack, SkipForward, PenLine } from "lucide-react";
 import type { MarkupExport } from "@veistra/markup/layer";
+import { useCommentsChanged } from "../../../../shared/commentEvents";
 import { verdictComment, type Comment, type Verdict } from "../../../../shared/comments";
 import { contextKey, type ContextRef } from "../../../../shared/context";
 import { blobBase64 } from "../../../../shared/markupFlow";
@@ -245,7 +246,9 @@ export default function Review(props: ReviewProps) {
     if (ready && el && (!active || active.contains(el))) el.focus({ preventScroll: true });
   }, [ready]);
 
-  // The notes Send filed, polled while any of them could still change.
+  // The notes Send filed. A change to one of this take's is pushed, so an
+  // agent's fix shows at once; the poll while any could still change is the
+  // fallback for a push that never came.
   const refreshComments = useCallback(async () => {
     try {
       setComments((await listNotes(takeId)).notes);
@@ -253,6 +256,9 @@ export default function Review(props: ReviewProps) {
       // A failed poll is tried again on the next tick.
     }
   }, [takeId]);
+  useCommentsChanged((changes) => {
+    if (changes.some((c) => c.take === takeId)) void refreshComments();
+  });
   const waiting =
     doc?.notes.some((n) => {
       const s = noteStatus(n, comments);

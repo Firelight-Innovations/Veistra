@@ -13,17 +13,35 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 
 const bridge = vi.hoisted(() => ({ invoke: vi.fn() }));
 
-const events = vi.hoisted(() => new Map<string, (payload: unknown) => void>());
+/**
+ * The bridge's listeners, every one per event as the bridge keeps them: Play
+ * and its review both hear `comments:changed`. `get` answers a function that
+ * calls them all, or nothing while none listens.
+ */
+const events = vi.hoisted(() => {
+  const sets = new Map<string, Set<(payload: unknown) => void>>();
+  return {
+    on(event: string, cb: (payload: unknown) => void) {
+      const set = sets.get(event) ?? new Set();
+      sets.set(event, set);
+      set.add(cb);
+      return () => void set.delete(cb);
+    },
+    get(event: string) {
+      const set = sets.get(event);
+      if (!set || set.size === 0) return undefined;
+      return (payload: unknown) => [...set].forEach((cb) => cb(payload));
+    },
+    clear: () => sets.clear(),
+  };
+});
 
 vi.mock("@veistra/bridge", () => ({
   invoke: bridge.invoke,
   reportPainted: vi.fn(),
   openIn: vi.fn(),
   OPENED_EVENT: "veistra:opened",
-  on: (event: string, cb: (payload: unknown) => void) => {
-    events.set(event, cb);
-    return () => events.delete(event);
-  },
+  on: (event: string, cb: (payload: unknown) => void) => events.on(event, cb),
   session: () => Promise.resolve({ projectPath: null, instanceId: "i1" }),
 }));
 
@@ -216,6 +234,10 @@ interface World {
   scenes: string[];
   /** Whether the game holds the mouse, as addon v2's backend reports it (#312). */
   mouseCaptured?: boolean;
+  /** The marks made with F8 in the game so far (#312). */
+  f8Marks?: number;
+  /** What `comments/list` answers. */
+  comments: unknown[];
 }
 
 function liveBackend(over: Partial<World> = {}): World {
@@ -232,6 +254,7 @@ function liveBackend(over: Partial<World> = {}): World {
     found: false,
     lines: [],
     scenes: [],
+    comments: [],
     ...over,
   };
   const state = (keySince: number, since = 0) => ({
@@ -250,6 +273,7 @@ function liveBackend(over: Partial<World> = {}): World {
         runId: world.run.id,
         take: world.take,
         mouseCaptured: world.mouseCaptured,
+        f8Marks: world.f8Marks,
         // Each key once, after the pane's cursor, as `Session::keys_since` answers.
         keys: world.keys.filter((k) => k.seq > keySince),
       },
@@ -308,7 +332,7 @@ function liveBackend(over: Partial<World> = {}): World {
       case "play/addon-status":
         return Promise.resolve({ addon: "no", needsRestart: false, readOnly: world.readOnly });
       case "comments/list":
-        return Promise.resolve([]);
+        return Promise.resolve(world.comments);
       case "play/takes":
         return Promise.resolve({ takes: world.takes, dir: "" });
       case "play/take":
@@ -932,6 +956,82 @@ describe("Play output drawer", () => {
     expect(screen.getByText("slow frame")).toBeTruthy();
     expect(screen.getByText("boom")).toBeTruthy();
     expect(screen.queryByText("ready")).toBeNull();
+  });
+
+  // Play listed comments when it opened and after its own writes, so a note
+  // an agent fixed over MCP kept its old count until the pane was reopened.
+  it("counts the open notes again when a comment change is pushed", async () => {
+    const note = {
+      id: "c1",
+      anchor: { kind: "take", take: TAKE_ID, n: 1, atMs: 1000, packet: "p", scene: "" },
+      author: "user",
+      body: "The door light flickers",
+      status: "fixed",
+      created: 1,
+      updated: 2,
+    };
+    const world = liveBackend({ comments: [note] });
+    render(<App />);
+    await waitFor(() => expect(tab("Notes").textContent).toBe("Notes1"));
+    world.comments = [{ ...note, status: "resolved" }];
+    events.get("comments:changed")?.({
+      id: "c1",
+      kind: "take",
+      take: TAKE_ID,
+      status: "resolved",
+      from: "fixed",
+    });
+    await waitFor(() => expect(tab("Notes").textContent).toBe("Notes"));
+  });
+});
+
+describe("Play marks", () => {
+  const dropped = () =>
+    calls("veistra/track")
+      .map((c) => c[1] as { event: string; props: Record<string, unknown> })
+      .filter((p) => p.event === "mark_dropped");
+
+  it("reports each mark the game makes, and none it had before the pane opened", async () => {
+    const world = liveBackend({ f8Marks: 2 });
+    render(<App />);
+    await screen.findByText("Playing");
+    await waitFor(() => expect(calls("play/state").length).toBeGreaterThanOrEqual(3), {
+      timeout: 2000,
+    });
+    expect(dropped()).toHaveLength(0);
+    world.f8Marks = 4;
+    await waitFor(() => expect(dropped()).toHaveLength(2), { timeout: 2000 });
+    expect(dropped()[0].props).toEqual({ source: "game", recording: true });
+  });
+
+  it("counts a new run's game marks from none", async () => {
+    const world = liveBackend({ run: null, take: { state: "off" } });
+    render(<App />);
+    await waitFor(() => expect(calls("play/state").length).toBeGreaterThanOrEqual(2), {
+      timeout: 2000,
+    });
+    world.run = { id: 2, state: { kind: "running" } };
+    world.take = { state: "off" };
+    world.f8Marks = 1;
+    await waitFor(() => expect(dropped()).toHaveLength(1), { timeout: 2000 });
+    expect(dropped()[0].props).toEqual({ source: "game", recording: false });
+  });
+
+  it("names the Mark button and F8 in the pane apart", async () => {
+    liveBackend({ f8Marks: 0 });
+    render(<App />);
+    await screen.findByText("Playing");
+    const button = screen.getByRole("button", { name: /^Mark(?! up)/ }) as HTMLButtonElement;
+    await waitFor(() => expect(button.disabled).toBe(false));
+    fireEvent.click(button);
+    await waitFor(() => expect(dropped()).toHaveLength(1));
+    fireEvent.keyDown(pane(), { key: "F8" });
+    await waitFor(() => expect(dropped()).toHaveLength(2));
+    expect(dropped().map((p) => p.props)).toEqual([
+      { source: "button", recording: true },
+      { source: "pane_key", recording: true },
+    ]);
+    expect(calls("play/mark")).toHaveLength(2);
   });
 });
 

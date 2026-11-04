@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import type { Comment } from "../../../../shared/comments";
 import { CONTACT_MAX, clock, contactLayout, contactTimes } from "./frames";
 import { liveAction, reviewAction } from "./keys";
+import { newF8Marks } from "./markTelemetry";
 import {
   addNote,
   dismissMark,
@@ -194,6 +195,21 @@ describe("telemetry", () => {
       expect(px).toBeCloseTo(320);
       expect(py).toBeCloseTo(20);
     }
+  });
+});
+
+describe("mark telemetry", () => {
+  it("take what an opening pane finds as the start, and report each mark after it", () => {
+    const first = newF8Marks(null, 1, 3, true);
+    expect(first).toEqual({ next: { run: 1, count: 3 }, report: 0 });
+    expect(newF8Marks(first.next, 1, 5, false)).toEqual({ next: { run: 1, count: 5 }, report: 2 });
+    expect(newF8Marks(first.next, 1, 3, false).report).toBe(0);
+  });
+
+  it("count a run not seen before from none, and never report a count going down", () => {
+    expect(newF8Marks({ run: 1, count: 4 }, 2, 1, false).report).toBe(1);
+    expect(newF8Marks(null, 2, 2, false).report).toBe(2);
+    expect(newF8Marks({ run: 2, count: 4 }, 2, 1, false).report).toBe(0);
   });
 });
 

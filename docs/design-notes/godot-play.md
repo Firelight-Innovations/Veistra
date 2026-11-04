@@ -268,8 +268,8 @@ From #311, not yet run in a real Veistra (unit-tested only):
 - `comments:changed` reaching every window and being relayed into the right cluster's app
   frames, including two clusters on one checkout and a cluster in a second window.
 - Spec test 7 end to end: an agent session calls `list_play_notes` and `resolve_play_note` and
-  an open card turns to "Fixed, check it" without a reload. The Blender Viewer listens for the
-  push; Play's review still sees it by its 2 s poll until #313 wires the Godot app.
+  an open card turns to "Fixed, check it" without a reload. The Blender Viewer and both modes
+  of the Godot app listen for the push (#314); Play's review keeps its 2 s poll as the fallback.
 - `telemetry:event` sent with `emit_to("main")` arriving once, in the main window's
   window-targeted listener only, and `godot:note_fixed` / `godot:note_resolved` reaching
   PostHog in a release build with a project key and consent on.
