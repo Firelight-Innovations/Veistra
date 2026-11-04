@@ -228,6 +228,28 @@ describe("The Godot app's modes", () => {
     await showing("Editor");
   });
 
+  // The keys are bound on each mode's root, and the tab that was pressed goes
+  // with the mode it sat in; left on the page, F5 would reload the pane.
+  it("gives the focus to the mode a switch brings in", async () => {
+    // jsdom forgets the document had the focus when the focused element goes.
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    backend();
+    history.replaceState({}, "", "/?mode=play");
+    const { container } = render(<App />);
+    await screen.findByText("Playing");
+    const editor = await modeTab("Editor");
+    editor.focus();
+    fireEvent.click(editor);
+    await showing("Editor");
+    await waitFor(() => expect(document.activeElement).toBe(container.querySelector(".gv")));
+    const play = await modeTab("Play");
+    play.focus();
+    fireEvent.click(play);
+    await screen.findByText("Playing");
+    await waitFor(() => expect(document.activeElement).toBe(container.querySelector(".pl")));
+    hasFocus.mockRestore();
+  });
+
   it("keeps Play's project across a switch to Editor and back", async () => {
     backend([project("game"), project("demo")]);
     history.replaceState({}, "", "/?mode=play");

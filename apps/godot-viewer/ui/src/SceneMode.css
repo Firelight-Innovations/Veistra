@@ -230,6 +230,16 @@
   cursor: pointer;
 }
 
+/* Editor mode's one line on where the real editor is, until C1 embeds it. */
+.gv__footer-note {
+  font-size: 11px;
+  color: var(--txt-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
 .gv__footer-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;

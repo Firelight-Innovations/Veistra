@@ -214,6 +214,31 @@ describe("Godot Viewer toolbar", () => {
     expect(calls("veistra/open")).toHaveLength(0);
   });
 
+  // F5 is WebView2's reload, which unloaded the pane; Shift F5 a hard one.
+  it("turns to Play and runs the project on F5, and keeps both F5s from the page", async () => {
+    backend(undefined, { state: { project: "games/hall" } });
+    const { container } = render(<App />);
+    await screen.findByRole("combobox", { name: "Scene" });
+    const root = container.querySelector(".gv") as HTMLElement;
+    expect(fireEvent.keyDown(root, { key: "F5", shiftKey: true })).toBe(false);
+    expect(calls("play/run")).toHaveLength(0);
+    expect(fireEvent.keyDown(root, { key: "F5" })).toBe(false);
+    await waitFor(() => expect(calls("play/run")).toHaveLength(1));
+    expect(calls("play/run")[0]![1]).toMatchObject({ project: "games/hall" });
+    const bar = await screen.findByRole("toolbar", { name: "Godot" });
+    expect(within(bar).getByRole("tab", { name: "Play" }).getAttribute("aria-selected")).toBe(
+      "true",
+    );
+  });
+
+  it("says the editor opens in its own window until it is embedded", async () => {
+    backend();
+    render(<App />);
+    expect(
+      await screen.findByText(/The Godot editor opens in its own window for now/),
+    ).toBeTruthy();
+  });
+
   it("will not play sample data", async () => {
     backend();
     render(<App />);

@@ -47,7 +47,7 @@ import { nodeLookup } from "./preview";
 import { usePreview, type PreviewState } from "./usePreview";
 import { sceneChip } from "./chip";
 import { openNotesByNode } from "./notes";
-import type { ModeProps } from "./modes";
+import { focusIfDropped, type ModeProps } from "./modes";
 import "./SceneMode.css";
 
 /**
@@ -67,8 +67,11 @@ const VIEWS: readonly { value: View; label: string }[] = [
 const POLL_MS = 600;
 
 export interface SceneModeProps extends ModeProps {
-  /** Play scene: switch this pane to Play and run `scene` in `project`. */
-  onPlay: (scene: string, project: string) => void;
+  /**
+   * Switch this pane to Play and run `scene` in `project` (Play scene), or,
+   * with no scene, whatever Play's F5 would run in it (F5 here).
+   */
+  onPlay: (scene: string | undefined, project: string) => void;
 }
 
 export default function SceneMode({ modeSwitch, status, epoch, onPlay }: SceneModeProps) {
@@ -179,6 +182,20 @@ export default function SceneMode({ modeSwitch, status, epoch, onPlay }: SceneMo
     if (state?.scene) onPlay(state.scene, state.project);
   };
 
+  // F5 is Godot's Run Project, and WebView2's reload, which would unload the
+  // pane: here it turns to Play and runs, as Play's own F5 does. Shift F5,
+  // Play's Stop, is a hard reload, so it is kept from the page too.
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== "F5") return;
+    e.preventDefault();
+    if (!e.shiftKey && !e.ctrlKey && state) onPlay(undefined, state.project);
+  };
+
+  const root = useRef<HTMLDivElement>(null);
+  // The mode tab that switched here went with Play's toolbar, so the focus
+  // fell to the page, where F5 would be the reload.
+  useEffect(() => focusIfDropped(root.current), []);
+
   const { sent, send } = useSendAction(setProblem, errorText);
 
   const {
@@ -233,7 +250,7 @@ export default function SceneMode({ modeSwitch, status, epoch, onPlay }: SceneMo
         : null;
 
   return (
-    <div className="gv">
+    <div className="gv" ref={root} tabIndex={-1} onKeyDown={onKeyDown}>
       {/* Mark up is not here: it belongs to the 3D view and sits on that view's
           own bar (`apps/shared/MarkupScene.tsx`), which already knows when the
           view can be drawn on. A second trigger here would need a handle into
@@ -518,14 +535,21 @@ export default function SceneMode({ modeSwitch, status, epoch, onPlay }: SceneMo
       )}
       <SendFooter
         trailing={
-          <button
-            type="button"
-            className="gv__footer-btn"
-            onClick={() => setCommentsOpen((v) => !v)}
-          >
-            <MessageSquarePlus size={13} strokeWidth={1.5} aria-hidden="true" />
-            Comments {openCount > 0 ? `· ${openCount} open` : ""}
-          </button>
+          <>
+            {/* Until the editor is embedded (C1), Editor mode is this read-only
+                view; C3 keeps it as the fallback. */}
+            <span className="gv__footer-note">
+              The Godot editor opens in its own window for now: Open in Godot.
+            </span>
+            <button
+              type="button"
+              className="gv__footer-btn"
+              onClick={() => setCommentsOpen((v) => !v)}
+            >
+              <MessageSquarePlus size={13} strokeWidth={1.5} aria-hidden="true" />
+              Comments {openCount > 0 ? `· ${openCount} open` : ""}
+            </button>
+          </>
         }
       >
         <SendButton

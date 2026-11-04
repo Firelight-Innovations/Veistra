@@ -27,11 +27,14 @@ import type { LiveNote } from "./play/Review";
 const SceneMode = lazy(() => import("./SceneMode"));
 const PlayMode = lazy(() => import("./play/PlayMode"));
 
-/** A scene to run as soon as Play is showing: Play scene, or an open's payload. */
+/**
+ * A run for Play to start as soon as it shows: Play scene or F5 in Editor, or
+ * an open's payload. With no scene, Play runs what its own F5 would.
+ */
 export interface RunRequest {
   /** Counts requests, so one is run once however often Play mounts. */
   n: number;
-  scene: string;
+  scene?: string;
   project?: string;
 }
 
@@ -61,7 +64,7 @@ export default function App() {
   }, []);
 
   const runInPlay = useCallback(
-    (scene: string, rel?: string) => {
+    (scene: string | undefined, rel?: string) => {
       // A `res://` path means nothing without its project, so the one it came
       // with is the one Play runs it in.
       if (rel !== undefined) setProject(rel);
