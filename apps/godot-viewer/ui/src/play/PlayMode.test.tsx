@@ -191,7 +191,12 @@ const FOUND = { path: "C:/godot.exe", source: "path", version: "4.3.stable", maj
 
 /** What the backend holds; a test changes it and the next poll sees the change. */
 interface World {
-  run: { id: number; state: { kind: string; code?: number | null } } | null;
+  run: {
+    id: number;
+    state: { kind: string; code?: number | null };
+    /** Whether the game answers the addon's channel; it does unless a test says not. */
+    captureReady?: boolean;
+  } | null;
   keys: Key[];
   take: { state: string; id?: string; number?: number; startedAt?: number | null };
   record: { on: boolean; blocked: string | null };
@@ -836,6 +841,33 @@ describe("Play toolbar", () => {
       expect(calls("play/record")).toHaveLength(0);
       expect(screen.queryByRole("dialog", { name: "Enable capture" })).toBeNull();
     });
+  });
+
+  // Spec §13 test 8: with the addon removed the game still plays, and every
+  // control that needs it says so in place rather than failing when pressed.
+  it("plays with the addon removed, says why each control waits, and logs no error", async () => {
+    const logged = vi.spyOn(console, "error");
+    liveBackend({
+      run: { id: 1, state: { kind: "running" }, captureReady: false },
+      take: { state: "off" },
+      record: { on: false, blocked: BLOCKED },
+      projects: [{ ...project("game"), addon: "no" }],
+    });
+    render(<App />);
+    await screen.findByText("Playing");
+    const rec = screen.getByRole("button", { name: /^Record/ }) as HTMLButtonElement;
+    await waitFor(() => expect(rec.disabled).toBe(true));
+    expect(rec.title).toBe(BLOCKED);
+    const markup = screen.getByRole("button", { name: /^Mark up/ }) as HTMLButtonElement;
+    expect(markup.disabled).toBe(true);
+    expect(markup.title).toMatch(/needs the capture addon/);
+    expect(
+      (screen.getByRole("button", { name: /^Mark(?! up)/ }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    expect(await screen.findByRole("button", { name: "Enable capture" })).toBeTruthy();
+    expect(screen.getByText(BLOCKED)).toBeTruthy();
+    expect(logged).not.toHaveBeenCalled();
+    logged.mockRestore();
   });
 
   it("shows F7 on Stop and review, and Ctrl Shift M on Mark up", async () => {
