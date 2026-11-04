@@ -381,7 +381,11 @@ impl Session {
         if video.is_ok() {
             check_video(&dir, &summary);
         }
-        takes::retain(&plan.takes_dir, plan.keep.max(1));
+        // Retention reads every take and may delete old videos, which can be
+        // slow while a scanner holds them. Review opens on this answer, so
+        // retention runs beside it; the take just saved is the newest, kept.
+        let (takes_dir, keep) = (plan.takes_dir.clone(), plan.keep.max(1));
+        std::thread::spawn(move || takes::retain(&takes_dir, keep));
         match video {
             Ok(()) => TakeState::Saved {
                 id: active.id,

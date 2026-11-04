@@ -477,13 +477,19 @@ fn keep_stamps(old: &Value, new: &mut Value) {
     }
 }
 
-/// Notes not sent yet: those without the comment id Send gives each one.
+/// Notes not sent yet that hold something: words or a markup. An empty note
+/// (N pressed and nothing written) is not a draft, or it would keep its take
+/// from retention for good. A sent note has the comment id Send gives it.
 pub fn drafts(notes: &Value) -> usize {
     notes["notes"]
         .as_array()
         .map(|all| {
             all.iter()
                 .filter(|n| n.get("commentId").and_then(Value::as_str).is_none())
+                .filter(|n| {
+                    n["body"].as_str().is_some_and(|b| !b.trim().is_empty())
+                        || n["markup"].is_object()
+                })
                 .count()
         })
         .unwrap_or(0)
@@ -870,6 +876,30 @@ mod tests {
         let left: Vec<String> = list(&takes).into_iter().map(|t| t.summary.id).collect();
         assert_eq!(left, vec![ids[4].clone(), ids[3].clone(), ids[0].clone()]);
         assert_eq!(read(&takes, &ids[0]).unwrap().drafts, 1);
+    }
+
+    #[test]
+    fn an_empty_note_does_not_keep_a_take() {
+        let dir = TempDir::new().unwrap();
+        let takes = dir.path().to_path_buf();
+        let ids: Vec<String> = (0..4u16)
+            .map(|i| new_id(1_000_000 + u64::from(i) * 60_000, i))
+            .collect();
+        for (i, id) in ids.iter().enumerate() {
+            finish_one(&takes, id, 1_000_000 + i as u64 * 60_000, i as u32 + 1);
+        }
+        let empty = json!({ "version": 1, "notes": [{ "n": 1, "body": "  " }, { "n": 2 }] });
+        save_notes(&takes, &ids[0], &empty).unwrap();
+        let drawn =
+            json!({ "version": 1, "notes": [{ "n": 1, "body": "", "markup": { "version": 1 } }] });
+        save_notes(&takes, &ids[1], &drawn).unwrap();
+
+        assert_eq!(drafts(&empty), 0);
+        assert_eq!(drafts(&drawn), 1, "a markup with no words is still work");
+        let gone = retain(&takes, 2);
+        assert_eq!(gone, vec![ids[0].clone()]);
+        let left: Vec<String> = list(&takes).into_iter().map(|t| t.summary.id).collect();
+        assert_eq!(left, vec![ids[3].clone(), ids[2].clone(), ids[1].clone()]);
     }
 
     #[test]
