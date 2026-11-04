@@ -178,7 +178,7 @@ check it". The same chokepoint reports `godot:note_fixed` and `godot:note_resolv
 
 | Decision | Chosen | Why, and what was rejected |
 |---|---|---|
-| R1 child window or R2 owned popup | R2, pending the Day 1 spike | Graphics Capture records the game window alone, never Veistra's UI. R1 (`SetParent`) is not built; the spike is where `CreateForWindow` on a child window gets tried. |
+| R1 child window or R2 owned popup | R2, provisional: the owner chooses from the embed spike's Windows 11 run (#308, below) | Graphics Capture records the game window alone, never Veistra's UI, and R2 is what `crate::embed` builds. R1 (`SetParent`) exists only in the spike, which also tries `CreateForWindow` on a child window. |
 | One Godot app or two (#313) | One app, two modes: Editor · Play (owner decision 1) | Play's UI moved into `apps/godot-viewer/ui/src/play/`, and one Rust entry answers both modes. The two apps that switched with `veistra/open` were rejected by the owner: a pane is the Godot app, and the mode is what it shows. |
 | Record default | Off | Takes cost disk (open decision 2's recommendation). |
 | Tracked nodes | The design's default, with geometry for its "VisualInstance3D" | `veistra_track` when it has members, else bodies, plus the geometry and sprites not inside one, in view by their box's centre, nearest 64. VisualInstance3D also takes in lights, probes and decals; a body's own mesh tracked beside it could take a pin that should name the body; and a character's origin is at its feet, below a frame that shows the rest of it (#312). |
@@ -281,6 +281,63 @@ check it". The same chokepoint reports `godot:note_fixed` and `godot:note_resolv
 | `list_play_notes` for a follow-up (#321) | `packet` and `packetMd` are the newest take's; `takes` lists each `{take, number, n, when, packet}`, oldest first | An agent given the first packet would work from the take that no longer shows the problem. |
 | Play <scene> from review (#321) | Runs the scene with `recordOnce` | Decision X9: Play <scene> records that run, so its take can be reviewed against this one. |
 | `followUp` on `notes_sent` (#321) | `followUp: true`, only on a Send with a Still broken note in it | Decision X1. Absent otherwise, so earlier Sends read as they did. |
+| What the spike measures as R2 (#308) | `crate::embed` itself, an `Embed` of the target's kind on `embed::native()`, unchanged, with the game launched at the box as `embed::launch_rect` says; `--wid` through the same `Embed` with a window system that finds the window Godot made owned and places it with the native one | A copy of the R2 code inside the spike could pass while Play's own code fails. |
+| R2 with `--wid` as a third way (#308) | Measured on the demo game with Godot 4.4 or later; if it wins, the editor and Blender run plain R2 | It is how Godot's own editor embeds a game: Godot makes the owned popup itself, detaches its input from the owner's thread and skips its off-screen clamp. Only Godot takes the argument. |
+| How the spike sees a menu over the game (#308) | Screen pixels: a stand-in menu the page paints, read over the game reporter's green patch and beside the box | veistra-ui's screenshot is WebView2's own frame, which never shows another program's window, so it cannot see airspace. A real Veistra menu over a real game stays a by-eye check, listed in the report. The menu ranks no way: §4.3's still swap shows menus whichever wins. |
+| A hung game and Veistra's input (#308) | Measured: the report times Veistra's click while the game busy-waits for five seconds, then again after `AttachThreadInput(.., FALSE)`. R2 already detaches once it owns the window (#309, above), so its first pass is the shipped detach; R1's is the joined queue | Windows joins the input queues of a child and its parent, and of an owned window and its owner, across threads. #309 settled R2 with the detach `--wid` does; the run says whether it holds, and whether R1 would need it too. |
+| Where the spike lives (#308) | `src-tauri/src/godot/spike.rs` and `spike/`, an ignored test compiled only with the `embed-spike` feature | Nothing ships it: no build without the feature has it, and the feature only adds two `windows-sys` modules to test builds. |
+
+### The embed spike (#308)
+
+`pnpm spike:embed`, on a Windows 11 desktop, fills in the R1/R2 row's evidence. It opens a
+stand-in Veistra window (a top-level window with a child "page" where WebView2 would be),
+starts the demo game from a temporary copy of `examples/godot-demo` with the reporters in
+`src-tauri/src/godot/spike/` added, and puts its window over a fixed box three ways: R1
+(`SetParent`, written in the spike), R2 (`crate::embed` as Play ships it) and R2 with
+`--wid`. Each way gets the four checks below; the way it suggests then runs the Godot editor
+(`--editor --single-window`) and Blender (`--factory-startup`).
+
+It takes a few minutes and drives the real mouse and keyboard (clicks, F13, screen reads), so
+leave both alone until the report prints. The report goes to
+`%TEMP%\veistra-embed-spike\report.md` (or `VEISTRA_SPIKE_REPORT`): the suggested way, the two
+tables below filled in, rows of what else it saw (how long the window took and where it first
+showed, frames recorded while hidden, a native popup over the game, the foreground window,
+whether the frame and parent held, DPI awareness, Veistra's click while the game hangs), and
+what is left to check by eye. `VEISTRA_SPIKE_GODOT` names the executable, as the Godot setting
+does; `VEISTRA_SPIKE_WAYS` (`r1,r2,r2wid`) and `VEISTRA_SPIKE_TARGETS` (`game,editor,blender`)
+narrow the run; `VEISTRA_SPIKE_CHOSEN` runs the editor and Blender with another way. The editor
+opens the copy with your own Godot editor settings; Blender saves nothing.
+
+A check passes when:
+
+- **Follows**: after twelve 15 px steps and after a resize, the window sits exactly on the box
+  within 100 ms, the program reports the new size within a second, and it is back on the box
+  after Veistra is minimised and restored.
+- **Graphics Capture**: `CreateForWindow` accepts the window, and two seconds through Play's
+  recorder hold 30 frames (one for the editor and Blender, which redraw only on change) at the
+  box's size, which the default 720p quality leaves as it is.
+- **Input**: a real click at the box's centre lands there (within 2 px, the game) and F13
+  arrives, and none of it reaches Veistra's window.
+- **Menu**: the menu shows over the window as it is, or, with the window hidden while the menu
+  is open, the menu shows within 100 ms and the window is back within 100 ms of it closing.
+
+It suggests R2, then R2 with `--wid`, then R1: the first to pass the first three on the demo
+game, and R2 when none does. The choice is the owner's. Paste the report's tables over these
+and record it in the R1/R2 row.
+
+| Check | R1 child window | R2 owned popup | R2 with --wid |
+|---|---|---|---|
+| Follows a Veistra move and resize | pending | pending | pending |
+| Graphics Capture accepts the window | pending | pending | pending |
+| Keyboard and mouse reach the game | pending | pending | pending |
+| A Veistra menu draws over it | pending | pending | pending |
+
+| Check | Demo game | Godot editor | Blender |
+|---|---|---|---|
+| Follows a Veistra move and resize | pending | pending | pending |
+| Graphics Capture accepts the window | pending | pending | pending |
+| Keyboard and mouse reach the game | pending | pending | pending |
+| A Veistra menu draws over it | pending | pending | pending |
 
 ### Not verified on a real machine
 
@@ -321,6 +378,15 @@ From #312, not yet run in a real Godot (gdparse, gdlint and Rust tests only):
 - Stop's `flush`: the take's telemetry runs to its last 100 ms.
 - With the addon removed, Play runs, Rec says why it is off, and nothing throws; an exported
   build with the addon writes nothing to the folder it is given.
+
+From #308, not yet run (unit tests, a Windows type-check and clippy only):
+
+- `pnpm spike:embed` as a whole: nothing in `spike.rs`'s Win32 half has run, so the R1/R2 row
+  waits on its first run. A failure of the harness itself shows as a "Harness error" row, not as
+  a failed check; fix the harness and run it again before reading the tables.
+- The reporters: `reporter.gd` and `editor_reporter.gd` in a real Godot 4.3 or later (gdparse
+  and gdlint only), and `blender_reporter.py`'s listener in a Blender with a window (its tests
+  run in background `bpy`, which has no window and no events).
 
 From #310, the take's timing and files tested through a fake capture; the encoder, the scaling
 pass and the frame clock type-checked for Windows only:
