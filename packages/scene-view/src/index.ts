@@ -14,3 +14,5 @@ export type { CameraPose, PickHit, SceneViewHandle, Vec3, ViewportPoint } from "
 export type { LoadedInfo } from "./engine";
 export { posesClose } from "./pose";
 export { DEFAULT_MAX_TRIANGLES } from "./limits";
+export { MODEL_FORMATS, isModelFormat } from "./formats";
+export type { ModelFormat, ModelSource } from "./formats";

@@ -104,6 +104,12 @@ fn max_read_bytes(app: &AppHandle) -> u64 {
 /// mean different things and must not be a glance apart.
 const MAX_READ_BYTES_BINARY: u64 = 32 * 1024 * 1024;
 
+/// The most `files/read-head` hands back. A head read is for a format whose
+/// answer sits at the front of the file — a `.blend`'s embedded thumbnail is
+/// its first block — so the caller asks for a prefix by length and is told the
+/// file's real size beside it. Truncation is the request here, not a surprise.
+const MAX_READ_HEAD_BYTES: u64 = 4 * 1024 * 1024;
+
 /// The Files app's single RPC entry point, split by family so that no one
 /// function carries every method.
 ///
@@ -167,6 +173,7 @@ fn entry_methods(
         "files/read-bytes" => {
             required_path(params).and_then(|path| read_bytes_within(&path, MAX_READ_BYTES_BINARY))
         }
+        "files/read-head" => read_head(params),
         "files/write" => write(params),
         "files/create-file" => create(params, NewEntry::File),
         "files/create-dir" => create(params, NewEntry::Dir),
@@ -653,6 +660,55 @@ fn stat_at(path: &Path) -> Value {
 ///
 /// `cap` is a parameter rather than [`MAX_READ_BYTES_BINARY`] read directly, so
 /// a test can prove the refusal without writing 32 MiB to a disk.
+/// `files/read-head`: the first `bytes` of a file (at most
+/// [`MAX_READ_HEAD_BYTES`]), with the whole file's `size` and whether the
+/// answer stopped short of it.
+fn read_head(params: Option<&Value>) -> Result<Value, RpcError> {
+    let path = required_path(params)?;
+    let wanted = match params.and_then(|p| p.get("bytes")) {
+        Some(value) => value.as_u64().ok_or_else(|| {
+            RpcError::new(
+                INVALID_PARAMS,
+                format!("bytes must be a non-negative integer, got {value}"),
+            )
+        })?,
+        None => MAX_READ_HEAD_BYTES,
+    };
+    read_head_at(&path, wanted.min(MAX_READ_HEAD_BYTES))
+}
+
+fn read_head_at(path: &Path, wanted: u64) -> Result<Value, RpcError> {
+    use std::io::Read as _;
+
+    let could_not = |what: &str, e: std::io::Error| {
+        RpcError::new(
+            INTERNAL_ERROR,
+            format!("could not {what} {}: {e}", path.display()),
+        )
+    };
+    let file = std::fs::File::open(path).map_err(|e| could_not("open", e))?;
+    let metadata = file.metadata().map_err(|e| could_not("stat", e))?;
+    if metadata.is_dir() {
+        return Err(RpcError::new(
+            INVALID_PARAMS,
+            format!("{} is a directory, not a file", path.display()),
+        ));
+    }
+
+    let mut bytes = Vec::new();
+    file.take(wanted)
+        .read_to_end(&mut bytes)
+        .map_err(|e| could_not("read", e))?;
+
+    Ok(json!({
+        "path": path.display().to_string(),
+        "base64": BASE64.encode(&bytes),
+        "size": metadata.len(),
+        "truncated": (bytes.len() as u64) < metadata.len(),
+        "mtime": mtime_of(&metadata),
+    }))
+}
+
 fn read_bytes_within(path: &Path, cap: u64) -> Result<Value, RpcError> {
     let metadata = std::fs::metadata(path).map_err(|e| {
         RpcError::new(
@@ -2028,6 +2084,42 @@ mod tests {
 
         assert_eq!(value["base64"], BASE64.encode("hello"));
         assert_eq!(value["size"], 5);
+    }
+
+    #[test]
+    fn a_head_read_returns_the_prefix_and_the_whole_size() {
+        let dir = TempDir::new("head");
+        let path = dir.file("model.blend", "BLENDER-v402rest");
+
+        let value = read_head_at(&path, 12).expect("read");
+
+        assert_eq!(value["base64"], BASE64.encode("BLENDER-v402"));
+        assert_eq!(value["size"], 16);
+        assert_eq!(value["truncated"], true);
+    }
+
+    #[test]
+    fn a_head_read_longer_than_the_file_is_the_whole_file() {
+        let dir = TempDir::new("head-short");
+        let path = dir.file("tiny.bin", "abc");
+
+        let value = read_head_at(&path, 1024).expect("read");
+
+        assert_eq!(value["base64"], BASE64.encode("abc"));
+        assert_eq!(value["truncated"], false);
+    }
+
+    #[test]
+    fn a_head_read_caps_the_length_and_rejects_a_bad_one() {
+        let dir = TempDir::new("head-params");
+        let path = dir.file("a.bin", "abc");
+        let raw = path.display().to_string();
+
+        let capped = read_head(Some(&json!({ "path": raw, "bytes": u64::MAX }))).expect("read");
+        assert_eq!(capped["base64"], BASE64.encode("abc"));
+
+        let err = read_head(Some(&json!({ "path": raw, "bytes": -1 }))).expect_err("negative");
+        assert_eq!(err.code, INVALID_PARAMS);
     }
 
     #[test]

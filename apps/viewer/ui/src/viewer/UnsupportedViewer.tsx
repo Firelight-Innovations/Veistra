@@ -1,31 +1,20 @@
 /**
  * The end of the line: a file this app has nothing useful to draw.
  *
- * Reached two ways — `reopenWith("unsupported")` from the text viewer when the
- * backend reports the bytes are not UTF-8, and, in future, any viewer that gives
- * up. `pick` never selects it; the text viewer matches everything above it in
- * the registry.
+ * Reached through `reopenWith("unsupported")` — from the text viewer when the
+ * bytes are not UTF-8 — never through `pick`.
  *
  * What it deliberately does not do: offer a hex dump, or a "force open as text"
  * button. The first is a different app. The second is `reopenWith("text")` and
  * would loop straight back here, because getting here means the read already
  * failed.
  */
-import { useState } from "react";
-import { describe, formatSize, openExternal, reveal } from "../rpc";
+import { formatSize } from "../rpc";
+import HandoffActions from "./HandoffActions";
 import type { ViewerProps } from "./registry";
 import "./media.css";
 
 export default function UnsupportedViewer({ file }: ViewerProps) {
-  const [error, setError] = useState<string | null>(null);
-
-  const handoff = (method: string, call: (path: string) => Promise<null>) => () => {
-    setError(null);
-    // Fire and forget: both calls are "the OS now owns this", and neither has a
-    // result worth waiting on. Only the failure is worth saying out loud.
-    call(file.path).catch((err: unknown) => setError(describe(method, err)));
-  };
-
   /**
    * **This is not an error page.** Nothing went wrong and the user did nothing
    * wrong: they opened a `.zip`, and a file explorer that cannot preview a `.zip`
@@ -47,24 +36,7 @@ export default function UnsupportedViewer({ file }: ViewerProps) {
           {file.size !== null && ` · ${formatSize(file.size)}`}
         </p>
 
-        <div className="unsupported__actions">
-          <button
-            type="button"
-            className="unsupported__action"
-            onClick={handoff("files/reveal", reveal)}
-          >
-            Reveal in File Explorer
-          </button>
-          <button
-            type="button"
-            className="unsupported__action"
-            onClick={handoff("files/open-external", openExternal)}
-          >
-            Open with the default app
-          </button>
-        </div>
-
-        {error !== null && <p className="app__error">{error}</p>}
+        <HandoffActions path={file.path} />
       </div>
     </div>
   );

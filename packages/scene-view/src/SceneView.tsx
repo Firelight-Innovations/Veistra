@@ -22,12 +22,17 @@ import { debounce, RESIZE_DEBOUNCE_MS } from "./debounce";
 import { SceneEngine } from "./engine";
 import type { LoadedInfo } from "./engine";
 import { DEFAULT_MAX_TRIANGLES } from "./limits";
+import type { ModelSource } from "./formats";
 import type { CameraPose, SceneViewHandle } from "./markupHost";
 import "./scene-view.css";
 
 export interface SceneViewProps {
-  /** A glb, as bytes or as a URL the webview can fetch. */
-  source: ArrayBuffer | string;
+  /**
+   * A glb, as bytes or as a URL the webview can fetch — or another format's
+   * bytes with the format named (see `./formats`). Keep the object stable
+   * across renders: a new one reloads the scene.
+   */
+  source: ArrayBuffer | string | ModelSource;
   /** Starting view. Without it: the glTF's first camera, else the scene's bounds. */
   initialPose?: CameraPose;
   /** Node path such as "Main/Chair/Leg3". `null` clears; leave undefined to let clicks decide. */
