@@ -8,9 +8,10 @@
   appearance: none;
   border: 1px solid var(--border-subtle-1);
   margin: 0;
-  /* Fills its wrapper (`.clusterswitch`), which is the title bar's middle cell
-     and sets how wide it may get. It gives way (ellipsis) before it ever
-     reaches the cells beside it. */
+  /* Fills its wrapper (`.clusterswitch`) in the title bar's middle group,
+     which sets how wide it may get. Once search has narrowed to its icon it
+     gives way too: the chip (or the environment count) truncates first, then
+     the name ellipsises (#336). */
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
@@ -74,13 +75,22 @@
   color: var(--txt-primary);
 }
 
+/* The count and the chip shrink before the name: their shrink factor dwarfs
+   the name's, so the name keeps every character until they have given theirs. */
 .projectpill__count {
+  flex: 0 9999 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--txt-placeholder);
   font-weight: 450;
 }
 
 .projectpill__chip {
-  flex: none;
+  flex: 0 9999 auto;
+  /* The glyph and an ellipsis, so a truncated chip still reads as a chip. */
+  min-width: 36px;
+  overflow: hidden;
   height: 18px;
   padding: 0 6px;
   border-radius: 9px;
@@ -95,6 +105,12 @@
 
 .projectpill__chip-icon {
   flex: none;
+}
+
+.projectpill__chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .projectpill__chevron {

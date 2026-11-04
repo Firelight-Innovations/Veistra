@@ -178,6 +178,38 @@ pub struct Sessions {
     turn: Mutex<()>,
 }
 
+impl Sessions {
+    /// Each agent tab's environment root, and whether its session is busy
+    /// there: starting, running a turn, or waiting on an approval.
+    pub fn activity(&self) -> Vec<crate::agent_activity::Seen> {
+        let Some(host) = self.host.get() else {
+            return Vec::new();
+        };
+        let homes: Vec<(String, Home)> = self
+            .homes()
+            .iter()
+            .map(|(id, home)| (id.clone(), home.clone()))
+            .collect();
+        homes
+            .into_iter()
+            .map(|(id, home)| crate::agent_activity::Seen {
+                root: home
+                    .environment
+                    .as_ref()
+                    .and_then(|e| e.root(home.project.as_deref().map(Path::new))),
+                working: host.state(&id).is_some_and(|s| {
+                    matches!(
+                        s,
+                        veistra_agent_host::SessionState::Starting
+                            | veistra_agent_host::SessionState::Working
+                            | veistra_agent_host::SessionState::NeedsInput
+                    )
+                }),
+            })
+            .collect()
+    }
+}
+
 /// What a tab chose for its next session. Generic, as [`choose`] is, so it
 /// is tested with more harnesses than the registry has yet.
 #[derive(Debug, Clone)]

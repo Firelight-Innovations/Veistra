@@ -159,6 +159,11 @@
   overflow-x: auto;
   overflow-y: hidden;
   box-shadow: inset 0 -1px 0 var(--border-subtle, var(--line));
+  /* Hidden, because a native scrollbar is drawn inside the 34px and would
+     take 5px of it from the tabs the moment they overflow. What reaches the
+     cut-off tabs instead — the wheel scrolls the strip sideways, and the
+     active tab is scrolled into view — is `useStripScroll` in
+     PaneTabStrip.tsx, which also says why not a hover thumb or chevrons. */
   scrollbar-width: none;
 }
 

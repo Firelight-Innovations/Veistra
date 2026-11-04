@@ -98,11 +98,29 @@ pub fn blocked_reason(method: &str) -> Option<String> {
     if crate::refs::is_method(method) {
         return Some(AS_THE_PERSON.to_string());
     }
+    if ACTS_ON_THE_EDITOR.contains(&method) {
+        return Some(
+            "Acts on the person's Godot editor window, so only the Godot pane may call it; \
+             `godot/editor-state`, `godot/editor-selection` and `godot/editor-capture` read it"
+                .to_string(),
+        );
+    }
     NEEDS_A_PERSON
         .iter()
         .find(|(name, _)| *name == method)
         .map(|(_, instead)| format!("Raises a native dialog, so app_call refuses it: {instead}"))
 }
+
+/// The Godot editor in the pane is the person's (#316): an agent may read
+/// what it shows, but not open, close, save or steer it under them.
+const ACTS_ON_THE_EDITOR: &[&str] = &[
+    "godot/editor-open",
+    "godot/editor-close",
+    "godot/editor-save",
+    "godot/editor-select",
+    "godot/editor-open-scene",
+    "godot/editor-viewport-only",
+];
 
 /// Blender in the pane is the person's (#317): an agent may read what it
 /// shows and export the file, but not open, close or steer it under them.
@@ -597,6 +615,22 @@ mod tests {
             blocked_reason(crate::refs::RESOLVE_METHOD).as_deref(),
             Some(AS_THE_PERSON)
         );
+    }
+
+    #[test]
+    fn an_agent_reads_the_godot_editor_but_does_not_steer_it() {
+        for method in ACTS_ON_THE_EDITOR {
+            let reason = blocked_reason(method).unwrap_or_default();
+            assert!(reason.contains("Godot editor window"), "{method}");
+        }
+        for method in [
+            "godot/editor-state",
+            "godot/editor-selection",
+            "godot/editor-capture",
+            "godot/editor-pick",
+        ] {
+            assert_eq!(blocked_reason(method), None, "{method}");
+        }
     }
 
     /// The list has to hold every method that actually raises one. This is the

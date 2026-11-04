@@ -8,9 +8,11 @@
  * The header is the shared viewer toolbar: mode, scene picker, a freshness
  * chip, the scene actions with Play scene, and Open in Godot to leave.
  *
- * This is the Godot app in Editor mode, which is the scene view until the
- * editor can open in the pane, rendered through the app's shell as a pane
- * opens it.
+ * This is the Godot app in Editor mode, rendered through the app's shell as a
+ * pane opens it. Where the backend says the editor can open, Editor mode is
+ * the Godot editor itself (#316, `editor/EditorMode.test.tsx`); these tests
+ * use the answers that keep the scene viewer (no Godot, the main checkout, a
+ * cloud session) and check which of the two each answer shows.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -37,6 +39,7 @@ import App from "./App";
 // The shell loads both modes lazily; loading them here keeps those imports
 // inside a test's first wait.
 import "./SceneMode";
+import "./editor/EditorMode";
 import "./play/PlayMode";
 
 const STATE = {
@@ -60,6 +63,17 @@ const MAIN_REASON =
 const NO_GODOT_REASON =
   "Godot 4 was not found on this computer. Set its path under Settings, Godot.";
 
+/** A Godot 4 project at the environment root, as `godot/status` lists it. */
+const HALL = {
+  rel: ".",
+  name: "Hall",
+  mainScene: "res://main.tscn",
+  mainScenePath: "main.tscn",
+  engineMajor: 4,
+  addon: "no",
+  plugin: "no",
+};
+
 /**
  * `godot/status`'s `editor` as the backend decides it (`editor_surface.rs`),
  * from the same facts this mock answers with, unless a test names one.
@@ -78,6 +92,7 @@ function backend(
     godotFound?: string | null;
     readOnly?: () => boolean;
     editor?: object;
+    projects?: object[];
     environment?: { kind: string | null; branch?: string | null; root?: string | null };
     createComment?: () => unknown;
   } = {},
@@ -99,10 +114,13 @@ function backend(
             ...opts.environment,
           },
           executable: { found: opts.godotFound ?? null, problems: [], setting: "" },
-          projects: [],
+          projects: opts.projects ?? [],
           editor: opts.editor ?? surfaceFor(readOnly, opts.godotFound ?? null),
+          pluginProblem: null,
         });
       }
+      case "godot/editor-state":
+        return Promise.resolve({ editor: null, agent: false });
       case "comments/list":
         // A new array each time, as the bridge's decoded answer is.
         return Promise.resolve([...(opts.comments ?? [])]);
@@ -176,7 +194,7 @@ describe("Godot Viewer send footer", () => {
 
 describe("Godot Viewer toolbar", () => {
   it("is one toolbar: mode, the scene picker, the chip, the actions and Open in Godot", async () => {
-    backend(undefined, { godotFound: "C:/godot.exe" });
+    backend();
     const { container } = render(<App />);
     const bar = await screen.findByRole("toolbar", { name: "Godot" });
     const inBar = within(bar);
@@ -194,20 +212,29 @@ describe("Godot Viewer toolbar", () => {
 
   // Read once at mount, the status kept the main checkout's read-only answer
   // after the cluster moved to a worktree, and Open in Godot stayed disabled.
-  it("enables Open in Godot once the cluster moves to a worktree", async () => {
+  // On a worktree with Godot, Editor mode is now the editor itself.
+  it("turns to the editor once the cluster moves to a worktree", async () => {
     let readOnly = true;
-    backend(undefined, { godotFound: "C:/godot.exe", readOnly: () => readOnly });
+    backend(undefined, {
+      godotFound: "C:/godot.exe",
+      readOnly: () => readOnly,
+      projects: [HALL],
+    });
     render(<App />);
     const open = (await screen.findByRole("button", {
       name: "Open in Godot",
     })) as HTMLButtonElement;
     await waitFor(() => expect(open.title).toMatch(/read-only/));
     expect(open.disabled).toBe(true);
+    const reads = calls("godot/status").length;
     readOnly = false;
     events.get("project:changed")?.({ clusterId: "c1" });
-    await waitFor(() => expect(open.disabled).toBe(false));
-    expect(open.title).not.toMatch(/read-only/);
-    expect(calls("godot-viewer/state").length).toBeGreaterThan(1);
+    const launch = (await screen.findByRole("button", {
+      name: "Open the editor",
+    })) as HTMLButtonElement;
+    expect(launch.disabled).toBe(false);
+    expect(calls("godot/status").length).toBeGreaterThan(reads);
+    expect(screen.queryByRole("button", { name: "Open in Godot" })).toBeNull();
   });
 
   it("says when the tree was read in the chip", async () => {
@@ -264,14 +291,19 @@ describe("Godot Viewer toolbar", () => {
     );
   });
 
-  // An embedder's answer still shows the viewer until C1 draws the editor in
-  // the pane, so the footer says where it opens instead.
-  it("says the editor opens in its own window until it is embedded", async () => {
-    backend(undefined, { godotFound: "C:/godot.exe" });
+  // The editor was in its own window, and the pane showed the viewer with a
+  // footer saying so, until #316 put it in the pane.
+  it("shows the editor's box on an embedder's answer, and opens it only on a press", async () => {
+    backend(undefined, { godotFound: "C:/godot.exe", projects: [HALL] });
     render(<App />);
-    expect(
-      await screen.findByText(/The Godot editor opens in its own window for now/),
-    ).toBeTruthy();
+    const launch = await screen.findByRole("button", { name: "Open the editor" });
+    expect(screen.getByText(/It opens here, in this pane/)).toBeTruthy();
+    // The viewer is not under it: no tree, no footer.
+    expect(screen.queryByRole("button", { name: "Send tree" })).toBeNull();
+    expect(calls("godot/editor-open")).toHaveLength(0);
+    fireEvent.click(launch);
+    await waitFor(() => expect(calls("godot/editor-open")).toHaveLength(1));
+    expect(calls("godot/editor-open")[0]![1]).toEqual({ project: "." });
     expect(screen.queryByRole("note")).toBeNull();
   });
 
@@ -370,7 +402,6 @@ describe("Godot Editor surface (the backend's `editor`)", () => {
     expect(env?.getAttribute("data-env-kind")).toBe("main");
     // Editor mode's label stays Editor (DECISIONS X4), whatever it shows.
     expect(within(toolbar()).getByRole("tab", { name: "Editor" })).toBeTruthy();
-    expect(screen.queryByText(/opens in its own window for now/)).toBeNull();
   });
 
   it("will not post a comment into the main checkout", async () => {
@@ -389,7 +420,6 @@ describe("Godot Editor surface (the backend's `editor`)", () => {
   // said why.
   it("says why a comment was refused", async () => {
     backend(undefined, {
-      godotFound: "C:/godot.exe",
       createComment: () => {
         throw new Error("the store is locked");
       },
@@ -429,11 +459,12 @@ describe("Godot Editor surface (the backend's `editor`)", () => {
     expect(await screen.findByText(/Godot 4 was not found, so the tree/)).toBeTruthy();
   });
 
-  // Pop out: no embedder here (macOS, Linux, Wayland). Godot opens in its
-  // own window, and the line says so; the footer does not say it again.
-  it("pops out where there is no embedder, with the reason and Open in Godot", async () => {
+  // Pop out: no embedder here (macOS, Linux, Wayland). The editor still opens
+  // from the pane, in its own window, and the line says why.
+  it("pops out where there is no embedder, with the reason and Open the editor", async () => {
     backend(undefined, {
       godotFound: "/usr/bin/godot",
+      projects: [HALL],
       editor: {
         surface: "popOut",
         code: "noEmbedder",
@@ -445,11 +476,12 @@ describe("Godot Editor surface (the backend's `editor`)", () => {
     const note = await screen.findByRole("note");
     expect(note.textContent).toContain("Linux with Wayland");
     expect(toolbar().nextElementSibling).toBe(note);
-    const open = within(toolbar()).getByRole("button", {
-      name: "Open in Godot",
-    }) as HTMLButtonElement;
-    await waitFor(() => expect(open.disabled).toBe(false));
-    expect(screen.queryByText(/opens in its own window for now/)).toBeNull();
+    expect(screen.getByText(/It opens in its own window, for the reason above/)).toBeTruthy();
+    const launch = screen.getByRole("button", { name: "Open the editor" }) as HTMLButtonElement;
+    expect(launch.disabled).toBe(false);
+    fireEvent.click(launch);
+    await waitFor(() => expect(calls("godot/editor-open")).toHaveLength(1));
+    expect(screen.queryByRole("button", { name: "Open in Godot" })).toBeNull();
   });
 
   // A cloud session's files are on its VM: nothing here can read them, so
@@ -475,7 +507,7 @@ describe("Godot Editor surface (the backend's `editor`)", () => {
   });
 
   it("names the environment first in the subject, before the scene", async () => {
-    backend(undefined, { godotFound: "C:/godot.exe" });
+    backend();
     render(<App />);
     const picker = await screen.findByRole("combobox", { name: "Scene" });
     const env = toolbar().querySelector(".k-vtb__env")!;
@@ -485,7 +517,7 @@ describe("Godot Editor surface (the backend's `editor`)", () => {
 
   // Mark up was on the 3D view's own bar; it is slot 4 here, as in Play.
   it("puts Mark up in the toolbar's actions, before the view switch", async () => {
-    backend(undefined, { godotFound: "C:/godot.exe" });
+    backend();
     render(<App />);
     await screen.findByRole("combobox", { name: "Scene" });
     const actions = toolbar().querySelector(".k-vtb__actions")!;

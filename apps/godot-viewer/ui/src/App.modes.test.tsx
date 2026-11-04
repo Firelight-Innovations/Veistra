@@ -195,6 +195,20 @@ describe("The Godot app's modes", () => {
     expect(lastParams("play/embed-rect")).toMatchObject({ visible: false });
   });
 
+  // Ctrl Shift O started a second Godot from Play, in its own window and
+  // tracked by nothing; the editor is Editor mode's now, in the pane (#316).
+  it("turns to Editor on Ctrl Shift O, and starts no editor of its own", async () => {
+    backend();
+    history.replaceState({}, "", "/?mode=play");
+    const { container } = render(<App />);
+    await screen.findByText("Playing");
+    const pane = container.querySelector(".pl") as HTMLElement;
+    fireEvent.keyDown(pane, { key: "O", ctrlKey: true, shiftKey: true });
+    await showing("Editor");
+    expect(calls("godot/open-editor")).toHaveLength(0);
+    expect(calls("godot/editor-open")).toHaveLength(0);
+  });
+
   it("turns to Play and runs the scene an open names, in its project", async () => {
     backend();
     render(<App />);
