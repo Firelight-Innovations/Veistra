@@ -1,32 +1,36 @@
 //! Godot integration: finding the engine, running a project, capturing a frame,
 //! recording a run, and reading a scene's tree.
 //!
-//! `docs/VEISTRA-UX-REWORK.md` §3.1 is the rule everything here obeys: **Godot is
-//! never embedded in the webview.** It runs as its own native process - the
-//! editor in its own window when someone opens it, the game in its own window
-//! when someone plays it, and a windowless `--headless` process when the viewer
-//! reads a scene. Play places that window over its pane ([`embed`]), the way
-//! Godot's own editor shows a running game, but the game is still its own
-//! process: Veistra holds the handles, the logs and the results, and does not
-//! draw the engine.
+//! Godot always runs as its own native process: the game when someone plays
+//! it, a windowless `--headless` process when the viewer reads a scene, and
+//! the editor. Play places the game's window over its pane through
+//! [`crate::embed`], the way Godot's own editor shows a running game, and the
+//! editor joins it there (owner decision 6 of the v0.2 design, replacing
+//! `docs/VEISTRA-UX-REWORK.md` §3.1's "never embedded"). Placed is not drawn:
+//! the process is still its own, and Veistra holds the handles, the logs and
+//! the results.
 
 /// The opt-in capture script and its file channel.
 pub mod addon;
+/// A note's `clip.mp4`, trimmed from the take by Send when asked (Windows).
+pub mod clip;
 /// The executable and the projects inside an environment.
 pub mod detect;
-/// The game's window placed over Play's pane (Windows).
-pub mod embed;
+/// A take's H.264 video: its size, rate and keyframes, and the encoder (Windows).
+pub mod encode;
 /// Send's packet: `packet.md`, pictures, context, comments.
 pub mod feedback;
 /// Play's methods for the pane, Record, takes and Send.
 pub mod live;
+/// What a finished `take.mp4` holds, read back from its boxes.
+pub mod mp4;
 /// Play notes as the workspace MCP server shows them to agents.
 pub mod notes;
 /// A scene exported to glTF for the viewer's interactive 3D view.
 pub mod preview;
 /// A run recorded to `take.mp4` (Windows).
 pub mod record;
-/// The methods `play` and `godot-viewer` answer.
+/// The methods the Godot app answers, in both modes and under both ids.
 pub mod rpc;
 /// A game run as a child process, with a bounded classified log.
 pub mod runner;
@@ -57,7 +61,7 @@ use std::sync::Mutex;
 pub static SETTINGS: crate::settings::Group = crate::settings::Group {
     id: "godot",
     title: "Godot",
-    description: "The engine Play and the Godot Viewer run, and how to reach it.",
+    description: "The engine the Godot app runs in both of its modes, and how to reach it.",
     order: 111,
     settings: SETTINGS_ROWS,
 };
@@ -75,7 +79,7 @@ static SETTINGS_ROWS: &[crate::settings::Setting] = &[crate::settings::Setting {
         placeholder: "C:\\Tools\\Godot\\Godot_v4.3-stable_win64.exe",
     },
     applies: crate::settings::Applies::Next {
-        what: "the next time Play or the Godot Viewer looks for it",
+        what: "the next time the Godot app looks for it",
     },
 }];
 
@@ -87,11 +91,9 @@ pub struct Godot {
     pub jobs: scene::Jobs,
     resolved: Mutex<Option<(String, detect::Found)>>,
     next_command: AtomicU64,
-    /// Each cluster's latest run's session: its window, take and marks.
+    /// Each cluster's latest run's session: its window, take and marks. The
+    /// pane's box is the embedder's ([`crate::embed::host::Hosts`]).
     sessions: Mutex<HashMap<String, Arc<session::Session>>>,
-    /// Each cluster's Play pane box, kept between runs. Shared, so a thread
-    /// that outlives the call that started it can read it ([`Self::pane_window`]).
-    panes: Arc<Mutex<HashMap<String, live::Pane>>>,
 }
 
 impl Godot {
@@ -141,40 +143,6 @@ impl Godot {
             .iter()
             .map(|(k, s)| (k.clone(), s.clone()))
             .collect()
-    }
-
-    /// The sessions whose run is still going: a finished game's window is
-    /// gone, and moving it would only fail (or, with its handle reused, move
-    /// some other program's window) on every step of a window drag.
-    pub fn live_sessions(&self) -> Vec<(String, Arc<session::Session>)> {
-        self.sessions()
-            .into_iter()
-            .filter(|(key, s)| {
-                self.runner
-                    .get(key)
-                    .is_some_and(|r| r.id == s.run_id && r.is_running())
-            })
-            .collect()
-    }
-
-    pub fn pane(&self, key: &str) -> Option<live::Pane> {
-        self.panes.lock_or_panic().get(key).cloned()
-    }
-
-    pub fn set_pane(&self, key: &str, pane: live::Pane) {
-        self.panes.lock_or_panic().insert(key.to_string(), pane);
-    }
-
-    /// Reads the label of the Veistra window cluster `key`'s pane is in each
-    /// time it is called, not once now.
-    pub fn pane_window(&self, key: &str) -> impl Fn() -> Option<String> + Send + Sync + 'static {
-        let (panes, key) = (self.panes.clone(), key.to_string());
-        move || {
-            panes
-                .lock_or_panic()
-                .get(&key)
-                .and_then(|p| p.window.clone())
-        }
     }
 
     /// The engine version a take records: the last executable found.
@@ -239,42 +207,6 @@ mod tests {
         probe.setting = String::new();
         assert!(godot.executable(&probe, false, &check).found.is_none());
         assert_eq!(calls.get(), 2, "nothing to try, so nothing is asked");
-    }
-
-    #[test]
-    fn a_session_whose_run_is_gone_is_not_live() {
-        let godot = Godot::default();
-        godot.set_session("c1", Arc::new(session::Session::new(1, None, None)));
-        assert_eq!(godot.sessions().len(), 1);
-        assert!(godot.live_sessions().is_empty(), "no run, nothing to move");
-
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::create_dir_all(dir.path().join("game")).unwrap();
-        let run = godot
-            .runner
-            .start(
-                "c2",
-                runner::RunSpec {
-                    program: testing::fake_godot(dir.path(), false),
-                    project: dir.path().join("game"),
-                    scene: None,
-                    channel: None,
-                    window: None,
-                },
-            )
-            .unwrap();
-        godot.set_session("c2", Arc::new(session::Session::new(run.id, None, None)));
-        for _ in 0..400 {
-            if !run.is_running() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        }
-        assert!(!run.is_running());
-        assert!(
-            godot.live_sessions().is_empty(),
-            "a game that exited is not moved"
-        );
     }
 
     #[test]

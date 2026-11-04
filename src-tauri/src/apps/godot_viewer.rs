@@ -1,11 +1,19 @@
-//! The Godot Viewer's Rust half.
+//! The Godot app's Rust half, for both of its modes (DECISIONS X3).
 //!
-//! `docs/VEISTRA-UX-REWORK.md` §3.1 is the rule this app honours: Godot is never
-//! embedded. Refreshing runs `godot --headless` as a child process, reads the
-//! scene tree it dumps, optionally renders one frame, and caches both under
-//! `.veistra/` stamped with their age. The work lives in [`crate::godot`]; this
-//! module routes `godot-viewer/*` and `godot/*` there and hands node-anchored
-//! comments (`docs/VEISTRA-UX-REWORK.md` §3.4) to [`crate::comments`].
+//! **Editor** shows the scene an agent's headless run last produced: refreshing
+//! runs `godot --headless` as a child process, reads the scene tree it dumps,
+//! optionally renders one frame, and caches both under `.veistra/` stamped with
+//! their age. **Play** runs the environment's project as a child process with
+//! its window placed in the pane, streams its log, records takes and captures
+//! frames (`docs/design-notes/godot-play.md`). The work lives in
+//! [`crate::godot`]; this module only routes `godot-viewer/*`, `play/*` and
+//! `godot/*` there, and hands comments anchored to a node, or to a scene, a
+//! time and a screenshot (`docs/VEISTRA-UX-REWORK.md` §3.4), to
+//! [`crate::comments`], shared with every other viewer.
+//!
+//! The app id stays `godot-viewer`, and `play` is a second registry row that
+//! opens this frontend in Play mode with this same dispatch, so a saved layout
+//! or an agent's `veistra/open` naming either id lands on one app.
 
 use crate::apps::CallContext;
 use serde_json::Value;
@@ -18,11 +26,23 @@ pub fn call(
     method: &str,
     params: Option<Value>,
 ) -> Result<Value, RpcError> {
+    call_for(app, context, None, method, params)
+}
+
+/// [`call`] from a pane instance: the game's box and window are the pane's
+/// (`crate::embed::host`), so `play/embed-rect` needs to know which.
+pub fn call_for(
+    app: &AppHandle,
+    context: &CallContext,
+    instance: Option<&str>,
+    method: &str,
+    params: Option<Value>,
+) -> Result<Value, RpcError> {
     if let Some(result) = crate::comments::call(context, method, params.as_ref()) {
         return result;
     }
-    crate::godot::rpc::with_live(app, context, |ctx| {
-        crate::godot::rpc::viewer(ctx, method, params.as_ref())
+    crate::godot::rpc::with_live_for(app, context, instance, |ctx| {
+        crate::godot::rpc::godot(ctx, method, params.as_ref())
     })
     .unwrap_or_else(|| {
         Err(RpcError::new(
@@ -58,6 +78,27 @@ mod tests {
             .expect("handled")
             .expect("create");
         assert_eq!(created["anchor"]["kind"], "node");
+
+        let listed = crate::comments::call(&context(env.path()), "comments/list", None)
+            .expect("handled")
+            .expect("list");
+        assert_eq!(listed.as_array().map(Vec::len), Some(1));
+    }
+
+    /// Play mode's comments are anchored to a scene and a time, and land in the
+    /// same store as Editor mode's node comments.
+    #[test]
+    fn a_scene_comment_from_play_mode_shares_the_store() {
+        let env = TempDir::new().expect("tempdir");
+        let params = json!({
+            "anchor": { "kind": "scene", "scene": "hospital_wing", "time": 42.8 },
+            "body": "why is the light flickering here?",
+        });
+        let created = crate::comments::call(&context(env.path()), "comments/create", Some(&params))
+            .expect("handled")
+            .expect("create");
+        assert_eq!(created["anchor"]["kind"], "scene");
+        assert_eq!(created["anchor"]["screenshot"], false);
 
         let listed = crate::comments::call(&context(env.path()), "comments/list", None)
             .expect("handled")

@@ -13,8 +13,14 @@
 //! per comment beats an array plus a counter, why there is no in-memory cache
 //! the way [`crate::design_comments`] keeps one, and what still doesn't read
 //! these comments back.
+//!
+//! Every write goes through [`create`] or `change`: the one place the fix
+//! loop's rules are kept, and the one place [`observe`]'s observer hears from
+//! (`crate::comment_events` pushes it to open panes). No `AppHandle` here, so
+//! all of it is tested without an app.
 
 use crate::apps::CallContext;
+use crate::context_commands::AgentTarget;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use rand::RngCore;
@@ -22,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use veistra_rpc::{RpcError, INTERNAL_ERROR, INVALID_PARAMS};
 
@@ -54,10 +61,14 @@ pub enum Anchor {
     /// `in_ms`/`out_ms` present for a range. `packet` is the feedback folder
     /// relative to the environment, so an agent can read its `packet.md`.
     /// `scene` and `node_path` are there so the Scene and Blender views can show
-    /// the note on the node or part it is about.
+    /// the note on the node or part it is about. `number` is the take's
+    /// (Take 4), for the note's history; notes sent before it was kept have
+    /// none.
     #[serde(rename_all = "camelCase")]
     Take {
         take: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        number: Option<u32>,
         n: u32,
         at_ms: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -75,8 +86,8 @@ pub enum Anchor {
 /// Whose turn a comment reports, and who wrote a [`Resolution`].
 ///
 /// Every comment this build writes is the user's. A resolution is the agent's
-/// when it comes through the context server's `resolve_comment`, which reads
-/// `.veistra/comments/` for an agent; every other resolution is the user's.
+/// when it comes through an MCP tool (the context server's `resolve_comment`,
+/// or `resolve_play_note`); every other resolution is the user's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Author {
@@ -133,7 +144,9 @@ pub struct Resolution {
 }
 
 /// One message in a comment's thread after the first: an agent's earlier fix
-/// note kept when the person says Still broken, and the person's reply.
+/// note kept when the person says Still broken, and the person's reply. A
+/// reply with a `take` is a later attempt at a take note: the take the person
+/// recorded to show it still broken ([`add_take`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Reply {
@@ -142,6 +155,27 @@ pub struct Reply {
     pub at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub take: Option<TakeRef>,
+}
+
+/// One take in a take note's history: which take, its number, the packet Send
+/// wrote for it, and where in it the note is. The first is the note's anchor;
+/// each Still broken take adds one ([`Comment::takes`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TakeRef {
+    pub take: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<u32>,
+    pub packet: String,
+    /// The note's number in this take, which a later take numbers afresh.
+    pub n: u32,
+    pub at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub out_ms: Option<u64>,
 }
 
 /// The person's answer to a fixed comment.
@@ -167,8 +201,44 @@ pub struct Comment {
     pub resolution: Option<Resolution>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub replies: Vec<Reply>,
+    /// The agent Send handed this note to (a `context/agents` entry), so Still
+    /// broken can go back to the same one. Unset on a comment no Send filed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_to: Option<AgentTarget>,
     pub created: u64,
     pub updated: u64,
+}
+
+impl Comment {
+    /// A take note's takes, oldest first: the one it was sent from, then each
+    /// Still broken take. Empty for every other kind of comment.
+    pub fn takes(&self) -> Vec<TakeRef> {
+        let Anchor::Take {
+            take,
+            number,
+            n,
+            at_ms,
+            in_ms,
+            out_ms,
+            packet,
+            ..
+        } = &self.anchor
+        else {
+            return Vec::new();
+        };
+        let first = TakeRef {
+            take: take.clone(),
+            number: *number,
+            packet: packet.clone(),
+            n: *n,
+            at_ms: *at_ms,
+            in_ms: *in_ms,
+            out_ms: *out_ms,
+        };
+        std::iter::once(first)
+            .chain(self.replies.iter().filter_map(|r| r.take.clone()))
+            .collect()
+    }
 }
 
 /// A comment before it has an id or a clock reading. What a viewer's `create`
@@ -228,6 +298,15 @@ pub fn list(context: &CallContext) -> Result<Vec<Comment>, RpcError> {
 
 /// Write a new comment down and return it.
 pub fn create(context: &CallContext, draft: Draft) -> Result<Comment, RpcError> {
+    create_to(context, draft, None)
+}
+
+/// [`create`], recording which agent the comment was sent to. Only Send knows.
+pub fn create_to(
+    context: &CallContext,
+    draft: Draft,
+    sent_to: Option<AgentTarget>,
+) -> Result<Comment, RpcError> {
     let dir = comments_dir(context)?;
     std::fs::create_dir_all(&dir).map_err(|e| {
         RpcError::new(
@@ -261,10 +340,17 @@ pub fn create(context: &CallContext, draft: Draft) -> Result<Comment, RpcError> 
         status: Status::Open,
         resolution: None,
         replies: Vec::new(),
+        sent_to,
         created: at,
         updated: at,
     };
+    // No [`WRITES`] here: the id is new, so nothing else can be writing it.
     write_comment_file(&comment_file(&dir, &id), &comment)?;
+    told(&Change {
+        context,
+        before: None,
+        comment: &comment,
+    });
     Ok(comment)
 }
 
@@ -279,18 +365,84 @@ pub fn get(context: &CallContext, id: &str) -> Result<Comment, RpcError> {
     })
 }
 
-/// Read, change and write one comment back, stamping `updated`.
+/// Held from reading a comment to writing it back, so two writers in this
+/// process take turns. An agent's `resolve_play_note` runs on the MCP
+/// listener and the person's Still broken on an app-call worker; without this
+/// the second rename wins and the first one's status or reply is gone. One
+/// lock for every environment, because writes are rare and short.
+///
+/// Poisoning is recovered from, as `takes::NOTES_LOCK` does: the lock guards
+/// no data, and the file it orders is replaced by rename, never half-written.
+static WRITES: Mutex<()> = Mutex::new(());
+
+/// Read, change and write one comment back, stamping `updated`, then tell
+/// the observer. The observer runs after the lock is released, so whatever it
+/// does cannot hold up the next write.
 fn change(
     context: &CallContext,
     id: &str,
     edit: impl FnOnce(&mut Comment, u64) -> Result<(), RpcError>,
 ) -> Result<Comment, RpcError> {
-    let mut comment = get(context, id)?;
-    let at = monotonic_ms();
-    edit(&mut comment, at)?;
-    comment.updated = at;
-    write_comment_file(&comment_file(&comments_dir(context)?, id), &comment)?;
+    let (before, comment) = {
+        let _turn = WRITES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut comment = get(context, id)?;
+        let before = comment.status;
+        let at = monotonic_ms();
+        edit(&mut comment, at)?;
+        comment.updated = at;
+        write_comment_file(&comment_file(&comments_dir(context)?, id), &comment)?;
+        (before, comment)
+    };
+    told(&Change {
+        context,
+        before: Some(before),
+        comment: &comment,
+    });
     Ok(comment)
+}
+
+/// One write, as [`observe`]'s observer hears it.
+pub struct Change<'a> {
+    /// The environment written to, and the cluster the call came from.
+    pub context: &'a CallContext,
+    /// The status before this write; `None` for a new comment.
+    pub before: Option<Status>,
+    /// The comment as written.
+    pub comment: &'a Comment,
+}
+
+type Observer = Box<dyn Fn(&Change) + Send + Sync>;
+
+static OBSERVER: OnceLock<Observer> = OnceLock::new();
+
+/// Hear every comment write from now on. Set once, from `lib.rs`'s setup;
+/// `false` when an observer is already installed, which is left as it was.
+pub fn observe(observer: Observer) -> bool {
+    OBSERVER.set(observer).is_ok()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What [`told`] heard on this thread: before, after, id. Per thread, so
+    /// tests running in parallel never see each other's writes.
+    static HEARD: std::cell::RefCell<Vec<(Option<Status>, Status, String)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn told(change: &Change) {
+    #[cfg(test)]
+    HEARD.with(|heard| {
+        heard.borrow_mut().push((
+            change.before,
+            change.comment.status,
+            change.comment.id.clone(),
+        ))
+    });
+    if let Some(observer) = OBSERVER.get() {
+        observer(change);
+    }
 }
 
 /// Close a comment with a note, recorded as `by`'s: the person's closes it,
@@ -307,6 +459,12 @@ pub fn resolve(
 }
 
 /// [`resolve`], naming the commit the fix is in.
+///
+/// The fix loop's rules are kept here rather than left to callers, so a new
+/// caller cannot break them: an agent reports only on a comment that is still
+/// its work (open or working), so it never replaces the person's Looks good or
+/// its own unchecked fix; and nobody resolves a resolved comment, which would
+/// rewrite what closed it and count it closed twice.
 pub fn resolve_with_commit(
     context: &CallContext,
     id: &str,
@@ -315,6 +473,21 @@ pub fn resolve_with_commit(
     by: Author,
 ) -> Result<Comment, RpcError> {
     change(context, id, |comment, at| {
+        if comment.status == Status::Resolved {
+            return Err(RpcError::new(
+                INVALID_PARAMS,
+                format!("comment `{id}` is already resolved"),
+            ));
+        }
+        if by == Author::Agent && !comment.status.is_active() {
+            return Err(RpcError::new(
+                INVALID_PARAMS,
+                format!(
+                    "comment `{id}` is already {}; the person decides what happens next",
+                    comment.status.name()
+                ),
+            ));
+        }
         comment.status = match by {
             Author::Agent => Status::Fixed,
             Author::User => Status::Resolved,
@@ -366,14 +539,7 @@ pub fn verdict(
         match verdict {
             Verdict::Good => comment.status = Status::Resolved,
             Verdict::Broken => {
-                if let Some(fix) = comment.resolution.take() {
-                    comment.replies.push(Reply {
-                        by: fix.by,
-                        body: fix.note,
-                        at: fix.at,
-                        commit: fix.commit,
-                    });
-                }
+                reopen(comment);
                 let body = reply
                     .filter(|r| !r.trim().is_empty())
                     .unwrap_or_else(|| "Still broken.".to_string());
@@ -382,20 +548,97 @@ pub fn verdict(
                     body,
                     at,
                     commit: None,
+                    take: None,
                 });
-                comment.status = Status::Open;
             }
         }
         Ok(())
     })
 }
 
+/// Open a comment again, the agent's fix note moved into the thread.
+fn reopen(comment: &mut Comment) {
+    if let Some(fix) = comment.resolution.take() {
+        comment.replies.push(Reply {
+            by: fix.by,
+            body: fix.note,
+            at: fix.at,
+            commit: fix.commit,
+            take: None,
+        });
+    }
+    comment.status = Status::Open;
+}
+
+/// A Still broken take for a take note, sent from that take's review: the
+/// take joins the note's history rather than becoming a new note, so the
+/// agent that fixed it sees both attempts. `body` is what the person wrote on
+/// the new take; when it is the reply they gave with Still broken, unchanged,
+/// the take is put on that reply rather than repeating it. `sent_to` is the
+/// agent this attempt went to, kept for the next one.
+///
+/// Refused, like a verdict, on a resolved note, and on any comment that is not
+/// a take note. A note marked fixed since is opened again: the person has
+/// just shown it is not.
+pub fn add_take(
+    context: &CallContext,
+    id: &str,
+    link: TakeRef,
+    body: String,
+    sent_to: Option<AgentTarget>,
+) -> Result<Comment, RpcError> {
+    change(context, id, |comment, at| {
+        check_follow_up(comment)?;
+        if comment.status == Status::Fixed {
+            reopen(comment);
+        }
+        let body = body.trim().to_string();
+        let last = comment
+            .replies
+            .last_mut()
+            .filter(|r| r.by == Author::User && r.take.is_none() && r.body.trim() == body);
+        match last {
+            Some(reply) => reply.take = Some(link),
+            None => comment.replies.push(Reply {
+                by: Author::User,
+                body,
+                at,
+                commit: None,
+                take: Some(link),
+            }),
+        }
+        if sent_to.is_some() {
+            comment.sent_to = sent_to;
+        }
+        Ok(())
+    })
+}
+
+/// Why `comment` cannot take a Still broken take, if it cannot: it is not a
+/// take note, or it is resolved. Send and `play/run` ask before they write.
+pub fn check_follow_up(comment: &Comment) -> Result<(), RpcError> {
+    let id = &comment.id;
+    if !matches!(comment.anchor, Anchor::Take { .. }) {
+        return Err(RpcError::new(
+            INVALID_PARAMS,
+            format!("comment `{id}` is not a note on a take"),
+        ));
+    }
+    if comment.status == Status::Resolved {
+        return Err(RpcError::new(
+            INVALID_PARAMS,
+            format!("note `{id}` is resolved; a new problem is a new note"),
+        ));
+    }
+    Ok(())
+}
+
 // --- the RPC surface --------------------------------------------------------
 
 /// The methods every viewer app shares: `comments/list`, `comments/create`,
 /// `comments/resolve`, and `comments/verdict` for Looks good and Still broken
-/// on a fixed comment. Every one of `godot_viewer::call`,
-/// `blender_viewer::call` and `play::call` tries this first, on the same
+/// on a fixed comment. Both `godot_viewer::call_for` (the Godot app's Editor
+/// and Play modes) and `blender_viewer::call` try this first, on the same
 /// prefix-dispatch shape `files::call` uses for `trash::call` — one comment
 /// store, reached identically from whichever viewer's frame the request came
 /// from, because a comment belongs to the *environment* the call resolved to
@@ -793,11 +1036,107 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_cannot_fix_a_fixed_or_resolved_comment() {
+        let env = TempDir::new().expect("tempdir");
+        let ctx = context(env.path());
+        let c = create(&ctx, node_draft("x")).expect("create");
+        resolve(&ctx, &c.id, "first fix".into(), Author::Agent).expect("fix");
+
+        let again = resolve(&ctx, &c.id, "second".into(), Author::Agent).expect_err("fixed");
+        assert_eq!(again.code, INVALID_PARAMS);
+        assert!(again.message.contains("already fixed"), "{}", again.message);
+
+        verdict(&ctx, &c.id, Verdict::Good, None).expect("good");
+        let after = resolve(&ctx, &c.id, "undo".into(), Author::Agent).expect_err("resolved");
+        assert!(after.message.contains("already resolved"));
+        let kept = get(&ctx, &c.id).expect("get");
+        assert_eq!(
+            kept.status,
+            Status::Resolved,
+            "the person's Looks good stands"
+        );
+        assert_eq!(kept.resolution.map(|r| r.note), Some("first fix".into()));
+    }
+
+    #[test]
+    fn resolving_a_resolved_comment_is_refused_for_the_person_too() {
+        let env = TempDir::new().expect("tempdir");
+        let ctx = context(env.path());
+        let c = create(&ctx, node_draft("x")).expect("create");
+        resolve(&ctx, &c.id, "done".into(), Author::User).expect("resolve");
+        let err = resolve(&ctx, &c.id, "done again".into(), Author::User).expect_err("twice");
+        assert_eq!(err.code, INVALID_PARAMS);
+        assert_eq!(
+            get(&ctx, &c.id).expect("get").resolution.map(|r| r.note),
+            Some("done".into())
+        );
+    }
+
+    #[test]
+    fn every_write_tells_the_observer_what_it_was_and_is() {
+        HEARD.with(|h| h.borrow_mut().clear());
+        let env = TempDir::new().expect("tempdir");
+        let ctx = context(env.path());
+        let a = create(&ctx, node_draft("a")).expect("create");
+        start(&ctx, &a.id).expect("start");
+        resolve(&ctx, &a.id, "fixed".into(), Author::Agent).expect("fix");
+        verdict(&ctx, &a.id, Verdict::Broken, Some("no".into())).expect("broken");
+        resolve(&ctx, &a.id, "again".into(), Author::Agent).expect("fix");
+        verdict(&ctx, &a.id, Verdict::Good, None).expect("good");
+        assert!(start(&ctx, &a.id).is_err());
+
+        let heard: Vec<(Option<Status>, Status)> = HEARD.with(|h| {
+            h.borrow()
+                .iter()
+                .map(|(before, after, id)| {
+                    assert_eq!(id, &a.id);
+                    (*before, *after)
+                })
+                .collect()
+        });
+        use Status::*;
+        assert_eq!(
+            heard,
+            vec![
+                (None, Open),
+                (Some(Open), Working),
+                (Some(Working), Fixed),
+                (Some(Fixed), Open),
+                (Some(Open), Fixed),
+                (Some(Fixed), Resolved),
+            ],
+            "a refused write is not heard"
+        );
+    }
+
+    #[test]
+    fn two_threads_writing_one_comment_lose_nothing() {
+        let env = TempDir::new().expect("tempdir");
+        let ctx = context(env.path());
+        let c = create(&ctx, node_draft("x")).expect("create");
+        const ROUNDS: usize = 40;
+        std::thread::scope(|s| {
+            for side in ["left", "right"] {
+                let (ctx, id) = (&ctx, &c.id);
+                s.spawn(move || {
+                    for i in 0..ROUNDS {
+                        let reply = format!("{side} {i}");
+                        verdict(ctx, id, Verdict::Broken, Some(reply)).expect("broken");
+                    }
+                });
+            }
+        });
+        let replies = get(&ctx, &c.id).expect("get").replies;
+        assert_eq!(replies.len(), 2 * ROUNDS, "every reply survived");
+    }
+
+    #[test]
     fn a_take_anchor_round_trips_with_its_range_and_target() {
         let env = TempDir::new().expect("tempdir");
         let ctx = context(env.path());
         let anchor = Anchor::Take {
             take: "2026-10-30-1402-0f3a".into(),
+            number: None,
             n: 2,
             at_ms: 102_180,
             in_ms: Some(98_000),
@@ -823,7 +1162,139 @@ mod tests {
         assert_eq!(json["kind"], "take");
         assert_eq!(json["atMs"], 102_180);
         assert_eq!(json["nodePath"], "Hallway/Enemy_02");
+        assert_eq!(json.get("number"), None, "absent until Send knows it");
         assert_eq!(list(&ctx).expect("list")[0], made);
+    }
+
+    fn take_note(ctx: &CallContext) -> Comment {
+        let anchor = Anchor::Take {
+            take: "2026-10-30-1402-0f3a".into(),
+            number: Some(4),
+            n: 2,
+            at_ms: 102_000,
+            in_ms: None,
+            out_ms: None,
+            packet: ".veistra/feedback/2026-10-30-1402-0f3a-1".into(),
+            scene: None,
+            node_path: None,
+        };
+        let draft = Draft {
+            anchor,
+            body: "walks into the wall".into(),
+            screenshot_png: None,
+        };
+        create(ctx, draft).expect("create")
+    }
+
+    fn take_five() -> TakeRef {
+        TakeRef {
+            take: "2026-10-30-1440-9b1c".into(),
+            number: Some(5),
+            packet: ".veistra/feedback/2026-10-30-1440-9b1c-1".into(),
+            n: 1,
+            at_ms: 12_000,
+            in_ms: None,
+            out_ms: None,
+        }
+    }
+
+    /// The Done-when of #321 at the store: fixed, still broken, and the new
+    /// take sent from its review. One note, both takes in its history, and the
+    /// agent's fix and the person's reply between them.
+    #[test]
+    fn a_still_broken_note_keeps_both_takes_in_its_history() {
+        let env = TempDir::new().expect("tempdir");
+        let ctx = context(env.path());
+        let c = take_note(&ctx);
+        resolve_with_commit(
+            &ctx,
+            &c.id,
+            "rebaked the nav mesh".into(),
+            Some("3f2a1c9".into()),
+            Author::Agent,
+        )
+        .expect("fixed");
+        let reply = "still clips at the corner";
+        verdict(&ctx, &c.id, Verdict::Broken, Some(reply.into())).expect("broken");
+        let after = add_take(&ctx, &c.id, take_five(), format!("{reply}\n"), None).expect("take");
+
+        let numbers: Vec<_> = after.takes().iter().map(|t| t.number).collect();
+        assert_eq!(numbers, vec![Some(4), Some(5)]);
+        assert_eq!(after.status, Status::Open);
+        let thread: Vec<_> = after
+            .replies
+            .iter()
+            .map(|r| (r.by, r.body.as_str(), r.take.is_some()))
+            .collect();
+        assert_eq!(
+            thread,
+            vec![
+                (Author::Agent, "rebaked the nav mesh", false),
+                (Author::User, reply, true),
+            ],
+            "the unchanged reply carries the take rather than being repeated"
+        );
+        assert_eq!(list(&ctx).expect("list").len(), 1, "one note, not two");
+
+        let to = AgentTarget {
+            kind: crate::context_commands::AgentKind::Terminal,
+            id: "term-2".into(),
+            label: "Claude Code · Terminal 2".into(),
+        };
+        let mut six = take_five();
+        six.take = "2026-10-30-1502-0c0c".into();
+        let again = add_take(
+            &ctx,
+            &c.id,
+            six,
+            "now it is the door".into(),
+            Some(to.clone()),
+        )
+        .expect("a second attempt");
+        assert_eq!(again.takes().len(), 3);
+        assert_eq!(
+            again.replies.last().map(|r| r.body.as_str()),
+            Some("now it is the door")
+        );
+        assert_eq!(again.sent_to, Some(to), "the agent this attempt went to");
+    }
+
+    #[test]
+    fn a_take_is_refused_on_a_resolved_note_and_on_any_other_comment() {
+        let env = TempDir::new().expect("tempdir");
+        let ctx = context(env.path());
+        let node = create(&ctx, node_draft("the light")).expect("create");
+        let e = add_take(&ctx, &node.id, take_five(), "x".into(), None).unwrap_err();
+        assert_eq!(e.code, INVALID_PARAMS);
+        assert!(get(&ctx, &node.id).expect("get").replies.is_empty());
+
+        let c = take_note(&ctx);
+        resolve(&ctx, &c.id, "agent says fixed".into(), Author::Agent).expect("fixed");
+        let reopened = add_take(&ctx, &c.id, take_five(), "no it is not".into(), None)
+            .expect("a fixed note is shown not to be");
+        assert_eq!(reopened.status, Status::Open);
+        assert!(
+            reopened.resolution.is_none(),
+            "the fix moved into the thread"
+        );
+        verdict(&ctx, &c.id, Verdict::Good, None).expect("good");
+        let e = add_take(&ctx, &c.id, take_five(), "x".into(), None).unwrap_err();
+        assert_eq!(e.code, INVALID_PARAMS);
+        assert!(e.message.contains("resolved"), "{}", e.message);
+        let missing = add_take(&ctx, "nope", take_five(), "x".into(), None).unwrap_err();
+        assert_eq!(missing.code, INVALID_PARAMS);
+    }
+
+    /// Notes written before a take's number or a reply's take were kept.
+    #[test]
+    fn a_take_note_from_before_the_history_still_reads() {
+        let old = r#"{"id":"1-a","anchor":{"kind":"take","take":"2026-10-30-1402-0f3a","n":2,
+            "atMs":1,"packet":"p"},"author":"user","body":"b","status":"open",
+            "replies":[{"by":"agent","body":"tried","at":2}],"created":1,"updated":2}"#;
+        let c: Comment = serde_json::from_str(old).expect("old shape");
+        assert_eq!(c.takes().len(), 1);
+        assert_eq!(c.takes()[0].number, None);
+        assert_eq!(c.replies[0].take, None);
     }
 
     #[test]

@@ -3,7 +3,7 @@
  * (`apps/shared/viewer-toolbar.css`), Model shows the exported .glb in 3D or
  * the wireframe pass beside the parts list, and Renders the headless export's
  * stills, with the export job and setup panels above the body. See
- * apps/godot-viewer/ui/src/App.css's header note on token names.
+ * apps/godot-viewer/ui/src/SceneMode.css's header note on token names.
  */
 
 .bv {

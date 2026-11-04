@@ -165,6 +165,23 @@ pub fn parse_version(output: &str) -> Option<(u32, u32, String)> {
     })
 }
 
+/// The version number at the front of a `--version` line, as take.json
+/// spells it: `4.5.1.stable.official.f62fdbde1` is `4.5.1`, and
+/// `4.3.stable.official.77dcf97d8` is `4.3`. A line with no number in front
+/// is kept whole rather than lost.
+pub fn short_version(line: &str) -> String {
+    let line = line.trim();
+    let digits: Vec<&str> = line
+        .split('.')
+        .take_while(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        .collect();
+    if digits.is_empty() {
+        line.to_string()
+    } else {
+        digits.join(".")
+    }
+}
+
 /// Run `path --version` and return what it printed. A candidate that hangs is
 /// abandoned after `limit`, since a wrapper script waiting on a prompt would
 /// otherwise stall the settings screen.
@@ -893,5 +910,15 @@ mod tests {
             scenes(dir.path()),
             vec!["res://a/b.tscn", "res://main.tscn"]
         );
+    }
+
+    #[test]
+    fn a_take_names_the_version_number_and_keeps_the_build_apart() {
+        assert_eq!(short_version("4.5.1.stable.official.f62fdbde1"), "4.5.1");
+        assert_eq!(short_version("4.3.stable.official.77dcf97d8"), "4.3");
+        assert_eq!(short_version(" 4.4.1.rc2.mono.official.x\n"), "4.4.1");
+        assert_eq!(short_version("4.6.dev.custom_build"), "4.6");
+        assert_eq!(short_version("custom"), "custom");
+        assert_eq!(short_version(""), "");
     }
 }

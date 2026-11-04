@@ -125,7 +125,6 @@ const APPS = [
   "files",
   "godot-viewer",
   "home",
-  "play",
   "projects",
   "schematify",
   "tutorial",

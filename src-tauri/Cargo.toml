@@ -314,18 +314,41 @@ windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Diagnostics_Debug",
     "Win32_System_LibraryLoader",
+    "Win32_System_Performance",
     "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
 
-# Play's recorder (`src/godot/record.rs`): Windows Graphics Capture and Media
-# Foundation's hardware H.264 encoder, writing a take's MP4. MIT, which
-# `deny.toml` already allows. It brings `windows` 0.62 beside the 0.61 that
-# webview2-com uses; the recorder is the only caller, and writing Graphics
-# Capture and the transcoder against 0.61 by hand is the alternative this
-# avoids, as the design (§5.2) chose.
+# Play's recorder (`src/godot/record.rs`): Windows Graphics Capture, the frames
+# a take's video is made of. MIT, which `deny.toml` already allows. It brings
+# `windows` 0.62 beside the 0.61 that webview2-com uses; the recorder is the
+# only caller, and writing Graphics Capture against 0.61 by hand is the
+# alternative this avoids, as the design (§5.2) chose.
 windows-capture = "2.0.1"
+
+# The encoder those frames go to (`src/godot/encode.rs`): Media Foundation's
+# hardware H.264 through the WinRT transcoder, after a D3D11 scale pass to 720p.
+# The same `windows` 0.62 windows-capture already brings, so no new tree; named
+# because the encoder is this crate's own rather than the one windows-capture
+# ships, which keeps the window's size and cannot set the keyframe interval.
+windows = { version = "0.62", features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Graphics_DirectX_Direct3D11",
+    "Media_Core",
+    "Media_MediaProperties",
+    "Media_Transcoding",
+    "Storage",
+    "Storage_Streams",
+    "System_Threading",
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_WinRT_Direct3D11",
+] }
 
 [dev-dependencies]
 # Generates the agent tab's `veistra-show.generated.ts` from `refs::catalogue`,

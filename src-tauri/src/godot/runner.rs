@@ -52,12 +52,16 @@ pub enum RunState {
     },
 }
 
+/// Sees every line as it is logged, before [`LOG_CAP`] can drop it.
+pub type Tap = Box<dyn FnMut(&LogLine) + Send>;
+
 #[derive(Default)]
 struct Log {
     lines: VecDeque<LogLine>,
     next_seq: u64,
     dropped: u64,
     last_level: Option<Level>,
+    tap: Option<Tap>,
 }
 
 impl Log {
@@ -68,13 +72,17 @@ impl Log {
             self.lines.pop_front();
             self.dropped += 1;
         }
-        self.lines.push_back(LogLine {
+        let line = LogLine {
             seq: self.next_seq,
             stream,
             level,
             text,
             at: now_ms(),
-        });
+        };
+        if let Some(tap) = self.tap.as_mut() {
+            tap(&line);
+        }
+        self.lines.push_back(line);
         self.next_seq += 1;
     }
 }
@@ -141,19 +149,16 @@ pub struct RunSpec {
     pub window: Option<WindowArgs>,
 }
 
-/// `--windowed --resolution <w>x<h> --position <x>,<y>`: sized to the pane,
-/// and first shown off screen so it does not flash before it is placed.
+/// `--windowed --resolution <w>x<h> [--position <x>,<y>]`: sized to the pane
+/// and first shown where it is ([`crate::embed::launch_rect`]). Off screen
+/// was tried first and dropped: Godot moves a window that starts off every
+/// monitor back onto one anyway, and a game that is never placed was left
+/// where nobody could see it. With no pane box known, Godot centres it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowArgs {
     pub width: u32,
     pub height: u32,
-    pub x: i32,
-    pub y: i32,
-}
-
-impl WindowArgs {
-    /// Far enough left and up to be on no monitor anyone has.
-    pub const OFF_SCREEN: (i32, i32) = (-32000, -32000);
+    pub position: Option<(i32, i32)>,
 }
 
 impl RunSpec {
@@ -164,8 +169,10 @@ impl RunSpec {
             args.push("--windowed".to_string());
             args.push("--resolution".to_string());
             args.push(format!("{}x{}", w.width, w.height));
-            args.push("--position".to_string());
-            args.push(format!("{},{}", w.x, w.y));
+            if let Some((x, y)) = w.position {
+                args.push("--position".to_string());
+                args.push(format!("{x},{y}"));
+            }
         }
         if let Some(scene) = &self.scene {
             args.push(scene.clone());
@@ -258,6 +265,14 @@ impl Run {
         }
     }
 
+    /// Hand every line from now on to `tap` as well (a take keeping its own
+    /// log, which a chatty game would otherwise push out of the run's), or
+    /// stop with `None`. The tap runs under the log's lock, so it must not
+    /// read this run's log itself.
+    pub fn set_tap(&self, tap: Option<Tap>) {
+        self.log.lock_or_panic().tap = tap;
+    }
+
     fn note(&self, text: String) {
         self.log.lock_or_panic().push("veistra", text);
     }
@@ -275,6 +290,13 @@ impl Run {
         if let Some(hook) = hook {
             hook();
         }
+    }
+
+    /// Stop it without waiting for the exit: its pane closed, and the thread
+    /// that sees the exit runs its hooks as for any stop.
+    pub fn kill(&self) {
+        self.stop_requested.store(true, Ordering::SeqCst);
+        kill_tree(self.pid);
     }
 
     /// Run `hook` once the run has ended, on the thread that saw it end; at
@@ -367,8 +389,7 @@ impl Runner {
         if !run.is_running() {
             return Ok(false);
         }
-        run.stop_requested.store(true, Ordering::SeqCst);
-        kill_tree(run.pid);
+        run.kill();
         for _ in 0..150 {
             if !run.is_running() {
                 run.note("stopped".to_string());
@@ -565,8 +586,7 @@ mod tests {
             window: Some(WindowArgs {
                 width: 960,
                 height: 540,
-                x: -32000,
-                y: -32000,
+                position: Some((110, -20)),
             }),
         };
         assert_eq!(
@@ -578,7 +598,7 @@ mod tests {
                 "--resolution",
                 "960x540",
                 "--position",
-                "-32000,-32000",
+                "110,-20",
                 "res://a.tscn",
                 "--",
                 "--veistra-dir=/tmp/c"
@@ -654,6 +674,35 @@ mod tests {
         }
         assert!(run.log_since(0).truncated);
         assert_eq!(run.log_since(0).lines.len(), LOG_CAP);
+    }
+
+    #[test]
+    fn a_tap_sees_every_line_the_capped_log_drops() {
+        let dir = TempDir::new().unwrap();
+        let runner = Runner::default();
+        let run = runner.start("c1", spec(&dir, false, None)).unwrap();
+        wait_until("exit", || !run.is_running());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let into = seen.clone();
+        run.set_tap(Some(Box::new(move |l: &LogLine| {
+            into.lock_or_panic().push((l.seq, l.level, l.text.clone()));
+        })));
+        let first = run.log_since(0).next_seq;
+        for i in 0..5_000 {
+            let text = if i % 1_000 == 0 {
+                format!("ERROR: {i}")
+            } else {
+                format!("line {i}")
+            };
+            run.log.lock_or_panic().push("out", text);
+        }
+        run.set_tap(None);
+        run.log.lock_or_panic().push("out", "after".into());
+        let seen = seen.lock_or_panic();
+        assert_eq!(seen.len(), 5_000, "the run kept only {LOG_CAP}");
+        assert_eq!(seen[0], (first, Level::Error, "ERROR: 0".into()));
+        assert_eq!(seen.iter().filter(|l| l.1 == Level::Error).count(), 5);
+        assert!(seen.iter().all(|l| l.2 != "after"), "the tap was removed");
     }
 
     #[test]

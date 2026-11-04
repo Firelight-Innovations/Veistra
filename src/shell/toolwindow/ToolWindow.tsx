@@ -45,13 +45,16 @@ import type {
 } from "@veistra/bridge/protocol";
 import { relayPageEscape } from "./pageEscape";
 import { relayChord } from "./relayChord";
-import { agentTabFrames } from "./agentTabFrames";
+import { agentTabFrames, attachFrames, attachRequest } from "./agentTabFrames";
+import { relayCommentChanges } from "./commentFrames";
 import { createFrameSearch } from "./frameSearch";
 import {
   OPENED_EVENT,
+  OVERLAYS_EVENT,
   SEARCH_EVENT,
   THEME_CHANGED_EVENT,
   TOPIC_EVENT_PREFIX,
+  WINDOW_RECT_EVENT,
 } from "@veistra/bridge/protocol";
 import { VeistraErrorCode } from "@veistra/bridge/errors";
 import {
@@ -100,29 +103,6 @@ const VIEWER_APP = "viewer";
 
 /** The app an operating-system file drop is handed to when it lands on one of its frames. */
 const FILES_APP = "files";
-
-/**
- * Apps whose native content Rust places directly onto the window rather than
- * drawing it in the iframe — so their instance needs its surface's true
- * window-space rect pushed down as `veistra/window-rect`, not just the
- * pane-relative geometry an iframe can already see for itself.
- *
- * `projects` (`plane_webview`) is the only one today. A second consumer is
- * the point to turn this into a declared capability on `ToolPresentation`
- * instead of growing a hardcoded list here.
- */
-const NEEDS_WINDOW_RECT = new Set(["projects", "play"]);
-
-/** The event that carries `NEEDS_WINDOW_RECT`'s rect; a newer one makes a queued older one wrong. */
-const WINDOW_RECT_EVENT = "veistra/window-rect";
-
-/**
- * Apps told where the shell's overlays are (`veistra/overlays`), because what
- * they place over their pane would cover them: Play's game window
- * (`overlayWatch.ts` has why). Only these, and only while one is mounted, so
- * no other window pays for the watch.
- */
-const NEEDS_OVERLAYS = new Set(["play"]);
 
 /**
  * The tool window — the container every docked tool mounts into, plus its boot
@@ -616,7 +596,17 @@ const ToolWindow = forwardRef<
     }
   }, [readyIds, deliverEvent]);
 
-  // Push each `NEEDS_WINDOW_RECT` instance its surface's window-space rect,
+  // An app whose native content Rust places onto the window over its pane rather than drawing
+  // in the iframe (`placesWindow`: Plane's webview, the game, the Godot editor, Blender) needs
+  // its surface's true window-space rect, which an iframe cannot measure for itself, and the
+  // shell's overlay boxes (`overlayWatch.ts` has why). A capability on the app's registry
+  // entry rather than a list of ids here, so Play moving into the Godot app takes it along.
+  const placesWindow = useCallback(
+    (appId: string) => presentationOf(appId)?.placesWindow === true,
+    [presentationOf],
+  );
+
+  // Push each `placesWindow` instance its surface's window-space rect,
   // whenever `rects` (or the tree owning it) changes. This is the only place
   // that reads the container's own `getBoundingClientRect()` — `measure()`
   // above throws its copy away once `rects` is built, since everything else
@@ -637,7 +627,7 @@ const ToolWindow = forwardRef<
 
     for (const instanceId of paneTabs(tree)) {
       const instance = instances.get(instanceId);
-      if (!instance || !NEEDS_WINDOW_RECT.has(instance.appId)) continue;
+      if (!instance || !placesWindow(instance.appId)) continue;
       const paneId = paneOfTab(tree, instanceId);
       const rect = paneId ? rects.get(paneId) : undefined;
       if (!rect) continue;
@@ -648,13 +638,13 @@ const ToolWindow = forwardRef<
       lastWindowRect.current.set(instanceId, next);
       sendEventWhenReady(instanceId, WINDOW_RECT_EVENT, { ...next, window: windowLabel() });
     }
-  }, [rects, tree, instances, sendEventWhenReady]);
+  }, [rects, tree, instances, sendEventWhenReady, placesWindow]);
 
   // Overlay boxes for the apps that place native windows over their pane.
   // Sent to ready frames only: a frame that is not ready has no game yet, and
   // it asks for nothing older than its first report.
   const overlayTargets = [...instances.values()]
-    .filter((i) => NEEDS_OVERLAYS.has(i.appId))
+    .filter((i) => placesWindow(i.appId))
     .map((i) => i.id)
     .sort()
     .join(" ");
@@ -663,7 +653,7 @@ const ToolWindow = forwardRef<
     const ids = overlayTargets.split(" ");
     return watchOverlays((rects) => {
       for (const id of ids) {
-        if (readyIdsRef.current.has(id)) deliverEvent(id, "veistra/overlays", { rects });
+        if (readyIdsRef.current.has(id)) deliverEvent(id, OVERLAYS_EVENT, { rects });
       }
     });
   }, [overlayTargets, deliverEvent]);
@@ -677,7 +667,7 @@ const ToolWindow = forwardRef<
   const pageInstanceId = pageInstance?.id ?? null;
   const pageIdRef = useRef(pageInstanceId);
   pageIdRef.current = pageInstanceId;
-  const pageNeedsRect = pageInstance ? NEEDS_WINDOW_RECT.has(pageInstance.appId) : false;
+  const pageNeedsRect = pageInstance ? placesWindow(pageInstance.appId) : false;
   useEffect(() => {
     if (!pageHostEl || !pageInstanceId || !pageNeedsRect) return;
     const send = () => {
@@ -1160,17 +1150,23 @@ const ToolWindow = forwardRef<
       // shell knows, and it knows it from `event.source` rather than from
       // anything the frame could assert about itself.
       // An app handing something already in the context store to the agent tab
-      // beside it: the tab shows it as a chip on the next prompt.
+      // beside it: the tab shows it as a chip on the next prompt, with any
+      // words the app sent around it. Every agent tab, or the one the app
+      // chose; the answer says how many it reached, so a chosen tab that has
+      // closed is reported rather than silently missed.
       if (method === "veistra/attach-to-agent") {
-        respond({ id, result: null });
-        const { contextId, label } = (params ?? {}) as { contextId?: unknown; label?: unknown };
-        if (typeof contextId !== "string") return;
-        const payload = { contextId, label: typeof label === "string" ? label : contextId };
-        for (const [win, other] of frames.current) {
-          if (!other.isApp || other.appId !== AGENT_TAB_APP || other.origin === null) continue;
+        const attach = attachRequest(params);
+        const to = attach ? attachFrames(frames.current, AGENT_TAB_APP, attach.instanceId) : [];
+        respond({ id, result: { delivered: to.length } });
+        for (const [win, origin] of to) {
           win.postMessage(
-            { veistra: 1, kind: "event", event: AGENT_TAB_ATTACH, payload } satisfies EventMessage,
-            other.origin,
+            {
+              veistra: 1,
+              kind: "event",
+              event: AGENT_TAB_ATTACH,
+              payload: attach?.payload,
+            } satisfies EventMessage,
+            origin,
           );
         }
         return;
@@ -1464,6 +1460,18 @@ const ToolWindow = forwardRef<
       unlisten?.();
     };
   }, []);
+
+  // A comment was written (`comment_events.rs`): an agent started or fixed a note, the person
+  // gave a verdict, Send filed notes. To every app frame here when this window shows a cluster
+  // on that environment, so open comment lists follow without a reload (`commentFrames.ts`).
+  useEffect(
+    () =>
+      relayCommentChanges(
+        () => frames.current,
+        () => showing.current,
+      ),
+    [],
+  );
 
   // An agent tab's session events, its choice of harness, and word that a harness's models
   // are in (`apps::agent_tab`), each to the one frame it names. Every other frame, an agent tab for another session included,

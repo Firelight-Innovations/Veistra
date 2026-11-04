@@ -11,7 +11,7 @@ export interface WindowRect {
 /**
  * Turn a pane's container-relative rect into a window-relative one, for an app
  * whose native content Rust places directly onto the window rather than
- * drawing inside the iframe (`plane_webview` — see `NEEDS_WINDOW_RECT` in
+ * drawing inside the iframe (`plane_webview` — see `placesWindow` in
  * `ToolWindow.tsx`).
  *
  * `containerOrigin` is `ToolWindow`'s own container, measured in the document

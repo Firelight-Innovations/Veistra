@@ -3,7 +3,7 @@
 //! report the decision row in `docs/design-notes/godot-play.md` is filled from.
 //!
 //! - **R1, a child window**: `SetParent` into the Veistra window, done here.
-//! - **R2, an owned popup**: [`super::embed`] unchanged, the code Play ships.
+//! - **R2, an owned popup**: [`crate::embed`] unchanged, the code Play ships.
 //! - **R2 with `--wid`**: Godot 4.4 and later make the owned popup themselves
 //!   when given the owner's handle, which is how Godot's editor embeds a game.
 //!
@@ -21,9 +21,9 @@
 #![cfg_attr(not(windows), allow(dead_code))]
 
 use super::detect;
-use super::embed::{styles, ScreenRect};
 use super::record::Stopped;
 use super::runner::{RunSpec, WindowArgs};
+use crate::embed::{styles, Kind, LaunchRect, ScreenRect};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -97,6 +97,16 @@ impl Target {
         match self {
             Target::Game => 30,
             Target::Editor | Target::Blender => 1,
+        }
+    }
+
+    /// The kind the embedder places it as, which picks the window class it
+    /// prefers when the process has more than one window.
+    fn kind(self) -> Kind {
+        match self {
+            Target::Game => Kind::Game,
+            Target::Editor => Kind::GodotEditor,
+            Target::Blender => Kind::Blender,
         }
     }
 }
@@ -308,7 +318,9 @@ struct Capture {
     item: Result<(), String>,
     /// Two seconds through Play's own recorder.
     recorded: Result<Stopped, String>,
-    /// The box's size rounded down to even, as the recorder sizes a take.
+    /// The size the recorder encodes the box at (`encode::output_size` at
+    /// the default quality): the box's own, rounded down to even, while it
+    /// fits inside 1280x720.
     wanted: (u32, u32),
     min_frames: u64,
 }
@@ -609,20 +621,19 @@ fn wid_supported(major: u32, minor: u32) -> bool {
     major > 4 || (major == 4 && minor >= 4)
 }
 
-/// The game's command line, as Play's own: the box's size, first shown off
-/// screen. `--wid` only for the way that is about it.
-fn game_args(project: &Path, way: Way, size: (u32, u32), host: isize) -> Vec<String> {
-    let (x, y) = WindowArgs::OFF_SCREEN;
+/// The game's command line, as Play's own: the box's size, first shown where
+/// the box is (`embed::launch_rect`, as `rpc::launch_window` uses it). `--wid`
+/// only for the way that is about it.
+fn game_args(project: &Path, way: Way, at: LaunchRect, host: isize) -> Vec<String> {
     let mut args = RunSpec {
         program: PathBuf::new(),
         project: project.to_path_buf(),
         scene: None,
         channel: None,
         window: Some(WindowArgs {
-            width: size.0,
-            height: size.1,
-            x,
-            y,
+            width: at.width,
+            height: at.height,
+            position: at.position,
         }),
     }
     .args();
@@ -850,9 +861,9 @@ fn env(name: &str) -> Option<String> {
 #[cfg(windows)]
 mod win {
     use super::*;
-    use crate::godot::embed::{self, CssRect, Embed, Last, Owner, State, WindowSystem};
-    use crate::godot::record::Recorder;
-    use crate::godot::{runner, session};
+    use crate::embed::{self, CssRect, Embed, Last, Owner, State, Still, WindowSystem};
+    use crate::godot::encode::{self, Quality};
+    use crate::godot::{record, runner, session};
     use std::cell::Cell;
     use std::sync::Arc;
     use std::time::Instant;
@@ -1218,7 +1229,7 @@ mod win {
             (p.x, p.y)
         }
 
-        /// What `rpc::owner_of` answers for a Tauri window.
+        /// What `embed::host::owner_of` answers for a Tauri window.
         fn owner(&self) -> Owner {
             // SAFETY: as above.
             let dpi = unsafe { GetDpiForWindow(self.hwnd) };
@@ -1344,13 +1355,15 @@ mod win {
 
     /// [`WindowSystem`] for `--wid`: Godot made the window an owned popup
     /// itself, so finding it means finding the host's owned window, and there
-    /// are no styles to change or put back.
+    /// are no styles to change or put back. Placing, showing and the still are
+    /// the shipped window system's.
     struct Wid {
         owner: isize,
+        native: Arc<dyn WindowSystem>,
     }
 
     impl WindowSystem for Wid {
-        fn find_window(&self, pids: &[u32]) -> Option<isize> {
+        fn find_window(&self, pids: &[u32], _kind: Kind) -> Option<isize> {
             find_owned(pids, self.owner)
         }
         fn embed(&self, _hwnd: isize, _owner: isize) -> Result<embed::sys::Saved, String> {
@@ -1363,7 +1376,7 @@ mod win {
             shown: bool,
             owner: isize,
         ) -> Result<(), String> {
-            embed::sys::place(hwnd, at, shown, owner)
+            self.native.place(hwnd, at, shown, owner)
         }
         fn release(
             &self,
@@ -1372,6 +1385,12 @@ mod win {
             _: Option<ScreenRect>,
         ) -> Result<(), String> {
             Ok(())
+        }
+        fn show_near(&self, hwnd: isize, near: Option<ScreenRect>) -> Result<(), String> {
+            self.native.show_near(hwnd, near)
+        }
+        fn watch(&self, hwnd: isize) -> Option<Box<dyn Still>> {
+            self.native.watch(hwnd)
         }
     }
 
@@ -1526,14 +1545,18 @@ mod win {
         };
     }
 
-    /// R2 and R2 with `--wid`: [`Embed`] as Play runs it, attached on a
-    /// thread of its own while this one keeps the stand-in's messages moving,
-    /// as Play attaches off the main thread.
-    fn r2_embed(host: &Host, game: &Spawned, way: Way) -> Result<Placed, String> {
-        let e = Arc::new(match way {
-            Way::R2Wid => Embed::with(Arc::new(Wid { owner: host.id() })),
-            _ => Embed::default(),
-        });
+    /// R2 and R2 with `--wid`: [`Embed`] as Play runs it, of the target's
+    /// kind, attached on a thread of its own while this one keeps the
+    /// stand-in's messages moving, as Play attaches off the main thread.
+    fn r2_embed(host: &Host, game: &Spawned, way: Way, target: Target) -> Result<Placed, String> {
+        let win: Arc<dyn WindowSystem> = match way {
+            Way::R2Wid => Arc::new(Wid {
+                owner: host.id(),
+                native: embed::native(),
+            }),
+            _ => embed::native(),
+        };
+        let e = Arc::new(Embed::with(win, target.kind()));
         let last = Last {
             rect: host.box_css(),
             visible: true,
@@ -1542,7 +1565,14 @@ mod win {
         e.set_rect(last, None);
         let (owner, pid) = (host.owner(), game.pid());
         let found = std::thread::scope(|s| {
-            let t = s.spawn(|| e.attach(&|| session::process_tree(pid), &|| Some(owner), &|| true));
+            let t = s.spawn(|| {
+                e.attach(
+                    None,
+                    &|| session::process_tree(pid),
+                    &|| Some(owner),
+                    &|| true,
+                )
+            });
             while !t.is_finished() {
                 pump();
                 std::thread::sleep(Duration::from_millis(2));
@@ -1620,10 +1650,13 @@ mod win {
             .map_err(|e| format!("{e} (HRESULT {:#010x})", e.code().0))
     }
 
+    /// Play's recorder at the default quality, stopped and its MP4 closed.
     fn record_for(hwnd: isize, path: &Path, d: Duration) -> Result<Stopped, String> {
-        let r = Recorder::start(hwnd, path)?;
+        let r = record::start(hwnd, path, &Quality::DEFAULT)?;
         pump_for(d);
-        r.stop()
+        let halted = r.halt()?;
+        (halted.finish)()?;
+        Ok(halted.stopped)
     }
 
     fn capture_check(
@@ -1638,7 +1671,7 @@ mod win {
         let c = Capture {
             item: capture_item(hwnd),
             recorded: record_for(hwnd, &out.join("take.mp4"), Duration::from_secs(2)),
-            wanted: ((b.w as u32) & !1, (b.h as u32) & !1),
+            wanted: encode::output_size(b.w as u32, b.h as u32, &Quality::DEFAULT),
             min_frames: target.min_frames(),
         };
         let yes_no =
@@ -1787,6 +1820,10 @@ mod win {
     /// input queues of a child and its parent, and of an owned window and its
     /// owner, when they are on different threads; Godot 4.4's `--wid` undoes
     /// that with `AttachThreadInput(.., FALSE)`, so the second pass does too.
+    /// The embedder's R2 already detaches once it owns the window (#309), so
+    /// for R2 the first pass measures the shipped detach, and the second's
+    /// call reads "refused (not joined)" when it is already apart; for R1 the
+    /// first pass is the joined queue.
     fn hang_notes(host: &Host, placed: &Placed, game: &Spawned, run: &mut Run) {
         // SAFETY: a plain query.
         let game_tid =
@@ -1892,11 +1929,16 @@ mod win {
     ) -> Result<(), String> {
         host.home();
         let out = ctx.root.join(format!("{}-{}", way.id(), target.id()));
-        let b = host.expected();
+        let pane = Last {
+            rect: host.box_css(),
+            visible: true,
+            dpr: None,
+        };
+        let at = embed::launch_rect(Some(pane), Some(&host.owner()));
         let (program, args) = match target {
             Target::Game => (
                 ctx.godot.path.clone(),
-                game_args(&ctx.project, way, (b.w as u32, b.h as u32), host.id()),
+                game_args(&ctx.project, way, at, host.id()),
             ),
             Target::Editor => (ctx.godot.path.clone(), editor_args(&ctx.project)),
             Target::Blender => (
@@ -1911,7 +1953,7 @@ mod win {
             let pids = session::process_tree(game.pid());
             match owned_by {
                 Some(owner) => find_owned(&pids, owner),
-                None => embed::sys::find_window(&pids),
+                None => embed::sys::find_window(&pids, target.kind()),
             }
         };
         let (first, _) = pump_until(target.find_for(), find).ok_or_else(|| {
@@ -1932,7 +1974,7 @@ mod win {
         }
         let placed = match way {
             Way::R1 => r1_embed(host, first).map(|()| Placed::Child(first))?,
-            Way::R2 | Way::R2Wid => r2_embed(host, &game, way)?,
+            Way::R2 | Way::R2Wid => r2_embed(host, &game, way, target)?,
         };
         pump_for(Duration::from_millis(500));
         host.activate();
@@ -2221,7 +2263,12 @@ mod tests {
     #[test]
     fn wid_goes_only_to_its_own_way_and_single_window_only_to_the_editor() {
         let project = Path::new("C:/spike/project");
-        let r2 = game_args(project, Way::R2, (800, 450), 0x1234);
+        let at = LaunchRect {
+            width: 800,
+            height: 450,
+            position: Some((280, 200)),
+        };
+        let r2 = game_args(project, Way::R2, at, 0x1234);
         assert_eq!(
             r2,
             [
@@ -2231,11 +2278,12 @@ mod tests {
                 "--resolution",
                 "800x450",
                 "--position",
-                "-32000,-32000"
-            ]
+                "280,200"
+            ],
+            "at the box, as Play launches it"
         );
-        assert_eq!(game_args(project, Way::R1, (800, 450), 0x1234), r2);
-        let wid = game_args(project, Way::R2Wid, (800, 450), 0x1234);
+        assert_eq!(game_args(project, Way::R1, at, 0x1234), r2);
+        let wid = game_args(project, Way::R2Wid, at, 0x1234);
         assert_eq!(wid[..r2.len()], r2[..]);
         assert_eq!(
             wid[r2.len()..],
@@ -2326,6 +2374,7 @@ mod tests {
         let take = Stopped {
             first_frame_ms: Some(1),
             frames: 58,
+            dropped: 0,
             width: 960,
             height: 550,
         };

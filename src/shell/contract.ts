@@ -73,6 +73,9 @@ export interface ToolPresentation {
    *  tool window cannot make any other way. Everything else about the two is
    *  identical here on purpose — see `docs/design-notes/shell-core.md`. */
   isApp: boolean;
+  /** Rust places a native window over the pane, so the tool window pushes it
+   *  `veistra/window-rect` and `veistra/overlays`. Only a first-party app can. */
+  placesWindow: boolean;
 }
 
 /** The one door between the backend's tool type and the interface's. */
@@ -85,6 +88,7 @@ export function toolPresentation(tool: ResolvedTool): ToolPresentation {
     health,
     interactive: health !== "not-installed",
     isApp: false,
+    placesWindow: false,
   };
 }
 
@@ -99,6 +103,7 @@ export function appPresentation(app: AppInfo): ToolPresentation {
     health: "ok",
     interactive: true,
     isApp: true,
+    placesWindow: app.placesWindow === true,
   };
 }
 
@@ -123,6 +128,7 @@ export function pluginPresentation(surface: Openable): ToolPresentation {
     health: "ok",
     interactive: true,
     isApp: false,
+    placesWindow: false,
   };
 }
 

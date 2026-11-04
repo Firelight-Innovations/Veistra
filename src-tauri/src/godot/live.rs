@@ -6,40 +6,23 @@
 //! `play/*` here. The split is by what the method touches: those four drive
 //! the process, these drive the session around it ([`super::session`]).
 
-use super::embed::{CssRect, Last, Owner, State as EmbedState};
+use super::detect;
+use super::encode::Quality;
 use super::feedback;
 use super::record;
 use super::rpc::{fail, pick_project_for, Ctx};
 use super::session::{Plan, Session, TakeState};
 use super::takes;
+use crate::embed::host::{self, Slot};
+use crate::embed::{Cause, Kind, Owner, State as EmbedState};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use veistra_rpc::{RpcError, INVALID_PARAMS};
-
-/// The pane's last box, kept per cluster so a game is launched at its size.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Pane {
-    pub rect: CssRect,
-    pub visible: bool,
-    pub window: Option<String>,
-    /// The Play page's `devicePixelRatio`, monitor scale times View zoom.
-    pub dpr: Option<f64>,
-}
-
-impl Pane {
-    pub fn last(&self) -> Last {
-        Last {
-            rect: self.rect,
-            visible: self.visible,
-            dpr: self.dpr,
-        }
-    }
-}
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -47,12 +30,13 @@ struct P {
     project: Option<String>,
     x: f64,
     y: f64,
-    w: f64,
-    h: f64,
-    visible: bool,
-    window: Option<String>,
-    dpr: Option<f64>,
-    on: bool,
+    /// `play/record`: Record on or off, kept as it was when absent, so the
+    /// settings popover can change the quality alone.
+    on: Option<bool>,
+    /// `play/record`: `"720p30"` or `"1080p60"`, kept as it was when absent.
+    quality: Option<String>,
+    /// `play/record`: takes each environment keeps, kept as it was when absent.
+    keep: Option<usize>,
     id: Option<String>,
     take: Option<String>,
     notes: Option<Value>,
@@ -77,7 +61,7 @@ pub fn call(ctx: &Ctx, method: &str, raw: Option<&Value>) -> Option<Result<Value
         Err(e) => return Some(Err(e)),
     };
     Some(match method {
-        "play/embed-rect" => embed_rect(ctx, &p),
+        "play/embed-rect" => embed_rect(ctx, raw),
         "play/record" => set_record(ctx, &p),
         "play/mark" => mark(ctx),
         "play/pick" => pick(ctx, &p),
@@ -85,6 +69,7 @@ pub fn call(ctx: &Ctx, method: &str, raw: Option<&Value>) -> Option<Result<Value
         "play/pop-out" => pop_out(ctx),
         "play/dock" => dock(ctx),
         "play/takes" => list_takes(ctx),
+        "play/takes-reveal" => reveal_takes(ctx),
         "play/take" => one_take(ctx, &p),
         "play/take-delete" => delete_take(ctx, &p),
         "play/notes-save" => save_notes(ctx, &p),
@@ -105,67 +90,65 @@ fn live_session(ctx: &Ctx) -> Result<Arc<Session>, RpcError> {
     session(ctx).ok_or_else(|| fail("no game is running"))
 }
 
-fn owner(ctx: &Ctx, window: Option<&str>) -> Option<Owner> {
-    (ctx.owner)(window)
+/// The Veistra window the game's pane is in.
+fn owner(ctx: &Ctx, s: &Session) -> Option<Owner> {
+    let hosted = ctx.hosts.hosting(&s.embed)?;
+    ctx.hosts.owner_for(&hosted, &ctx.owner)
 }
 
 // --- the pane's box ----------------------------------------------------------
 
-/// The pane's box. Leaving the live view (review, or the pane going away)
-/// sends `visible: false` with any box, 0 x 0 included; the box it had is
-/// kept then, so the next launch is still sized to the pane. A call with no
-/// `window` keeps the one the pane last named: only the shell knows it, so
-/// a page that has not heard from the shell sends none, and taking that for
-/// `main` would re-own the game to `main`, over `main`'s UI.
-fn embed_rect(ctx: &Ctx, p: &P) -> Result<Value, RpcError> {
-    if ![p.x, p.y, p.w, p.h].iter().all(|v| v.is_finite()) || p.w < 0.0 || p.h < 0.0 {
-        return Err(RpcError::new(INVALID_PARAMS, "the box needs x, y, w and h"));
+/// The pane's box, `embed::host`'s box message. It is kept per pane instance,
+/// so the next launch is sized to the pane that pressed Play, and the pane
+/// that sends `visible: true` takes the cluster's game: Play in two panes
+/// hands it between them. A game an agent started with no Play pane open
+/// joins the first pane that shows it ([`join_pane`]).
+fn embed_rect(ctx: &Ctx, raw: Option<&Value>) -> Result<Value, RpcError> {
+    let (asked, window) = host::parse_box(raw)?;
+    let instance = ctx
+        .instance
+        .clone()
+        .ok_or_else(|| fail("play/embed-rect comes from a Play pane, and this call names none"))?;
+    let hosted = session(ctx).and_then(|s| ctx.hosts.hosting(&s.embed));
+    if let (Some(h), true) = (&hosted, asked.visible) {
+        ctx.hosts.claim(h, &instance, (ctx.shown)(&instance));
     }
-    let asked = Last {
-        rect: CssRect {
-            x: p.x,
-            y: p.y,
-            w: p.w,
-            h: p.h,
-        },
-        visible: p.visible,
-        dpr: p.dpr.filter(|d| d.is_finite() && *d > 0.0),
-    };
-    let old = ctx.godot.pane(&ctx.key);
-    let last = Last::then(old.as_ref().map(Pane::last), asked);
-    let window = p.window.clone().or_else(|| old.and_then(|o| o.window));
-    ctx.godot.set_pane(
-        &ctx.key,
-        Pane {
-            rect: last.rect,
-            visible: last.visible,
-            window: window.clone(),
-            dpr: last.dpr,
-        },
-    );
-    if let Some(s) = session(ctx) {
-        s.embed
-            .set_rect(asked, owner(ctx, window.as_deref()).as_ref());
+    ctx.hosts
+        .report_box(&Slot::new(&instance, Kind::Game), asked, window, &ctx.owner);
+    let waiting_for_a_pane = hosted.is_some_and(|h| {
+        matches!(
+            h.embed.state(),
+            EmbedState::OwnWindow {
+                cause: Cause::NoPane,
+                ..
+            }
+        )
+    });
+    if asked.visible && waiting_for_a_pane {
+        join_pane(ctx);
     }
     Ok(json!({ "ok": true }))
 }
 
-/// The Veistra window cluster `key`'s pane is in, looked up when called, for
-/// the thread that waits for a game's window: it asks once the window exists,
-/// and by then the pane may have named its window, or moved, since Play.
-pub fn pane_owner(ctx: &Ctx) -> impl Fn() -> Option<Owner> + Send + Sync + 'static {
-    let (owner, window) = (ctx.owner.clone(), ctx.godot.pane_window(&ctx.key));
-    move || owner(window().as_deref())
+/// A game started with no pane open meets the pane that shows it: placed
+/// when its window appears if it has none yet, docked now if it has. The box
+/// is kept either way, so a failure is only logged.
+fn join_pane(ctx: &Ctx) {
+    let Some(s) = session(ctx) else {
+        return;
+    };
+    if s.embed.rejoin() {
+        replan(ctx, &s);
+    } else if let Err(e) = dock(ctx) {
+        crate::veistra_log!("play: could not dock the game: {}", e.message);
+    }
 }
 
 /// Pop out ends a take going: the recorder captures the whole window, and a
 /// decorated one would put its title bar in the video.
 fn pop_out(ctx: &Ctx) -> Result<Value, RpcError> {
     let s = live_session(ctx)?;
-    let window = ctx.godot.pane(&ctx.key).and_then(|p| p.window);
-    s.embed
-        .pop_out(owner(ctx, window.as_deref()).as_ref())
-        .map_err(fail)?;
+    s.embed.pop_out(owner(ctx, &s).as_ref()).map_err(fail)?;
     if let Some(run) = ctx.godot.runner.get(&ctx.key) {
         s.finish_take(&run);
     }
@@ -176,27 +159,35 @@ fn pop_out(ctx: &Ctx) -> Result<Value, RpcError> {
 /// of the rest of the run.
 fn dock(ctx: &Ctx) -> Result<Value, RpcError> {
     let s = live_session(ctx)?;
-    let window = ctx.godot.pane(&ctx.key).and_then(|p| p.window);
-    let o = owner(ctx, window.as_deref()).ok_or_else(|| fail("the Veistra window is not known"))?;
+    let o = owner(ctx, &s).ok_or_else(|| fail("the Veistra window is not known"))?;
     s.embed.dock(&o).map_err(fail)?;
-    if let (Some(run), Some(root)) = (ctx.godot.runner.get(&ctx.key), ctx.root.as_ref()) {
-        let rel = run
-            .spec
-            .project
-            .strip_prefix(root)
-            .map(|r| r.to_string_lossy().replace('\\', "/"))
-            .ok()
-            .filter(|r| !r.is_empty())
-            .unwrap_or_else(|| ".".to_string());
-        let godot = ctx.godot.version_for_takes();
-        if let Some(plan) = plan_for(ctx, &run.spec.project, &rel, &godot) {
-            s.plan(plan);
-            if let Some(hwnd) = s.embed.hwnd() {
-                s.begin_take(hwnd);
-            }
+    replan(ctx, &s);
+    Ok(json!({ "embed": s.embed.state() }))
+}
+
+/// With Record on, or on a run recorded once (Play <scene>, Still broken),
+/// plan a take of the rest of the run and start it if the window is in the
+/// pane already; one still being looked for starts it when it is placed
+/// (`session::attached`).
+fn replan(ctx: &Ctx, s: &Session) {
+    let (Some(run), Some(root)) = (ctx.godot.runner.get(&ctx.key), ctx.root.as_ref()) else {
+        return;
+    };
+    let rel = run
+        .spec
+        .project
+        .strip_prefix(root)
+        .map(|r| r.to_string_lossy().replace('\\', "/"))
+        .ok()
+        .filter(|r| !r.is_empty())
+        .unwrap_or_else(|| ".".to_string());
+    let godot = ctx.godot.version_for_takes();
+    if let Some(plan) = plan_for(ctx, &run.spec.project, &rel, &godot, s.records_once()) {
+        s.plan(plan);
+        if let Some(hwnd) = s.embed.hwnd() {
+            s.begin_take(hwnd);
         }
     }
-    Ok(json!({ "embed": s.embed.state() }))
 }
 
 // --- Record ------------------------------------------------------------------
@@ -216,39 +207,81 @@ pub fn record_blocked(ctx: &Ctx, project_dir: &Path) -> Option<String> {
     None
 }
 
+/// Record's settings for a project on this computer (X9): whether it is on,
+/// the video's quality, and how many takes each environment keeps. Off
+/// until switched on (open decision 2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RecSettings {
+    pub on: bool,
+    pub quality: String,
+    pub keep: usize,
+}
+
+impl Default for RecSettings {
+    fn default() -> Self {
+        Self {
+            on: false,
+            quality: "720p30".into(),
+            keep: takes::KEEP,
+        }
+    }
+}
+
+/// Every project's settings are one file; two panes saving at once would
+/// each write back the other's old value.
+static SETTINGS_WRITE: Mutex<()> = Mutex::new(());
+
 fn setting_file(ctx: &Ctx) -> PathBuf {
     ctx.cache_root.join("play-record.json")
 }
 
-/// Whether Record is on for this environment: per project, on this
-/// computer, off until switched on (open decision 2).
-pub fn record_on(ctx: &Ctx) -> bool {
-    let Some(root) = ctx.root.as_ref() else {
-        return false;
-    };
-    std::fs::read_to_string(setting_file(ctx))
-        .ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .and_then(|v| v[root.to_string_lossy().as_ref()].as_bool())
-        .unwrap_or(false)
+/// What the settings are kept under: the cluster's project, so all its
+/// environments share them, or the environment when no project is known.
+fn setting_key(ctx: &Ctx) -> Option<String> {
+    let key = ctx.project_root.as_ref().or(ctx.root.as_ref())?;
+    Some(key.to_string_lossy().into_owned())
 }
 
-fn write_record_on(ctx: &Ctx, on: bool) -> Result<(), RpcError> {
-    let root = ctx
-        .root
-        .as_ref()
-        .ok_or_else(|| fail("open a project first"))?;
+/// This project's Record settings. The file once held a bare `on` per
+/// environment, which an environment with nothing newer still reads.
+pub fn rec_settings(ctx: &Ctx) -> RecSettings {
+    let Some(key) = setting_key(ctx) else {
+        return RecSettings::default();
+    };
+    let all: Value = std::fs::read_to_string(setting_file(ctx))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or(Value::Null);
+    if let Ok(saved) = serde_json::from_value::<RecSettings>(all[&key].clone()) {
+        if all[&key].is_object() {
+            return saved;
+        }
+    }
+    let env = ctx.root.as_ref().map(|r| r.to_string_lossy().into_owned());
+    RecSettings {
+        on: env.is_some_and(|env| all[&env].as_bool() == Some(true)),
+        ..RecSettings::default()
+    }
+}
+
+fn write_rec_settings(ctx: &Ctx, settings: &RecSettings) -> Result<(), RpcError> {
+    let key = setting_key(ctx).ok_or_else(|| fail("open a project first"))?;
+    let _one = SETTINGS_WRITE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let path = setting_file(ctx);
     let mut all: Value = std::fs::read_to_string(&path)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .filter(Value::is_object)
         .unwrap_or_else(|| json!({}));
-    all[root.to_string_lossy().as_ref()] = json!(on);
+    all[key] = to_value(settings)?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| fail(format!("could not save Record: {e}")))?;
     }
-    std::fs::write(&path, all.to_string()).map_err(|e| fail(format!("could not save Record: {e}")))
+    super::scene::write_atomic(&path, all.to_string().as_bytes())
+        .map_err(|e| fail(format!("could not save Record: {e}")))
 }
 
 /// Where this environment's takes live: inside it, or for the read-only main
@@ -268,9 +301,18 @@ pub fn takes_dir(ctx: &Ctx) -> Result<PathBuf, RpcError> {
     })
 }
 
-/// The take a run started now will be, if Record is on and possible.
-pub fn plan_for(ctx: &Ctx, project_dir: &Path, project_rel: &str, godot: &str) -> Option<Plan> {
-    if !record_on(ctx) || record_blocked(ctx, project_dir).is_some() {
+/// The take a run started now will be, if Record is on (or `once`, a run
+/// recorded without changing the setting) and possible. `godot` is the
+/// engine's `--version` line.
+pub fn plan_for(
+    ctx: &Ctx,
+    project_dir: &Path,
+    project_rel: &str,
+    godot: &str,
+    once: bool,
+) -> Option<Plan> {
+    let settings = rec_settings(ctx);
+    if !(settings.on || once) || record_blocked(ctx, project_dir).is_some() {
         return None;
     }
     let root = ctx.root.clone()?;
@@ -278,35 +320,68 @@ pub fn plan_for(ctx: &Ctx, project_dir: &Path, project_rel: &str, godot: &str) -
         takes_dir: takes_dir(ctx).ok()?,
         env_root: (!ctx.read_only).then(|| root.clone()),
         project: project_rel.to_string(),
-        godot: godot.to_string(),
+        godot: detect::short_version(godot),
+        godot_build: godot.trim().to_string(),
         environment: super::session::env_info(&root),
+        quality: Quality::named(&settings.quality).unwrap_or(Quality::DEFAULT),
+        keep: settings.keep.max(1),
+        usage: ctx.usage.clone(),
     })
 }
 
-/// Record on or off. While a game runs, on starts a take now and off saves
-/// the one going, so the toggle means "from now", not "from the next run".
+/// `play/record`: Record on or off, its quality, and how many takes each
+/// environment keeps; whatever is absent stays as it was. While a game runs,
+/// on starts a take now and off saves the one going, so the toggle means
+/// "from now", not "from the next run". The quality and keep apply from the
+/// next take: the one recording keeps what it began with, and the keep is
+/// applied when the next take is saved.
 fn set_record(ctx: &Ctx, p: &P) -> Result<Value, RpcError> {
     let project = pick_project_for(ctx, p.project.as_deref())?;
-    if p.on {
+    if p.on == Some(true) {
         if let Some(why) = record_blocked(ctx, &project.dir) {
             return Err(fail(why));
         }
     }
-    write_record_on(ctx, p.on)?;
+    let mut settings = rec_settings(ctx);
+    if let Some(on) = p.on {
+        settings.on = on;
+    }
+    let mut quality = Quality::named(&settings.quality).unwrap_or(Quality::DEFAULT);
+    if let Some(name) = &p.quality {
+        quality = Quality::named(name).ok_or_else(|| {
+            RpcError::new(
+                INVALID_PARAMS,
+                format!("quality is \"720p30\" or \"1080p60\", not {name:?}"),
+            )
+        })?;
+        settings.quality.clone_from(name);
+    }
+    if let Some(keep) = p.keep {
+        if keep == 0 {
+            return Err(RpcError::new(INVALID_PARAMS, "keep at least one take"));
+        }
+        settings.keep = keep;
+    }
+    write_rec_settings(ctx, &settings)?;
     if let (Some(s), Some(run)) = (session(ctx), ctx.godot.runner.get(&ctx.key)) {
-        if p.on {
-            let godot = ctx.godot.version_for_takes();
-            if let Some(plan) = plan_for(ctx, &project.dir, &project.rel, &godot) {
-                s.plan(plan);
-                if let Some(hwnd) = s.embed.hwnd() {
-                    s.begin_take(hwnd);
+        match p.on {
+            Some(true) => {
+                let godot = ctx.godot.version_for_takes();
+                if let Some(plan) = plan_for(ctx, &project.dir, &project.rel, &godot, false) {
+                    s.plan(plan);
+                    if let Some(hwnd) = s.embed.hwnd() {
+                        s.begin_take(hwnd);
+                    }
                 }
             }
-        } else {
-            s.finish_take(&run);
+            Some(false) => {
+                s.stop_recording_once();
+                s.finish_take(&run);
+            }
+            None => s.retune(quality, settings.keep),
         }
     }
-    Ok(json!({ "on": p.on }))
+    Ok(json!({ "on": settings.on, "quality": settings.quality, "keep": settings.keep }))
 }
 
 // --- marks, picks and stills ---------------------------------------------------
@@ -345,11 +420,16 @@ fn pick(ctx: &Ctx, p: &P) -> Result<Value, RpcError> {
 }
 
 /// The frame to show in place of the game while an overlay is open: the
-/// recording's last frame when there is one, else the addon's capture.
+/// recording's last frame while a take runs, else the window's own capture
+/// (`embed::capture`), else the addon's. The capture needs neither Record nor
+/// the addon, so a plain run has a still too.
 fn still(ctx: &Ctx) -> Result<Value, RpcError> {
     let s = live_session(ctx)?;
     if let Some(png) = s.still_png() {
         return Ok(json!({ "png": BASE64.encode(png), "source": "recording" }));
+    }
+    if let Some(png) = s.embed.still_png() {
+        return Ok(json!({ "png": BASE64.encode(png), "source": "capture" }));
     }
     let reply = super::addon::send(
         &channel(&s)?,
@@ -419,6 +499,23 @@ fn list_takes(ctx: &Ctx) -> Result<Value, RpcError> {
     Ok(json!({ "takes": to_value(&listed)?, "dir": dir.display().to_string() }))
 }
 
+/// `play/takes-reveal`: open this environment's takes folder in the file
+/// manager, making it first when no take has been saved yet. The folder is
+/// shown, never chosen: the asset scope, retention and the git exclude all
+/// assume takes live where [`takes_dir`] says.
+fn reveal_takes(ctx: &Ctx) -> Result<Value, RpcError> {
+    let dir = takes_dir(ctx)?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| fail(format!("could not create {}: {e}", dir.display())))?;
+    if let Some(root) = ctx.root.as_ref().filter(|_| !ctx.read_only) {
+        if let Err(e) = takes::ensure_excluded(root) {
+            crate::veistra_log!("play: could not keep takes out of git: {e}");
+        }
+    }
+    (ctx.reveal)(&dir).map_err(fail)?;
+    Ok(json!({ "dir": dir.display().to_string() }))
+}
+
 fn take_id(p: &P) -> Result<String, RpcError> {
     p.id.clone()
         .or_else(|| p.take.clone())
@@ -435,16 +532,20 @@ fn one_take(ctx: &Ctx, p: &P) -> Result<Value, RpcError> {
         "take": to_value(&listed)?,
         "urls": urls(&dir.join(&id)),
         "notes": takes::load_notes(&dir, &id),
+        // Why Send's "Video clip per note" cannot be ticked here, or null.
+        "clipUnavailable": super::clip::unavailable(),
     }))
 }
 
 fn delete_take(ctx: &Ctx, p: &P) -> Result<Value, RpcError> {
     let dir = takes_dir(ctx)?;
     let id = take_id(p)?;
-    if session(ctx).is_some_and(
-        |s| matches!(s.take_state(), TakeState::Recording { id: ref now, .. } if *now == id),
-    ) {
-        return Err(fail("that take is still recording"));
+    let busy = |s: &Session| match s.take_state() {
+        TakeState::Recording { id: now, .. } | TakeState::Saving { id: now, .. } => now == id,
+        _ => false,
+    };
+    if session(ctx).is_some_and(|s| busy(&s)) {
+        return Err(fail("that take is still being recorded or saved"));
     }
     takes::delete(&dir, &id).map_err(fail)?;
     Ok(json!({ "deleted": id }))
@@ -476,66 +577,35 @@ fn send(ctx: &Ctx, raw: Option<&Value>) -> Result<Value, RpcError> {
     to_value(&sent)
 }
 
-/// The notes Send filed for this environment, with their status, newest
-/// take first; `take` narrows it to one take.
+/// The notes Send filed for this environment, with their status; `take`
+/// narrows it to the notes with that take in their history, and the one a
+/// Still broken take was recorded for, so its review shows that note's
+/// thread before anything is sent from it.
 fn notes(ctx: &Ctx, p: &P) -> Result<Value, RpcError> {
     let context = crate::apps::CallContext {
         cluster_id: Some(ctx.key.clone()),
         project: ctx.root.clone(),
     };
     let all = crate::comments::list(&context)?;
+    let checking = match &p.take {
+        Some(take) => takes_dir(ctx)
+            .ok()
+            .and_then(|dir| takes::read(&dir, take).ok())
+            .and_then(|t| t.summary.follow_up)
+            .map(|f| f.comment),
+        None => None,
+    };
     let wanted: Vec<_> = all
         .into_iter()
-        .filter(|c| match (&c.anchor, &p.take) {
-            (crate::comments::Anchor::Take { take, .. }, Some(want)) => take == want,
-            (crate::comments::Anchor::Take { .. }, None) => true,
-            _ => false,
+        .filter(|c| match &p.take {
+            Some(want) => {
+                checking.as_deref() == Some(c.id.as_str())
+                    || c.takes().iter().any(|t| &t.take == want)
+            }
+            None => matches!(c.anchor, crate::comments::Anchor::Take { .. }),
         })
         .collect();
     Ok(json!({ "notes": to_value(&wanted)? }))
-}
-
-/// Whether cluster `key`'s Play pane is on screen: the cluster is the one
-/// some window shows, and a Play instance is the active tab of one of its
-/// panes. Anything else (another tab, another cluster, a closed window)
-/// hides the game, which keeps running.
-pub fn play_shown(snapshot: &crate::shell_state::ShellSnapshot, key: &str) -> bool {
-    use crate::layout::PaneNode;
-    fn active(node: &PaneNode, out: &mut Vec<String>) {
-        match node {
-            PaneNode::Leaf { active_tab, .. } => out.extend(active_tab.clone()),
-            PaneNode::Split { children, .. } => children.iter().for_each(|c| active(c, out)),
-        }
-    }
-    snapshot.windows.iter().any(|w| {
-        w.active_cluster_id.as_deref() == Some(key)
-            && w.clusters.iter().filter(|c| c.id == key).any(|c| {
-                let mut tabs = Vec::new();
-                active(&c.tree, &mut tabs);
-                tabs.iter().any(|tab| {
-                    snapshot
-                        .instances
-                        .iter()
-                        .any(|i| &i.id == tab && i.app_id == "play")
-                })
-            })
-    })
-}
-
-/// Hide or show every running game after a change to the shell's state.
-/// Called beside `plane_webview::sync_visibility`, for the same reasons.
-pub fn sync_visibility(app: &tauri::AppHandle, snapshot: &crate::shell_state::ShellSnapshot) {
-    use tauri::Manager;
-    let godot = app.state::<super::Godot>();
-    for (key, session) in godot.live_sessions() {
-        if !session.embed.set_shown(play_shown(snapshot, &key)) {
-            continue;
-        }
-        let label = godot.pane(&key).and_then(|p| p.window);
-        if let Some(owner) = super::rpc::owner_of(app, label.as_deref()) {
-            session.embed.reapply(&owner);
-        }
-    }
 }
 
 /// `root/rel` when `rel` is a plain relative folder (`.` for the root) that
@@ -587,9 +657,16 @@ pub fn state(ctx: &Ctx, key_since: u64, project: Option<&str>) -> Value {
         run.as_ref().map(|r| r.spec.project.as_path()),
     );
     let blocked = dir.as_ref().and_then(|d| record_blocked(ctx, d));
+    let settings = rec_settings(ctx);
+    // `inEnvironment`: the folder is the environment's `.veistra/takes/`,
+    // kept out of git; on read-only main it is under the app's data instead.
     let record = json!({
-        "on": record_on(ctx),
+        "on": settings.on,
+        "quality": settings.quality,
+        "keep": settings.keep,
         "blocked": blocked,
+        "dir": takes_dir(ctx).ok().map(|d| d.display().to_string()),
+        "inEnvironment": !ctx.read_only,
     });
     let Some(s) = s else {
         return json!({ "record": record, "session": Value::Null });
@@ -614,6 +691,7 @@ pub fn state(ctx: &Ctx, key_since: u64, project: Option<&str>) -> Value {
             "ticks": s.ticks(),
             "mouseCaptured": s.mouse_captured(),
             "addon": s.channel.as_deref().and_then(super::addon::running_version),
+            "followUp": s.follow_up,
         },
     })
 }
@@ -621,74 +699,10 @@ pub fn state(ctx: &Ctx, key_since: u64, project: Option<&str>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::PaneNode;
-    use crate::shell_state::{
-        Cluster, ShellSnapshot, SurfaceInstance, SurfaceKind, WindowPlacement,
-    };
-
-    fn snapshot(active_cluster: &str, active_tab: &str) -> ShellSnapshot {
-        let cluster = |id: &str| Cluster {
-            id: id.to_string(),
-            name: id.to_string(),
-            tree: PaneNode::Leaf {
-                id: format!("{id}-pane"),
-                tabs: vec![format!("{id}-play"), format!("{id}-files")],
-                active_tab: Some(format!("{id}-{active_tab}")),
-            },
-            project: None,
-            worktree: None,
-            active_terminal: None,
-            band_height: None,
-            page: None,
-            environment: None,
-            pinned: false,
-            icon: None,
-            environment_missing: false,
-        };
-        let instance = |id: &str, app: &str| SurfaceInstance {
-            id: id.to_string(),
-            app_id: app.to_string(),
-            kind: SurfaceKind::App,
-            title: app.to_string(),
-        };
-        ShellSnapshot {
-            windows: vec![WindowPlacement {
-                label: "main".into(),
-                clusters: vec![cluster("c1"), cluster("c2")],
-                active_cluster_id: Some(active_cluster.to_string()),
-                geometry: None,
-                right_page: None,
-            }],
-            instances: ["c1", "c2"]
-                .iter()
-                .flat_map(|c| {
-                    [
-                        instance(&format!("{c}-play"), "play"),
-                        instance(&format!("{c}-files"), "files"),
-                    ]
-                })
-                .collect(),
-            terminals: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn the_game_shows_only_with_its_cluster_on_screen_and_play_the_active_tab() {
-        assert!(play_shown(&snapshot("c1", "play"), "c1"));
-        assert!(!play_shown(&snapshot("c1", "files"), "c1"), "another tab");
-        assert!(
-            !play_shown(&snapshot("c2", "play"), "c1"),
-            "another cluster"
-        );
-        assert!(
-            !play_shown(&snapshot("c1", "play"), "c9"),
-            "no such cluster"
-        );
-    }
-
     struct World {
         dir: tempfile::TempDir,
         godot: super::super::Godot,
+        hosts: crate::embed::host::Hosts,
     }
 
     fn world() -> World {
@@ -704,6 +718,7 @@ mod tests {
         World {
             dir,
             godot: super::super::Godot::default(),
+            hosts: crate::embed::host::Hosts::with(crate::embed::native(), false, false),
         }
     }
 
@@ -712,6 +727,7 @@ mod tests {
             godot: &w.godot,
             key: "c1".into(),
             root: Some(w.dir.path().to_path_buf()),
+            project_root: Some(w.dir.path().to_path_buf()),
             read_only: false,
             probe: super::super::detect::Probe::default(),
             check: &|_| Err("no engine here".into()),
@@ -719,7 +735,253 @@ mod tests {
             scratch: w.dir.path().join("scratch"),
             owner: Arc::new(|_| None),
             allow_asset: &|_| {},
+            reveal: &|_| Ok(()),
+            hosts: &w.hosts,
+            instance: Some("play-1".into()),
+            shown: &|_| true,
+            usage: Arc::new(|_, _| {}),
         }
+    }
+
+    /// X9: Record is the project's, so each of its environments has it on
+    /// at once, and an environment switched on before that is still on.
+    #[test]
+    fn record_is_off_until_switched_on_and_shared_by_a_project_s_environments() {
+        let w = world();
+        let c = ctx(&w);
+        assert_eq!(rec_settings(&c), RecSettings::default());
+        assert!(!rec_settings(&c).on);
+
+        let record = |c: &Ctx, params: Value| call(c, "play/record", Some(&params)).unwrap();
+        let saved = record(
+            &c,
+            json!({ "project": "game", "on": false, "quality": "1080p60", "keep": 3 }),
+        )
+        .unwrap();
+        assert_eq!(
+            saved,
+            json!({ "on": false, "quality": "1080p60", "keep": 3 })
+        );
+        for bad in [
+            json!({ "project": "game", "quality": "4k" }),
+            json!({ "project": "game", "keep": 0 }),
+        ] {
+            let e = record(&c, bad.clone()).unwrap_err();
+            assert_eq!(e.code, INVALID_PARAMS, "{bad}");
+        }
+        let on = RecSettings {
+            on: true,
+            ..rec_settings(&c)
+        };
+        write_rec_settings(&c, &on).unwrap();
+        let other_env = w.dir.path().join("other");
+        let sibling = Ctx {
+            root: Some(other_env.clone()),
+            ..ctx(&w)
+        };
+        assert_eq!(
+            rec_settings(&sibling),
+            on,
+            "the project's, not the environment's"
+        );
+        assert_eq!(state(&sibling, 0, None)["record"]["keep"], 3);
+
+        let elsewhere = Ctx {
+            root: Some(other_env.clone()),
+            project_root: Some(w.dir.path().join("another-project")),
+            ..ctx(&w)
+        };
+        assert!(!rec_settings(&elsewhere).on, "another project's is its own");
+        let mut legacy = serde_json::Map::new();
+        legacy.insert(other_env.to_string_lossy().into_owned(), json!(true));
+        std::fs::write(setting_file(&c), Value::Object(legacy).to_string()).unwrap();
+        let read = rec_settings(&elsewhere);
+        assert!(read.on, "the old per-environment switch still counts");
+        assert_eq!((read.quality.as_str(), read.keep), ("720p30", takes::KEEP));
+    }
+
+    /// The settings popover sends the quality or the keep alone. Neither may
+    /// switch Record off, nor save the take a running game is waiting to start.
+    #[test]
+    fn a_settings_change_alone_leaves_record_and_the_take_as_they_were() {
+        let w = world();
+        let c = ctx(&w);
+        let on = RecSettings {
+            on: true,
+            ..RecSettings::default()
+        };
+        write_rec_settings(&c, &on).unwrap();
+        let spec = super::super::runner::RunSpec {
+            program: super::super::testing::fake_godot(w.dir.path(), true),
+            project: w.dir.path().join("game"),
+            scene: None,
+            channel: None,
+            window: None,
+        };
+        let run = w.godot.runner.start("c1", spec).unwrap();
+        let takes = takes_dir(&c).unwrap();
+        let plan = Plan {
+            takes_dir: takes.clone(),
+            env_root: None,
+            project: "game".into(),
+            godot: "4.5.1".into(),
+            godot_build: String::new(),
+            environment: takes::EnvInfo::default(),
+            quality: Quality::DEFAULT,
+            keep: 10,
+            usage: Arc::new(|_, _| {}),
+        };
+        let s = Arc::new(Session::new(run.id, None, Some(plan)));
+        w.godot.set_session("c1", s.clone());
+        let params = json!({ "project": "game", "quality": "1080p60", "keep": 4 });
+        let saved = call(&c, "play/record", Some(&params)).unwrap();
+        let after = s.take_state();
+        assert_eq!(w.godot.runner.stop("c1"), Ok(true));
+        assert_eq!(
+            saved.unwrap(),
+            json!({ "on": true, "quality": "1080p60", "keep": 4 })
+        );
+        assert_eq!(after, TakeState::Starting { number: 1 }, "not saved");
+        let record = state(&c, 0, None)["record"].clone();
+        assert_eq!(record["dir"], takes.display().to_string());
+        assert_eq!(record["inEnvironment"], true);
+    }
+
+    /// Show folder opens the environment's own takes folder, made if no take
+    /// was saved yet, and on read-only main the one under the app's data,
+    /// leaving main's checkout untouched.
+    #[test]
+    fn show_folder_opens_the_takes_folder_and_never_writes_to_main() {
+        let w = world();
+        let opened: Mutex<Vec<PathBuf>> = Mutex::default();
+        let reveal = |dir: &Path| {
+            opened.lock().unwrap().push(dir.to_path_buf());
+            Ok(())
+        };
+        let worktree = Ctx {
+            reveal: &reveal,
+            ..ctx(&w)
+        };
+        let answer = call(&worktree, "play/takes-reveal", None).unwrap().unwrap();
+        let own = takes::dir_in(w.dir.path());
+        assert!(own.is_dir(), "made before it is opened");
+        assert_eq!(answer["dir"], own.display().to_string());
+
+        std::fs::remove_dir_all(w.dir.path().join(".veistra")).unwrap();
+        let main = Ctx {
+            read_only: true,
+            reveal: &reveal,
+            ..ctx(&w)
+        };
+        call(&main, "play/takes-reveal", None).unwrap().unwrap();
+        let opened = opened.lock().unwrap().clone();
+        assert_eq!(opened.len(), 2);
+        assert_eq!(opened[0], own);
+        assert!(
+            opened[1].starts_with(w.dir.path().join("appdata")),
+            "{opened:?}"
+        );
+        assert!(
+            !w.dir.path().join(".veistra").exists(),
+            "main is not written"
+        );
+        assert_eq!(state(&main, 0, None)["record"]["inEnvironment"], false);
+
+        let refused = Ctx {
+            reveal: &|_| Err("no file manager".into()),
+            ..ctx(&w)
+        };
+        let e = call(&refused, "play/takes-reveal", None)
+            .unwrap()
+            .unwrap_err();
+        assert!(e.message.contains("no file manager"), "{}", e.message);
+    }
+
+    /// A Still broken take's review lists the note it checks before anything
+    /// is sent from it, and each take in a note's history finds the note.
+    #[test]
+    fn a_take_lists_the_notes_in_its_history_and_the_one_it_checks() {
+        use crate::comments::{self, Anchor, Draft, TakeRef};
+        let w = world();
+        let c = ctx(&w);
+        let context = crate::apps::CallContext {
+            cluster_id: Some("c1".into()),
+            project: Some(w.dir.path().to_path_buf()),
+        };
+        let (four, five, six) = (
+            "2026-10-30-1402-0f3a",
+            "2026-10-30-1440-9b1c",
+            "2026-10-30-1502-0c0c",
+        );
+        let note = comments::create(
+            &context,
+            Draft {
+                anchor: Anchor::Take {
+                    take: four.into(),
+                    number: Some(4),
+                    n: 2,
+                    at_ms: 102_000,
+                    in_ms: None,
+                    out_ms: None,
+                    packet: format!(".veistra/feedback/{four}-1"),
+                    scene: None,
+                    node_path: None,
+                },
+                body: "walks into the wall".into(),
+                screenshot_png: None,
+            },
+        )
+        .unwrap();
+        let checking = takes::FollowUp {
+            comment: note.id.clone(),
+            take: four.into(),
+            n: 2,
+            number: Some(4),
+            reply: "Still broken.".into(),
+        };
+        takes::finish(&takes::Finish {
+            dir: &takes::dir_in(w.dir.path()).join(five),
+            id: five,
+            number: 5,
+            project: "game",
+            environment: takes::EnvInfo::default(),
+            godot: "4.5.1",
+            godot_build: "4.5.1.stable.official.f62fdbde1",
+            started_at: 1_000,
+            ended_at: 9_000,
+            video: takes::VideoInfo::default(),
+            channel: None,
+            log: &[],
+            marks: &[],
+            follow_up: Some(&checking),
+        })
+        .unwrap();
+        let listed = |take: &str| -> Vec<Value> {
+            let answer = call(&c, "play/notes", Some(&json!({ "take": take })))
+                .unwrap()
+                .unwrap();
+            answer["notes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|n| n["id"].clone())
+                .collect()
+        };
+        let one = vec![json!(note.id)];
+        assert_eq!(listed(four), one);
+        assert_eq!(listed(five), one, "checked before it is sent");
+        assert!(listed(six).is_empty());
+        let link = TakeRef {
+            take: six.into(),
+            number: Some(6),
+            packet: format!(".veistra/feedback/{six}-1"),
+            n: 1,
+            at_ms: 0,
+            in_ms: None,
+            out_ms: None,
+        };
+        comments::add_take(&context, &note.id, link, "still".into(), None).unwrap();
+        assert_eq!(listed(six), one, "sent from it");
     }
 
     #[test]
@@ -766,53 +1028,17 @@ mod tests {
         assert_eq!(record_project(Some(root), None, None, None), None);
     }
 
+    /// An agent's `play/run` with no Play pane open, and Play opened while the
+    /// game is still loading: the pane's first box puts the game back to being
+    /// looked for, to be placed when its window shows, instead of failing the
+    /// report and leaving the game in its own frame.
     #[test]
-    fn the_box_keeps_the_page_s_pixel_ratio_and_a_hide_keeps_the_box() {
-        let w = world();
-        let c = ctx(&w);
-        let rect = json!({ "x": 10, "y": 20, "w": 800, "h": 400, "visible": true, "window": "main", "dpr": 1.25 });
-        call(&c, "play/embed-rect", Some(&rect)).unwrap().unwrap();
-        let pane = w.godot.pane("c1").unwrap();
-        assert_eq!((pane.rect.w, pane.dpr), (800.0, Some(1.25)));
-        let hide = json!({ "x": 0, "y": 0, "w": 0, "h": 0, "visible": false });
-        call(&c, "play/embed-rect", Some(&hide)).unwrap().unwrap();
-        let pane = w.godot.pane("c1").unwrap();
-        assert!(!pane.visible);
-        assert_eq!(
-            (pane.rect.w, pane.dpr),
-            (800.0, Some(1.25)),
-            "kept for the next launch"
-        );
-        let zero = json!({ "x": 0, "y": 0, "w": 10, "h": 10, "visible": true, "dpr": 0 });
-        call(&c, "play/embed-rect", Some(&zero)).unwrap().unwrap();
-        assert_eq!(
-            w.godot.pane("c1").unwrap().dpr,
-            None,
-            "an unusable ratio is not kept"
-        );
-        let bad = json!({ "x": 0, "y": 0, "w": -1, "h": 0, "visible": false });
-        assert!(call(&c, "play/embed-rect", Some(&bad)).unwrap().is_err());
-    }
-
-    #[test]
-    fn a_hide_without_a_window_keeps_the_game_in_the_window_the_pane_is_in() {
-        let w = world();
-        let asked = Arc::new(std::sync::Mutex::new(Vec::<Option<String>>::new()));
-        let log = asked.clone();
-        let c = Ctx {
-            owner: Arc::new(move |label| {
-                log.lock().unwrap().push(label.map(str::to_string));
-                Some(Owner {
-                    hwnd: if label == Some("w2") { 2 } else { 1 },
-                    origin: (0, 0),
-                    scale: 1.0,
-                })
-            }),
-            ..ctx(&w)
-        };
-        // Play pressed from review in a second Veistra window: the live view
-        // has not named its window yet.
-        let attach_owner = pane_owner(&c);
+    fn a_play_pane_that_opens_before_an_agent_s_game_shows_takes_it() {
+        use crate::embed::host::{HostSpec, Hosts, Orphan};
+        use crate::embed::OwnerFn;
+        let fake = Arc::new(crate::embed::tests::Fake::finding_after(usize::MAX));
+        let mut w = world();
+        w.hosts = Hosts::with(fake, true, false);
         let spec = super::super::runner::RunSpec {
             program: super::super::testing::fake_godot(w.dir.path(), true),
             project: w.dir.path().join("game"),
@@ -821,25 +1047,79 @@ mod tests {
             window: None,
         };
         let run = w.godot.runner.start("c1", spec).unwrap();
-        w.godot
-            .set_session("c1", Arc::new(Session::new(run.id, None, None)));
-        let live = json!({ "x": 10, "y": 20, "w": 800, "h": 400, "visible": true, "window": "w2" });
-        call(&c, "play/embed-rect", Some(&live)).unwrap().unwrap();
-        let hide = json!({ "x": 0, "y": 0, "w": 0, "h": 0, "visible": false });
-        call(&c, "play/embed-rect", Some(&hide)).unwrap().unwrap();
-        let window = w.godot.pane("c1").and_then(|p| p.window);
+        let embed = w.hosts.embed(Kind::Game);
+        let session = Session::with_embed(run.id, None, None, embed.clone());
+        w.godot.set_session("c1", Arc::new(session));
+        let (alive, nowhere): (_, OwnerFn) = (run.clone(), Arc::new(|_| None));
+        let hosted = w.hosts.host(
+            nowhere,
+            false,
+            HostSpec {
+                instance: None,
+                cluster: "c1".into(),
+                embed: embed.clone(),
+                pids: Box::new(Vec::new),
+                alive: Arc::new(move || alive.is_running()),
+                on_attached: None,
+                on_orphan: Orphan::Stop(Box::new(|| {})),
+            },
+        );
+        let before = embed.state();
+        let rect =
+            json!({ "x": 10, "y": 20, "w": 800, "h": 400, "visible": true, "window": "main" });
+        let reply = call(&ctx(&w), "play/embed-rect", Some(&rect)).unwrap();
+        let after = embed.state();
         // Clean-up only: nothing below depends on how the stop went.
         let _ = w.godot.runner.stop("c1");
-        assert_eq!(window.as_deref(), Some("w2"));
-        assert_eq!(
-            asked.lock().unwrap().last(),
-            Some(&Some("w2".to_string())),
-            "the hide is made in w2, not main"
+        assert!(
+            matches!(
+                before,
+                EmbedState::OwnWindow {
+                    cause: Cause::NoPane,
+                    ..
+                }
+            ),
+            "{before:?}"
         );
+        assert!(reply.is_ok(), "{reply:?}");
+        assert_eq!(after, EmbedState::Waiting, "to be placed when it shows");
+        assert_eq!(hosted.instance().as_deref(), Some("play-1"));
+    }
+
+    #[test]
+    fn the_box_is_kept_per_pane_with_the_page_s_pixel_ratio_and_a_hide_keeps_it() {
+        let w = world();
+        let c = ctx(&w);
+        let pane = || w.hosts.box_of(&Slot::new("play-1", Kind::Game)).unwrap();
+        let rect = json!({ "x": 10, "y": 20, "w": 800, "h": 400, "visible": true, "window": "main", "dpr": 1.25 });
+        call(&c, "play/embed-rect", Some(&rect)).unwrap().unwrap();
+        assert_eq!((pane().rect.w, pane().dpr), (800.0, Some(1.25)));
+        let hide = json!({ "x": 0, "y": 0, "w": 0, "h": 0, "visible": false });
+        call(&c, "play/embed-rect", Some(&hide)).unwrap().unwrap();
+        assert!(!pane().visible);
         assert_eq!(
-            attach_owner().map(|o| o.hwnd),
-            Some(2),
-            "attach asks where the pane is when the game shows up"
+            (pane().rect.w, pane().dpr, pane().window.as_deref()),
+            (800.0, Some(1.25), Some("main")),
+            "kept for the next launch"
+        );
+        let zero = json!({ "x": 0, "y": 0, "w": 10, "h": 10, "visible": true, "dpr": 0 });
+        call(&c, "play/embed-rect", Some(&zero)).unwrap().unwrap();
+        assert_eq!(pane().dpr, None, "an unusable ratio is not kept");
+        let bad = json!({ "x": 0, "y": 0, "w": -1, "h": 0, "visible": false });
+        assert!(call(&c, "play/embed-rect", Some(&bad)).unwrap().is_err());
+        let nobody = Ctx {
+            instance: None,
+            ..ctx(&w)
+        };
+        assert!(
+            call(&nobody, "play/embed-rect", Some(&rect))
+                .unwrap()
+                .is_err(),
+            "a box belongs to a pane"
+        );
+        assert!(
+            w.hosts.box_of(&Slot::new("play-2", Kind::Game)).is_none(),
+            "another pane's box is its own"
         );
     }
 
