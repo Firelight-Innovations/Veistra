@@ -316,3 +316,31 @@ fn only_the_last_acks_are_kept() {
     assert_eq!(c.acks.len(), ACKS_KEPT);
     assert_eq!(c.acks.front().map(|a| a.n), Some(10));
 }
+
+/// The two editors' halves of the files ship as text inside this build, so
+/// what each one writes is held to what this module reads.
+#[test]
+fn both_tabs_keep_to_the_rules_these_files_are_read_with() {
+    let boot = crate::blender::BOOT_SCRIPT;
+    let dock = crate::godot::plugin::DOCK;
+    let max = format!("MAX_TEXT = {MAX_TEXT}");
+    assert!(boot.contains(&max), "veistra_boot.py's MAX_TEXT");
+    assert!(dock.contains(&format!("const MAX_TEXT := {MAX_TEXT}")));
+    for name in [NOTES, EVENTS] {
+        assert!(boot.contains(name) && dock.contains(name), "{name}");
+    }
+    for script in [boot, dock] {
+        assert!(script.contains("\"ask-%d.png\" % n"));
+        for kind in ["ask", "verdict", "markup"] {
+            assert!(script.contains(&format!("\"kind\": \"{kind}\"")), "{kind}");
+        }
+        // The comment store is the pane's: no path into it, in either.
+        assert!(!script.contains("\".veistra") && !script.contains("\"comments\""));
+    }
+    // Blender: the tab is registered with the rest, after the channel check,
+    // and a picture never becomes an image in the person's file.
+    let register = &boot[boot.find("def register():").unwrap()..];
+    let guard = register.find("if not CHANNEL:").unwrap();
+    assert!(register.find("register_tab()").unwrap() > guard);
+    assert!(!boot.contains("images.new") && !boot.contains("\"UNDO\""));
+}
