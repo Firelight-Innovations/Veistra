@@ -449,12 +449,16 @@ pub fn kill_tree(pid: u32) {
     }
 }
 
-/// The run was started as its own process group, so a negative pid reaches
-/// every descendant that did not leave it.
+/// A run is started as its own process group, so a negative pid reaches every
+/// descendant that did not leave it. The `--` is what makes it a pid: POSIX
+/// puts a negative operand after it, and procps-ng's `kill` reads a bare
+/// `-<pid>` as an option, kills nothing and still exits 0. The plain pid
+/// reaches a child that is not a group leader (scene.rs's dump), where the
+/// group kill finds no group.
 #[cfg(not(windows))]
 pub fn kill_tree(pid: u32) {
     let _ = std::process::Command::new("kill")
-        .args(["-KILL", &format!("-{pid}")])
+        .args(["-KILL", "--", &format!("-{pid}"), &pid.to_string()])
         .output();
 }
 
@@ -672,6 +676,44 @@ mod tests {
             Ok(false),
             "stopping twice is not an error"
         );
+    }
+
+    /// The `kill` this calls takes a bare `-<pid>` for an option on procps-ng,
+    /// and stopped nothing on Linux while it said it had.
+    #[cfg(unix)]
+    #[test]
+    fn kill_tree_reaches_a_group_s_grandchild_and_a_child_that_leads_no_group() {
+        use std::os::unix::process::CommandExt;
+        // Long enough that only a kill ends them, short enough that a kill
+        // that misses fails the test in seconds. The grandchild holds stdout
+        // too, so the pipe closes only once both are gone.
+        let mut leader = std::process::Command::new("sh")
+            .args(["-c", "sleep 20 & wait"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let mut out = leader.stdout.take().unwrap();
+        let (tx, closed) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = out.read_to_end(&mut Vec::new());
+            let _ = tx.send(());
+        });
+        kill_tree(leader.id());
+        assert_eq!(leader.wait().unwrap().code(), None, "killed, not exited");
+        assert!(
+            closed.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "the grandchild is gone too"
+        );
+
+        let mut plain = std::process::Command::new("sleep")
+            .arg("20")
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap();
+        kill_tree(plain.id());
+        assert_eq!(plain.wait().unwrap().code(), None, "the child itself dies");
     }
 
     #[test]
