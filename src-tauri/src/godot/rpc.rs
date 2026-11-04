@@ -1,5 +1,6 @@
 //! The methods the Godot app answers over the bridge, for both of its modes:
-//! Editor's `godot-viewer/*` and Play's `play/*`, with `godot/*` shared.
+//! Editor's `godot-viewer/*` and `godot/editor-*` ([`super::editor`]), Play's
+//! `play/*`, with the rest of `godot/*` shared.
 //!
 //! [`Ctx`] carries everything a method needs - which cluster asked, its
 //! environment root, whether that environment is the read-only main checkout,
@@ -8,9 +9,10 @@
 //! only has to build one from the live application.
 //!
 //! What is allowed on the read-only main checkout (#163): **running and viewing
-//! are**, because they read the project. Installing the capture addon is not,
-//! and neither is launching the editor - both are refused there, and both are
-//! also in `apps::WRITE_METHODS` so the refusal happens before a handler runs.
+//! are**, because they read the project. Installing the capture addon or the
+//! editor plugin is not, and neither is launching the editor or saving from it
+//! - each is refused there, and is also in `apps::WRITE_METHODS` so the
+//! refusal happens before a handler runs.
 //! Two things still touch a main checkout that Veistra does not control: Godot
 //! itself keeps an import cache in `<project>/.godot/` whenever it loads a
 //! project, and that folder is gitignored by every Godot template. The viewer's
@@ -39,7 +41,7 @@ use std::time::Duration;
 use veistra_rpc::{RpcError, INTERNAL_ERROR, INVALID_PARAMS, METHOD_NOT_FOUND};
 
 /// Code for a write refused on main; the same value `apps::READ_ONLY` uses.
-const READ_ONLY: i32 = -32003;
+pub(super) const READ_ONLY: i32 = -32003;
 
 pub type Check<'a> = &'a dyn Fn(&Path) -> Result<String, String>;
 
@@ -83,6 +85,9 @@ pub struct Ctx<'a> {
     /// Whether a pane instance is on screen now, from the shell's state.
     pub shown: &'a dyn Fn(&str) -> bool,
     pub usage: Usage,
+    /// Whether an agent session is working in this environment now, for the
+    /// editor's banner ([`crate::agent_activity`]).
+    pub agent: &'a dyn Fn() -> bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -133,7 +138,7 @@ pub fn common(ctx: &Ctx, method: &str, raw: Option<&Value>) -> Option<Result<Val
     Some(match method {
         "godot/status" => params(raw).and_then(|p| status(ctx, &p)),
         "godot/open-editor" => params(raw).and_then(|p| open_editor(ctx, &p)),
-        _ => return None,
+        _ => return super::editor::call(ctx, method, raw),
     })
 }
 
@@ -233,11 +238,11 @@ pub(super) fn pick_project_for(ctx: &Ctx, rel: Option<&str>) -> Result<GodotProj
     }
 }
 
-fn engine(ctx: &Ctx, refresh: bool) -> Resolution {
+pub(super) fn engine(ctx: &Ctx, refresh: bool) -> Resolution {
     ctx.godot.executable(&ctx.probe, refresh, ctx.check)
 }
 
-fn require_engine(ctx: &Ctx) -> Result<Found, RpcError> {
+pub(super) fn require_engine(ctx: &Ctx) -> Result<Found, RpcError> {
     let resolution = engine(ctx, false);
     resolution.found.ok_or_else(|| {
         let why = resolution.problems.first().cloned().unwrap_or_default();
@@ -259,6 +264,7 @@ fn status(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
     for project in &list {
         let mut v = to_value(project)?;
         v["addon"] = to_value(&addon::status(&project.dir))?;
+        v["plugin"] = to_value(&super::plugin::status(&project.dir))?;
         described.push(v);
     }
     let editor = editor_surface::decide(
@@ -285,10 +291,15 @@ fn status(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
         },
         "projects": described,
         "editor": editor,
+        "pluginProblem": resolution
+            .found
+            .as_ref()
+            .and_then(|f| super::plugin::too_old(f.major, f.minor)),
     }))
 }
 
-/// `godot --editor --path <project>`
+/// `godot --editor --path <project>`: Open in Godot, the editor in its own
+/// window. The one in the pane is [`super::editor::launch_args`].
 pub fn editor_args(project: &Path) -> Vec<String> {
     vec![
         "--editor".to_string(),
@@ -313,14 +324,29 @@ fn open_editor(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
             project.name
         )));
     }
-    let pid = spawn_detached(&found.path, &editor_args(&project.dir), &project.dir)
+    if ctx.godot.editors.holding(&project.dir).is_some() {
+        return Err(fail(
+            "The Godot editor is already open on this project in Veistra. Use Pop out to give it \
+             its own window.",
+        ));
+    }
+    let mut child = detached(&found.path, &editor_args(&project.dir), &project.dir)
+        .spawn()
         .map_err(|e| fail(format!("could not start Godot: {e}")))?;
+    let pid = child.id();
+    // Reaps the child if it exits while Veistra is still running. Nothing
+    // else holds it: this editor is the person's, in a window of its own.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
     Ok(json!({ "pid": pid, "project": project.rel, "godot": found.version }))
 }
 
-/// Start a program that outlives Veistra: its own process group, no console, no
-/// pipes. The editor is the person's to close; Veistra does not supervise it.
-fn spawn_detached(program: &Path, args: &[String], cwd: &Path) -> std::io::Result<u32> {
+/// A program that outlives Veistra: its own process group, no console, no
+/// pipes. Both editors start this way, Open in Godot's and the pane's
+/// ([`super::editor`]); only the pane's keeps a handle, to follow it, and
+/// neither is ever killed by Veistra.
+pub(super) fn detached(program: &Path, args: &[String], cwd: &Path) -> std::process::Command {
     let mut command = std::process::Command::new(program);
     command
         .args(args)
@@ -340,13 +366,7 @@ fn spawn_detached(program: &Path, args: &[String], cwd: &Path) -> std::io::Resul
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    let mut child = command.spawn()?;
-    let pid = child.id();
-    // Reaps the child if it exits while Veistra is still running.
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(pid)
+    command
 }
 
 // --- Play -------------------------------------------------------------------
@@ -378,7 +398,7 @@ fn stop_run(ctx: &Ctx) -> Result<bool, RpcError> {
     ctx.godot.runner.stop(&ctx.key).map_err(fail)
 }
 
-fn valid_scene(scene: &str) -> bool {
+pub(super) fn valid_scene(scene: &str) -> bool {
     scene.starts_with("res://")
         && (scene.ends_with(".tscn") || scene.ends_with(".scn"))
         && !scene.contains("..")
@@ -679,6 +699,10 @@ fn addon_change(ctx: &Ctx, p: &Params, install: bool) -> Result<Value, RpcError>
         ));
     }
     let project = pick_project(ctx, p)?;
+    // The editor rewrites project.godot from its own copy (DECISIONS X5).
+    if ctx.godot.editors.holding(&project.dir).is_some() {
+        return Err(fail(super::editor::CLOSE_FIRST));
+    }
     if install {
         addon::install(&project.dir).map_err(fail)?;
     } else {
@@ -995,6 +1019,11 @@ pub fn with_live_for<R>(
             crate::veistra_log!("play: could not serve {}: {e}", dir.display());
         }
     };
+    let root = context.project.clone();
+    let agent = || {
+        root.as_deref()
+            .is_some_and(|r| crate::agent_activity::working_in(app, r))
+    };
     // Through the plugin's Rust API, as `files/reveal` is, so no webview
     // capability is granted for it.
     let reveal = |dir: &Path| {
@@ -1025,6 +1054,7 @@ pub fn with_live_for<R>(
         instance,
         shown: &shown,
         usage,
+        agent: &agent,
     };
     f(&ctx)
 }
@@ -1093,6 +1123,7 @@ mod tests {
             instance: Some("play-1".into()),
             shown: &|_| true,
             usage: Arc::new(|_, _| {}),
+            agent: &|| false,
         }
     }
 

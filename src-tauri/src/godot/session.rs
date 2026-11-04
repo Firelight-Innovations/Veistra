@@ -672,18 +672,29 @@ pub fn descendants(root: u32, procs: &[Proc]) -> Vec<u32> {
 /// `_console.exe` Veistra prefers on Windows starts the real executable as a
 /// child, and the window is the child's.
 pub fn process_tree(root: u32) -> Vec<u32> {
+    descendants(root, &processes())
+}
+
+/// Whether a process with this id exists, for one Veistra holds no handle to.
+pub fn is_running(pid: u32) -> bool {
+    let mut sys = sysinfo::System::new();
+    let pid = sysinfo::Pid::from_u32(pid);
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
+    sys.process(pid).is_some()
+}
+
+/// Every process on the machine, as [`descendants`] reads them.
+pub fn processes() -> Vec<Proc> {
     let mut sys = sysinfo::System::new();
     sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
-    let procs: Vec<Proc> = sys
-        .processes()
+    sys.processes()
         .iter()
         .map(|(pid, p)| Proc {
             pid: pid.as_u32(),
             parent: p.parent().map(|pp| pp.as_u32()),
             started: p.start_time(),
         })
-        .collect();
-    descendants(root, &procs)
+        .collect()
 }
 
 /// The search for the game's window ended ([`crate::embed::host::HostSpec`]'s

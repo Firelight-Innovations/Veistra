@@ -5,6 +5,7 @@
 //! against the pinned versions. The web frontend is a pure view over the
 //! `StackSnapshot` this produces.
 
+mod agent_activity;
 mod agent_saw;
 mod apps;
 mod blender;

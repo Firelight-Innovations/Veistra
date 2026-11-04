@@ -741,6 +741,7 @@ mod tests {
             instance: Some("play-1".into()),
             shown: &|_| true,
             usage: Arc::new(|_, _| {}),
+            agent: &|| false,
         }
     }
 
