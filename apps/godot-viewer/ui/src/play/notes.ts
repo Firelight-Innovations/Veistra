@@ -156,6 +156,18 @@ export function markSent(
   };
 }
 
+/**
+ * The one line Send leaves at the agent's prompt (X8), around the packet's
+ * reference: "Playtest feedback: 2 notes. Read <packet>/packet.md first."
+ * Veistra never presses Enter; the person reads it and sends it.
+ */
+export function packetMessage(count: number): { before: string; after: string } {
+  return {
+    before: `Playtest feedback: ${count} ${count === 1 ? "note" : "notes"}. Read `,
+    after: " first.",
+  };
+}
+
 /** Drafts with words: what Send sends. */
 export function sendable(doc: NotesDoc): NoteDraft[] {
   return doc.notes.filter((n) => isDraft(n) && n.body.trim() !== "");

@@ -45,7 +45,7 @@ import type {
 } from "@veistra/bridge/protocol";
 import { relayPageEscape } from "./pageEscape";
 import { relayChord } from "./relayChord";
-import { agentTabFrames } from "./agentTabFrames";
+import { agentTabFrames, attachFrames, attachRequest } from "./agentTabFrames";
 import { relayCommentChanges } from "./commentFrames";
 import { createFrameSearch } from "./frameSearch";
 import {
@@ -1150,17 +1150,23 @@ const ToolWindow = forwardRef<
       // shell knows, and it knows it from `event.source` rather than from
       // anything the frame could assert about itself.
       // An app handing something already in the context store to the agent tab
-      // beside it: the tab shows it as a chip on the next prompt.
+      // beside it: the tab shows it as a chip on the next prompt, with any
+      // words the app sent around it. Every agent tab, or the one the app
+      // chose; the answer says how many it reached, so a chosen tab that has
+      // closed is reported rather than silently missed.
       if (method === "veistra/attach-to-agent") {
-        respond({ id, result: null });
-        const { contextId, label } = (params ?? {}) as { contextId?: unknown; label?: unknown };
-        if (typeof contextId !== "string") return;
-        const payload = { contextId, label: typeof label === "string" ? label : contextId };
-        for (const [win, other] of frames.current) {
-          if (!other.isApp || other.appId !== AGENT_TAB_APP || other.origin === null) continue;
+        const attach = attachRequest(params);
+        const to = attach ? attachFrames(frames.current, AGENT_TAB_APP, attach.instanceId) : [];
+        respond({ id, result: { delivered: to.length } });
+        for (const [win, origin] of to) {
           win.postMessage(
-            { veistra: 1, kind: "event", event: AGENT_TAB_ATTACH, payload } satisfies EventMessage,
-            other.origin,
+            {
+              veistra: 1,
+              kind: "event",
+              event: AGENT_TAB_ATTACH,
+              payload: attach?.payload,
+            } satisfies EventMessage,
+            origin,
           );
         }
         return;

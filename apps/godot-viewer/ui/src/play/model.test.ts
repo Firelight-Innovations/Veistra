@@ -1,10 +1,10 @@
 /**
  * Play's pure modules: the note model, telemetry in the page, the contact
- * sheet's times and the keys. The game box's geometry is `apps/shared/nativeBox.ts`'s.
+ * sheet's times, shape and seeks, and the keys. The game box's geometry is `apps/shared/nativeBox.ts`'s.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Comment } from "../../../../shared/comments";
-import { CONTACT_MAX, clock, contactLayout, contactTimes } from "./frames";
+import { CONTACT_MAX, clock, contactLayout, contactTimes, seek } from "./frames";
 import { liveAction, reviewAction } from "./keys";
 import { newF8Marks } from "./markTelemetry";
 import {
@@ -17,6 +17,7 @@ import {
   NO_RANGE,
   noteStatus,
   normalize,
+  packetMessage,
   parseLog,
   pendingMarks,
   removeNote,
@@ -65,6 +66,15 @@ describe("notes", () => {
     });
     expect(sent.notes[1].commentId).toBeUndefined();
     expect(sendable(sent).map((n) => n.n)).toEqual([2]);
+  });
+
+  it("leave one sentence around the packet for the agent, counted", () => {
+    const say = (n: number) => {
+      const { before, after } = packetMessage(n);
+      return `${before}.veistra/feedback/t-1/packet.md${after}`;
+    };
+    expect(say(2)).toBe("Playtest feedback: 2 notes. Read .veistra/feedback/t-1/packet.md first.");
+    expect(say(1)).toBe("Playtest feedback: 1 note. Read .veistra/feedback/t-1/packet.md first.");
   });
 
   it("read a notes.json leniently and keep numbers above what is there", () => {
@@ -302,6 +312,37 @@ describe("contact sheets", () => {
   it("lay sixteen out four by four, and fewer in one row", () => {
     expect(contactLayout(16)).toMatchObject({ cols: 4, rows: 4, width: 1280, height: 720 });
     expect(contactLayout(3)).toMatchObject({ cols: 3, rows: 1 });
+  });
+
+  it("keep the take's own shape in every cell", () => {
+    expect(contactLayout(8, 4 / 3)).toMatchObject({
+      cell: { width: 320, height: 240 },
+      width: 1280,
+      height: 480,
+    });
+    expect(contactLayout(4, 21 / 9).cell).toEqual({ width: 320, height: 137 });
+    expect(contactLayout(4, 0).cell).toEqual({ width: 320, height: 180 });
+  });
+
+  it("give up on a seek the video never answers, or one it cannot make", async () => {
+    vi.useFakeTimers();
+    try {
+      const silent = {
+        currentTime: 0,
+        readyState: 4,
+        error: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as HTMLVideoElement;
+      const waiting = seek(silent, 41_000, 5_000);
+      vi.advanceTimersByTime(5_000);
+      await expect(waiting).rejects.toThrow("did not reach 0:41.00");
+      expect(silent.removeEventListener).toHaveBeenCalledTimes(2);
+      const broken = { ...silent, error: { code: 4 } } as unknown as HTMLVideoElement;
+      await expect(seek(broken, 0)).rejects.toThrow("could not be read");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("print take time as minutes and seconds", () => {

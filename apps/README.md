@@ -554,10 +554,24 @@ await invoke("context/put", { path: "C:/game/renders/out.png" }); // a file you 
 await invoke("context/list"); // ContextItem[], newest first
 await invoke("context/get", { id: item.id });
 await invoke("context/remove", { id: item.id });
-// Type @path references at the agent terminal's prompt, without pressing Enter. Answers
-// { inserted: false, reason } when no agent is running; the items stay attached either way.
-await invoke("context/insert", { itemIds: [item.id] });
+// Type @path references at an agent terminal's prompt, without pressing Enter. `terminal` is
+// one from context/agents (unset: the cluster's first agent); `before` and `after` are typed
+// around the references on the same line, control characters dropped. Answers
+// { inserted: false, reason } when that agent is not running; the items stay attached either way.
+await invoke("context/insert", { itemIds: [item.id], terminal, before: "Read ", after: " first." });
+// Who a page can hand an item to, the default first (X8): agent terminals, the shown one
+// leading, then agent tabs. { agents: [{ kind: "terminal" | "agentTab", id, label }] }
+await invoke("context/agents");
 ```
+
+To send to one chosen agent, use `handToAgent` and `listAgents` from
+`apps/shared/context.ts` rather than the calls themselves: a `terminal` gets
+`context/insert` with its `terminal`, an `agentTab` gets the shell's
+`veistra/attach-to-agent { contextId, label, instanceId, before, after }`, which
+puts a chip on that tab's prompt alone and answers `{ delivered }`, the number of
+tabs reached (0 when the chosen one has closed). Without `instanceId` the chip goes
+to every agent tab. Play's Send goes this way, and keeps the target on each
+comment it files as `sentTo`.
 
 Pass a stable `key` that names the source, never the moment
 (`blender/<blend>/<view>`, `godot/<scene>/frame`, `file/<relpath>`). Sending

@@ -141,9 +141,19 @@ export const setConfig = (configId: string, value: string) =>
 export const onEnvelope = (cb: (envelope: Envelope) => void) =>
   on(EVENT, (payload) => cb(payload as Envelope));
 
-/** A context item another app handed to this tab (`veistra/attach-to-agent`). */
-export const onAttach = (cb: (item: { contextId: string; label: string }) => void) =>
-  on("agent-tab:attach", (payload) => cb(payload as { contextId: string; label: string }));
+/**
+ * A context item another app handed to this tab (`veistra/attach-to-agent`),
+ * with the words it asked for on either side of the chip, if any.
+ */
+export interface Attached {
+  contextId: string;
+  label: string;
+  before?: string;
+  after?: string;
+}
+
+export const onAttach = (cb: (item: Attached) => void) =>
+  on("agent-tab:attach", (payload) => cb(payload as Attached));
 
 /** Mirrors `apps::agent_tab::CHOSEN`. */
 export const CHOSEN = "agent-tab:chosen";

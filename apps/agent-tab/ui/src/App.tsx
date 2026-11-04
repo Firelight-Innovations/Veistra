@@ -213,31 +213,43 @@ export default function App() {
   }, []);
   /**
    * Puts a chip that arrives later, after the draft may have moved on, at `at`
-   * (clamped to the draft as it is then). Reads only through updaters, so it
-   * is safe from a listener installed once.
+   * (clamped to the draft as it is then), with `before` and `after` typed on
+   * either side of it. Reads only through updaters, so it is safe from a
+   * listener installed once.
    */
   const latest = useRef({ draft, caret });
   latest.current = { draft, caret };
-  const setChipLater = useCallback((hit: ChipHit, at: number) => {
+  const setChipLater = useCallback((hit: ChipHit, at: number, before = "", after = "") => {
     const chip = chipOf(hit);
     const { draft: now, caret: was } = latest.current;
     setChips((held) => (held.some((c) => c.id === chip.id) ? held : [...held, chip]));
     if (chipSegments(now, [chip]).some((part) => part.chip)) return;
     const where = Math.min(at, now.length);
-    const placed = insertChipToken(now, where, where, chip.label);
+    const head = now.slice(0, where);
+    const lead = head + (before && head !== "" && !/\s$/.test(head) ? " " : "") + before;
+    const placed = insertChipToken(
+      lead + after + now.slice(where),
+      lead.length,
+      lead.length,
+      chip.label,
+    );
     setDraft(placed.text);
     // Text typed after the "@" moves along with the caret in it.
     const moved = was >= where ? was + placed.text.length - now.length : was;
     setCaret(moved);
     requestAnimationFrame(() => prompt.current?.setSelectionRange(moved, moved));
   }, []);
-  // Something sent from another app, such as a canvas selection, joins the end of the next prompt.
+  // Something sent from another app, such as a canvas selection or a
+  // playtest's feedback packet, joins the end of the next prompt, in the
+  // sentence the app sent around it. Nothing is sent: the person does that.
   useEffect(
     () =>
-      rpc.onAttach(({ contextId, label }) =>
+      rpc.onAttach(({ contextId, label, before, after }) =>
         setChipLater(
           { uri: `veistra://context/${contextId}`, title: label, kind: "context" },
           Infinity,
+          before,
+          after,
         ),
       ),
     [setChipLater],

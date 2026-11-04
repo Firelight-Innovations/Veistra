@@ -16,8 +16,10 @@
 /** Most frames on one contact sheet. */
 export const CONTACT_MAX = 16;
 export const CONTACT_COLS = 4;
-/** One cell of the sheet. */
-export const CONTACT_CELL = { width: 320, height: 180 };
+/** How wide one cell of the sheet is; its height follows the take's shape. */
+export const CONTACT_CELL_WIDTH = 320;
+/** How long a seek may take before the picture is given up on. */
+export const SEEK_TIMEOUT_MS = 5_000;
 
 /**
  * The times on a note's contact sheet: every second from `inMs - 2 s` to
@@ -36,21 +38,27 @@ export function contactTimes(inMs: number, outMs: number, durationMs: number): n
   return Array.from({ length: CONTACT_MAX }, (_, i) => Math.round(from + i * step));
 }
 
-/** The sheet's size for `count` cells. */
-export function contactLayout(count: number): {
+/**
+ * The sheet's size for `count` cells of a take `aspect` (width over height)
+ * wide, so a 4:3 or an ultrawide game is not squashed into 16:9 cells.
+ */
+export function contactLayout(
+  count: number,
+  aspect = 16 / 9,
+): {
   cols: number;
   rows: number;
+  cell: { width: number; height: number };
   width: number;
   height: number;
 } {
   const cols = Math.min(CONTACT_COLS, Math.max(1, count));
   const rows = Math.max(1, Math.ceil(count / CONTACT_COLS));
-  return {
-    cols,
-    rows,
-    width: cols * CONTACT_CELL.width,
-    height: rows * CONTACT_CELL.height,
+  const cell = {
+    width: CONTACT_CELL_WIDTH,
+    height: Math.max(1, Math.round(CONTACT_CELL_WIDTH / (aspect > 0 ? aspect : 16 / 9))),
   };
+  return { cols, rows, cell, width: cols * cell.width, height: rows * cell.height };
 }
 
 /** `m:ss`, or `m:ss.ss` with `precise`. */
@@ -62,24 +70,39 @@ export function clock(ms: number, precise = false): string {
   return `${m}:${sec}`;
 }
 
-/** Seek and wait for the frame to be there. */
-export function seek(video: HTMLVideoElement, ms: number): Promise<void> {
+/**
+ * Seek and wait for the frame to be there. A video that failed before the
+ * seek, or one that never answers it, rejects rather than leaving Send
+ * waiting for ever.
+ */
+export function seek(
+  video: HTMLVideoElement,
+  ms: number,
+  timeoutMs = SEEK_TIMEOUT_MS,
+): Promise<void> {
   return new Promise((resolve, reject) => {
     const target = Math.max(0, ms / 1000);
+    if (video.error) {
+      reject(new Error("the take's video could not be read"));
+      return;
+    }
     if (Math.abs(video.currentTime - target) < 0.001 && video.readyState >= 2) {
       resolve();
       return;
     }
-    const done = () => {
+    const settle = (error: Error | null) => {
+      clearTimeout(timer);
       video.removeEventListener("seeked", done);
       video.removeEventListener("error", fail);
-      resolve();
+      if (error) reject(error);
+      else resolve();
     };
-    const fail = () => {
-      video.removeEventListener("seeked", done);
-      video.removeEventListener("error", fail);
-      reject(new Error("the take's video could not be read"));
-    };
+    const done = () => settle(null);
+    const fail = () => settle(new Error("the take's video could not be read"));
+    const timer = setTimeout(
+      () => settle(new Error(`the take's video did not reach ${clock(ms, true)}`)),
+      timeoutMs,
+    );
     video.addEventListener("seeked", done);
     video.addEventListener("error", fail);
     video.currentTime = target;
@@ -112,7 +135,11 @@ export async function contactSheet(
   video: HTMLVideoElement,
   times: readonly number[],
 ): Promise<Blob> {
-  const layout = contactLayout(times.length);
+  const shape =
+    video.videoWidth > 0 && video.videoHeight > 0
+      ? video.videoWidth / video.videoHeight
+      : undefined;
+  const layout = contactLayout(times.length, shape);
   const canvas = document.createElement("canvas");
   canvas.width = layout.width;
   canvas.height = layout.height;
@@ -120,7 +147,7 @@ export async function contactSheet(
   if (!g) throw new Error("no 2D canvas");
   g.fillStyle = "#000";
   g.fillRect(0, 0, canvas.width, canvas.height);
-  const { width: cw, height: ch } = CONTACT_CELL;
+  const { width: cw, height: ch } = layout.cell;
   for (let i = 0; i < times.length; i++) {
     await seek(video, times[i]);
     const x = (i % CONTACT_COLS) * cw;
