@@ -1,16 +1,21 @@
-//! Blender, as far as Veistra goes: find it, launch it, and run it headless.
+//! Blender, as far as Veistra goes: find it, run it in a pane, and run it
+//! headless.
 //!
-//! `docs/VEISTRA-UX-REWORK.md` §3.1: Blender is never embedded. Two things are
-//! done with it. "Open in Blender" starts the real editor, detached, so closing
-//! Veistra never closes a scene someone is editing. And an *export* runs
-//! `blender -b` on a `.blend` with the bundled `export.py`, which writes a
-//! `.glb`, a few preview renders and a parts list into a cache under
-//! `<environment>/.veistra/blender/`. The viewer shows that cache and how old it
-//! is; it never reads the live scene.
+//! The person works in their own Blender inside the Blender app's pane
+//! ([`editor`], #317; owner decision 6 replaces `docs/VEISTRA-UX-REWORK.md`
+//! §3.1's "never embedded"): started on the file with the boot script, its
+//! window placed over the pane, released and never killed. While it has a
+//! file open, [`lock`] says so, and nothing Veistra runs saves over that file.
 //!
-//! The cache is Veistra state, so it is written even on a read-only `main`. A
-//! `.glb` *into the checkout* (the `blender.exportDir` setting) is not, and is
-//! refused there.
+//! An *export* runs `blender -b` on a `.blend` with the bundled `export.py`,
+//! which writes a `.glb`, a few preview renders and a parts list. Each one,
+//! the person's or an agent's, is kept as a numbered version ([`versions`]),
+//! so an agent can export while the person edits: it only reads the saved
+//! file. Renders shows the newest; it never reads the live scene.
+//!
+//! The versions are Veistra state, so they are written even on a read-only
+//! `main`, under the app's data. A `.glb` *into the checkout* (the
+//! `blender.exportDir` setting) is not, and is refused there.
 
 pub mod detect;
 pub mod editor;

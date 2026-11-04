@@ -146,12 +146,11 @@ fn responder(
         while !flag.load(Ordering::SeqCst) {
             if let Ok(text) = std::fs::read_to_string(dir.join("cmd.json")) {
                 if let Ok(cmd) = serde_json::from_str::<Value>(&text) {
-                    let id = cmd["id"].as_u64();
-                    if id.is_some() && id != last {
-                        last = id;
+                    if let Some(id) = cmd["id"].as_u64().filter(|id| last != Some(*id)) {
+                        last = Some(id);
                         let mut reply = answer(&dir, &cmd);
                         reply["id"] = cmd["id"].clone();
-                        write(&dir, &format!("res-{}.json", id.unwrap()), reply);
+                        write(&dir, &format!("res-{id}.json"), reply);
                     }
                 }
             }

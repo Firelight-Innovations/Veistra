@@ -104,6 +104,22 @@ fn live_with(root: &Path, rel: &str, start_of: &dyn Fn(u32) -> Option<u64>) -> O
     }
 }
 
+/// The live lock on the `.blend` at `path`, from whichever folder above it is
+/// the environment that holds one. The Files app's Open in Blender has a path
+/// and no environment, so each folder up the path is tried as the root; each
+/// try is one stat.
+pub fn live_above(path: &Path) -> Option<Lock> {
+    live_above_with(path, &process_start)
+}
+
+fn live_above_with(path: &Path, start_of: &dyn Fn(u32) -> Option<u64>) -> Option<Lock> {
+    let path = path.canonicalize().ok()?;
+    path.ancestors().skip(1).find_map(|root| {
+        let rel = super::relative_blend(root, &path)?;
+        live_with(root, &rel, start_of)
+    })
+}
+
 /// Lock `rel` for the Blender running as `pid`. Taking a lock this process
 /// already holds answers it again; one held by another live process is
 /// refused, since two editors on one file write over each other.
@@ -327,6 +343,21 @@ mod tests {
         assert!(!lock_path(env.path(), "old.blend").unwrap().exists());
         assert!(!env.path().join(".veistra/locks/junk.lock").exists());
         assert!(env.path().join(".veistra/locks/.gitignore").is_file());
+    }
+
+    #[test]
+    fn a_bare_path_finds_the_lock_of_the_environment_above_it() {
+        let env = TempDir::new().unwrap();
+        std::fs::create_dir_all(env.path().join("props")).unwrap();
+        let blend = env.path().join("props/bed.blend");
+        std::fs::write(&blend, b"BLENDER").unwrap();
+        assert_eq!(live_above_with(&blend, &table), None);
+        let lock = take(env.path(), "props/bed.blend", 10, 1000).unwrap();
+        assert_eq!(live_above_with(&blend, &table), Some(lock));
+        // Another file in the same environment is not held.
+        let chair = env.path().join("props/chair.blend");
+        std::fs::write(&chair, b"BLENDER").unwrap();
+        assert_eq!(live_above_with(&chair, &table), None);
     }
 
     #[test]

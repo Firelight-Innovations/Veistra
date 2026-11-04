@@ -19,12 +19,11 @@
 # events.jsonl from here to Veistra, notes.json from Veistra to here.
 #
 # Commands: select (objects by name), viewport-only (maximise the 3D view, as
-# Ctrl Space does), capture (a picture of the 3D view, the view it shows and
-# the selection),
-# pick (the object under a point of that picture) and quit (Blender's own
-# quit, which asks to save first). The last three read or ask; none edits the
-# scene. A command is a function in COMMANDS taking the command and returning
-# the fields of its answer; add one there.
+# Ctrl Space does), capture (a picture of the 3D view, with the view it shows
+# and the selection), pick (the object under a point of that picture) and quit
+# (Blender's own quit, which asks to save first). The last three read or ask;
+# none edits the scene. A command is a function in COMMANDS taking the command
+# and returning the fields of its answer; add one there.
 #
 # Everything runs on Blender's main thread from a persistent bpy.app.timers
 # callback, which survives File > Open; every failure is caught, since a

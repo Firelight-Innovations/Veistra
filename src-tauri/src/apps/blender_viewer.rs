@@ -1,18 +1,21 @@
-//! The Blender Viewer's Rust half.
+//! The Blender app's Rust half.
 //!
-//! `docs/VEISTRA-UX-REWORK.md` §3.1-3.2. This app finds a Blender install,
-//! opens a `.blend` in the real editor (detached), and runs `blender -b` with a
-//! bundled script to *export*: a `.glb`, preview renders and a parts list,
-//! cached under `.veistra/blender/` (under the app's data on main, so the
-//! checkout is never written). The viewer shows that export and its age, never
-//! the live scene. `state` also answers `editor`, where Blender's Editor mode
-//! shows ([`crate::editor_surface`]): the export viewer is the read-only
-//! surface. The machinery is in [`crate::blender`]; this file is the RPC
-//! surface over it.
+//! This app finds a Blender install, runs it in the pane on a `.blend`
+//! (`editor-*`, handed to [`crate::blender::editor`], #317), and runs
+//! `blender -b` with a bundled script to *export*: a `.glb`, preview renders
+//! and a parts list, each kept as a numbered version under
+//! `.veistra/exports/` (under the app's data on main, so the checkout is never
+//! written). Renders shows an export and its age, never the live scene.
+//! `state` also answers `editor`, where Editor mode shows
+//! ([`crate::editor_surface`]): Blender in the pane, in its own window, or the
+//! read-only export viewer. The machinery is in [`crate::blender`]; this file
+//! is the RPC surface over it.
 //!
-//! Methods: `state`, `image`, `detect`, `set-executable`, `export-start`,
-//! `export-status`, `export-cancel`, `open`. Comments anchored to a mesh part
-//! (§3.4) go through [`crate::comments`], shared with every other viewer.
+//! Methods: `state`, `image`, `glb`, `detect`, `set-executable`,
+//! `export-start`, `export-versions`, `export-status`, `export-cancel`,
+//! `open` (detached, refused on a locked file), `markup`, `markup-save` and
+//! the `editor-*` seven. Comments anchored to a mesh part (§3.4) go through
+//! [`crate::comments`], shared with every other viewer.
 
 use crate::apps::CallContext;
 use crate::blender::detect::{self, Detected, RealHost, VersionCache};
@@ -244,14 +247,7 @@ pub fn dispatch(
         // On main `apps::WRITE_METHODS` refuses this before it gets here.
         "blender-viewer/open" => {
             let project = project_of(context, services)?;
-            let (blend, rel) = resolve_blend(project, &required_str(params.as_ref(), "blend")?)?;
-            if let Some(held) = services.lock(project, &rel) {
-                return Err(invalid(format!(
-                    "{rel} is open in Blender in a pane (process {}). Close it there first: two \
-                     Blenders on one file save over each other.",
-                    held.pid
-                )));
-            }
+            let (blend, _) = resolve_blend(project, &required_str(params.as_ref(), "blend")?)?;
             open(&services.config, services.host, services.versions, &blend)
         }
         _ => Err(RpcError::new(
@@ -776,6 +772,14 @@ fn open(
 ) -> Result<Value, RpcError> {
     if !blend.is_file() {
         return Err(invalid(format!("{} does not exist", blend.display())));
+    }
+    // Here rather than in each caller: the Files app opens a bare path too.
+    if let Some(held) = lock::live_above(blend) {
+        return Err(invalid(format!(
+            "{} is open in Blender in a pane (process {}). Close it there first: two Blenders \
+             on one file save over each other.",
+            held.file, held.pid
+        )));
     }
     let found = detect::detect(host, &config.executable, versions);
     let Some(exe) = found.path else {
@@ -1618,6 +1622,38 @@ mod tests {
         .unwrap_err();
         assert!(
             err.message.contains("open in Blender in a pane"),
+            "{}",
+            err.message
+        );
+        assert!(!tools.path().join("opened.txt").exists());
+    }
+
+    /// The Files app's Open in Blender passes an absolute path and no
+    /// environment; it went straight to the launch and opened a second
+    /// Blender on a file the pane's Blender held.
+    #[test]
+    fn open_by_a_bare_path_is_refused_while_blender_in_a_pane_has_the_file() {
+        let env = TempDir::new().unwrap();
+        let tools = TempDir::new().unwrap();
+        let exe = recording_blender(tools.path());
+        std::fs::create_dir_all(env.path().join("props")).unwrap();
+        let blend = env.path().join("props/bed.blend");
+        std::fs::write(&blend, b"b").unwrap();
+        let mut fx = Fixture::new();
+        fx.host.files.insert(exe.clone());
+        lock::acquire(
+            env.path(),
+            "props/bed.blend",
+            std::process::id(),
+            None,
+            None,
+        )
+        .unwrap();
+        let err = open(&config_with(&exe), &fx.host, &fx.versions, &blend).unwrap_err();
+        assert_eq!(err.code, INVALID_PARAMS);
+        assert!(
+            err.message
+                .starts_with("props/bed.blend is open in Blender in a pane"),
             "{}",
             err.message
         );

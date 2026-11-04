@@ -397,7 +397,7 @@ pub(crate) mod tests {
     /// A GLB holding only `json`, padded as the format asks.
     pub(crate) fn glb_of(json: &Value) -> Vec<u8> {
         let mut body = serde_json::to_vec(json).unwrap();
-        while body.len() % 4 != 0 {
+        while !body.len().is_multiple_of(4) {
             body.push(b' ');
         }
         let mut out = Vec::new();
