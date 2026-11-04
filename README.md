@@ -40,6 +40,13 @@ the design canvas exist because that is the work it was made for. The rest
 (clusters, terminals, files, git, MCP servers) is not tied to games, so with
 some tweaks it works for ordinary software too.
 
+Coding agents are limited by two things: the context they are given, and
+whether they can check their own work. Without those, you do both by hand, and
+every loop waits on you. Veistra supplies both, so the agent can close the loop
+itself.
+
+![Without Veistra, you hand the agent its context and check its work yourself. With Veistra, context goes in and the agent checks its own work](assets/bottleneck.svg)
+
 Veistra is a development tool. It does not run the software you build with it.
 
 ## Status
