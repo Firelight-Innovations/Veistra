@@ -7,13 +7,30 @@ use crate::embed;
 use std::sync::atomic::AtomicBool;
 use tempfile::TempDir;
 
-/// A `blender` that writes its arguments into the channel and then sleeps,
-/// as the real one sits open on a file.
+/// A `blender` that writes its arguments into the channel, one a line, and
+/// then sleeps, as the real one sits open on a file.
+///
+/// The batch file shifts through `%1` rather than `echo %*`, which put every
+/// argument on one line, or `for %%a in (%*)`, which reads the `?` of a
+/// `\\?\` path as a wildcard. It writes `argv.part` and renames it, so the
+/// test never reads the file half written.
 fn sleeping_blender(dir: &Path) -> PathBuf {
     #[cfg(windows)]
     let (name, body) = (
         "blender.cmd",
-        "@echo off\r\necho %*> \"%VEISTRA_BLENDER_CHANNEL%\\argv.txt\"\r\nping -n 60 127.0.0.1 >nul\r\n",
+        concat!(
+            "@echo off\r\n",
+            "set \"out=%VEISTRA_BLENDER_CHANNEL%\\argv\"\r\n",
+            "type nul > \"%out%.part\"\r\n",
+            ":next\r\n",
+            "if \"%~1\"==\"\" goto done\r\n",
+            ">>\"%out%.part\" echo(%~1\r\n",
+            "shift\r\n",
+            "goto next\r\n",
+            ":done\r\n",
+            "move /y \"%out%.part\" \"%out%.txt\" >nul\r\n",
+            "ping -n 60 127.0.0.1 >nul\r\n",
+        ),
     );
     #[cfg(not(windows))]
     let (name, body) = (
