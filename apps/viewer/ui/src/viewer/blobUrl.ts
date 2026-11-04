@@ -41,6 +41,24 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   ico: "image/x-icon",
   avif: "image/avif",
   svg: "image/svg+xml",
+
+  // Media and fonts, for `MediaViewer` and `FontViewer`. Unlike a raster the
+  // type matters to `<audio>`/`<video>`, which pick a demuxer by it.
+  wav: "audio/wav",
+  mp3: "audio/mpeg",
+  ogg: "audio/ogg",
+  oga: "audio/ogg",
+  opus: "audio/ogg",
+  flac: "audio/flac",
+  m4a: "audio/mp4",
+  mp4: "video/mp4",
+  m4v: "video/mp4",
+  webm: "video/webm",
+  ogv: "video/ogg",
+  ttf: "font/ttf",
+  otf: "font/otf",
+  woff: "font/woff",
+  woff2: "font/woff2",
 };
 
 /**
@@ -54,7 +72,14 @@ export function mimeFor(ext: string): string {
   return MIME_BY_EXTENSION[ext] ?? "application/octet-stream";
 }
 
-export function useBlobUrl(path: string, type: string): BlobUrlState {
+/**
+ * Bytes to the `Blob` to show, for a format the browser cannot take as-is
+ * (TGA). Must be a stable reference — a module-level function — because it is
+ * an effect dependency below, and a new one each render would re-read forever.
+ */
+export type Decode = (bytes: Uint8Array) => Promise<Blob>;
+
+export function useBlobUrl(path: string, type: string, decode?: Decode): BlobUrlState {
   const [state, setState] = useState<BlobUrlState>({ status: "loading" });
 
   useEffect(() => {
@@ -67,9 +92,17 @@ export function useBlobUrl(path: string, type: string): BlobUrlState {
     setState({ status: "loading" });
 
     readBytes(path).then(
-      (bytes) => {
+      async (bytes) => {
+        const raw = toBytes(bytes.base64) as Uint8Array<ArrayBuffer>;
+        let blob: Blob;
+        try {
+          blob = decode ? await decode(raw) : new Blob([raw], { type });
+        } catch (err) {
+          if (live) setState({ status: "failed", message: messageOf(err) });
+          return;
+        }
         if (!live) return;
-        url = URL.createObjectURL(new Blob([toBytes(bytes.base64)], { type }));
+        url = URL.createObjectURL(blob);
         setState({ status: "ready", url, size: bytes.size });
       },
       (err: unknown) => {
@@ -82,7 +115,11 @@ export function useBlobUrl(path: string, type: string): BlobUrlState {
       live = false;
       if (url !== null) URL.revokeObjectURL(url);
     };
-  }, [path, type]);
+  }, [path, type, decode]);
 
   return state;
+}
+
+function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
