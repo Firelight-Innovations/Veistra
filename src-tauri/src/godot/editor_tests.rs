@@ -44,6 +44,7 @@ fn ctx<'a>(w: &'a World, key: &str) -> Ctx<'a> {
         key: key.to_string(),
         root: Some(w.root.clone()),
         environment: None,
+        project_root: Some(w.root.clone()),
         read_only: false,
         probe: Probe {
             setting: w.exe.display().to_string(),
@@ -54,6 +55,7 @@ fn ctx<'a>(w: &'a World, key: &str) -> Ctx<'a> {
         scratch: w.dir.path().join("scratch"),
         owner: Arc::new(|_| None),
         allow_asset: &|_| {},
+        reveal: &|_| Ok(()),
         hosts: &w.hosts,
         instance: Some("godot-1".into()),
         shown: &|_| true,

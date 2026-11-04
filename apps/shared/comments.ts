@@ -19,6 +19,7 @@
  * deliberately outside that rule (see `apps/README.md`'s layout note).
  */
 import { invoke } from "@veistra/bridge";
+import type { AgentTarget } from "./context";
 
 // --- what the backend returns --------------------------------------------
 
@@ -26,6 +27,8 @@ import { invoke } from "@veistra/bridge";
 export interface TakeAnchor {
   kind: "take";
   take: string;
+  /** The take's own number (Take 4); absent on notes sent before it was kept. */
+  number?: number;
   /** The note's number in its take; never reused. */
   n: number;
   atMs: number;
@@ -75,6 +78,20 @@ export interface Reply {
   body: string;
   at: number;
   commit?: string;
+  /** On a take note: the Still broken take this reply was sent with. */
+  take?: TakeRef;
+}
+
+/** One take in a take note's history (`comments::TakeRef`). */
+export interface TakeRef {
+  take: string;
+  number?: number;
+  packet: string;
+  /** The note's number in that take, which a later take numbers afresh. */
+  n: number;
+  atMs: number;
+  inMs?: number;
+  outMs?: number;
 }
 
 export interface Comment {
@@ -89,6 +106,8 @@ export interface Comment {
   resolution?: Resolution;
   /** Absent when empty, as `resolution` is when unset. */
   replies?: Reply[];
+  /** The agent Send handed this comment to, so Still broken can go back to it. */
+  sentTo?: AgentTarget;
   created: number;
   updated: number;
 }
@@ -133,6 +152,26 @@ export type Verdict = "good" | "broken";
  */
 export const verdictComment = (id: string, verdict: Verdict, reply?: string, expect?: Status) =>
   invoke<Comment>("comments/verdict", { id, verdict, reply, expect });
+
+/**
+ * A take note's takes, oldest first: the one it was sent from, then each
+ * Still broken take (#321). Empty for any other comment. The same list as
+ * `Comment::takes` in Rust.
+ */
+export function takeHistory(comment: Comment): TakeRef[] {
+  const a = comment.anchor;
+  if (a.kind !== "take") return [];
+  const first: TakeRef = {
+    take: a.take,
+    number: a.number,
+    packet: a.packet,
+    n: a.n,
+    atMs: a.atMs,
+    inMs: a.inMs,
+    outMs: a.outMs,
+  };
+  return [first, ...(comment.replies ?? []).flatMap((r) => (r.take ? [r.take] : []))];
+}
 
 /** Still the agent's to work on. */
 export function isActive(status: Status): boolean {

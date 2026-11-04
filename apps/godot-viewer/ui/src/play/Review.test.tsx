@@ -2,15 +2,25 @@
 /**
  * Reviewing a take: notes from the keyboard, a fixed note's verdict, and
  * Send, which must hand `play/send` every draft with its pictures and then
- * put `packet.md` in front of the agent. jsdom cannot decode video, so the
+ * put `packet.md` in front of the one agent SEND TO names, in one line, and
+ * count it as `notes_sent`. jsdom cannot decode video, so the
  * frame grabbing in `frames.ts` is replaced; its arithmetic is tested in
  * `model.test.ts`.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
-const bridge = vi.hoisted(() => ({ invoke: vi.fn() }));
-vi.mock("@veistra/bridge", () => ({ invoke: bridge.invoke }));
+const bridge = vi.hoisted(() => ({
+  invoke: vi.fn(),
+  handlers: new Map<string, (payload: unknown) => void>(),
+}));
+vi.mock("@veistra/bridge", () => ({
+  invoke: bridge.invoke,
+  on: (event: string, cb: (payload: unknown) => void) => {
+    bridge.handlers.set(event, cb);
+    return () => bridge.handlers.delete(event);
+  },
+}));
 vi.mock("./frames", async (real) => {
   const actual = await real<typeof import("./frames")>();
   const png = () => Promise.resolve(new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }));
@@ -21,6 +31,37 @@ vi.mock("./frames", async (real) => {
     filmstrip: vi.fn(() => Promise.resolve()),
   };
 });
+
+/**
+ * The markup layer needs a canvas jsdom lacks. This one stands in: it keeps
+ * the path review names the frame by, and its button drops one pin on the
+ * enemy at (1000, 400) in a frame shown at the game's own 1280x720.
+ */
+const markup = vi.hoisted(() => ({ path: "" }));
+vi.mock("./FrameMarkup", () => ({
+  default: (p: {
+    path: string;
+    pick?: (x: number, y: number, shown: { width: number; height: number }) => object | null;
+    onDone: (result: unknown, shown: { width: number; height: number }) => void;
+  }) => {
+    markup.path = p.path;
+    const shown = { width: 1280, height: 720 };
+    const pin = () => {
+      const hit = p.pick?.(1000, 400, shown) ?? {};
+      const json = {
+        version: 1,
+        pins: [{ n: 1, x: 1000, y: 400, note: "", ...hit }],
+        annotations: [],
+      };
+      p.onDone({ json, png: new Blob([new Uint8Array([1])], { type: "image/png" }) }, shown);
+    };
+    return (
+      <button type="button" onClick={pin}>
+        Pin the enemy
+      </button>
+    );
+  },
+}));
 
 import Review, { type ReviewProps } from "./Review";
 
@@ -69,9 +110,24 @@ interface Disk {
 
 const copy = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 
+/** The agents `context/agents` lists by default: a terminal, the default, then a tab. */
+const AGENTS = [
+  { kind: "terminal", id: "t1", label: "Claude Code · Terminal 1" },
+  { kind: "agentTab", id: "agent-2", label: "Agent tab · Chat" },
+];
+
 function backend(
   notes: unknown[] = [{ n: 1, kind: "frame", atMs: 41_000, body: "The door light flickers" }],
-  over: { insertMs?: number; deleteMs?: number } = {},
+  over: {
+    insertMs?: number;
+    deleteMs?: number;
+    filed?: unknown[];
+    agents?: unknown[];
+    insert?: unknown;
+    problems?: string[];
+    clipUnavailable?: string | null;
+    hasVideo?: boolean;
+  } = {},
 ): Disk {
   const disk: Disk = {
     notes: { version: 1, notes: copy(notes) as Record<string, unknown>[], nextN: 3, dismissed: [] },
@@ -81,15 +137,16 @@ function backend(
     switch (method) {
       case "play/take":
         return Promise.resolve({
-          take: TAKE,
+          take: { ...TAKE, hasVideo: over.hasVideo ?? true },
           urls: { video: "asset://v", telemetry: "asset://t", log: "asset://l" },
           notes: copy(disk.notes),
+          clipUnavailable: over.clipUnavailable ?? null,
         });
       case "play/notes-save":
         disk.notes = copy(params?.notes) as Disk["notes"];
         return Promise.resolve({ saved: true });
       case "play/notes":
-        return Promise.resolve({ notes: [FIXED] });
+        return Promise.resolve({ notes: copy(over.filed ?? [FIXED]) });
       case "play/send":
         // `mark_sent`: the notes on disk that were sent get their stamps.
         disk.notes.notes = disk.notes.notes.map((n) =>
@@ -99,11 +156,18 @@ function backend(
           packet,
           packetMd: "C:/env/.veistra/feedback/2026-10-30-1402-0f3a-1/packet.md",
           comments: [[1, "c1"]],
+          problems: over.problems ?? [],
         });
+      case "context/agents":
+        return Promise.resolve({ agents: copy(over.agents ?? AGENTS) });
       case "context/put":
         return Promise.resolve({ id: "ctx_1" });
       case "context/insert":
-        return new Promise((resolve) => setTimeout(() => resolve(null), over.insertMs ?? 0));
+        return new Promise((resolve) =>
+          setTimeout(() => resolve(over.insert ?? { inserted: true }), over.insertMs ?? 0),
+        );
+      case "veistra/attach-to-agent":
+        return Promise.resolve({ delivered: 1 });
       case "play/take-delete":
         return new Promise((resolve) =>
           setTimeout(() => resolve({ deleted: params?.id }), over.deleteMs ?? 0),
@@ -116,6 +180,54 @@ function backend(
 }
 
 const calls = (m: string) => bridge.invoke.mock.calls.filter((c) => c[0] === m);
+/** The usage events the page sent through `veistra/track`, by name. */
+const tracked = (event: string) =>
+  calls("veistra/track")
+    .map((c) => c[1] as { event: string; props: Record<string, unknown> })
+    .filter((t) => t.event === event)
+    .map((t) => t.props);
+/** The newest `notes.json` written, by note number. */
+const savedNote = (n: number) =>
+  (
+    calls("play/notes-save").slice(-1)[0]?.[1] as { notes: { notes: Record<string, unknown>[] } }
+  )?.notes.notes.find((x) => x.n === n);
+
+/** Answer the take's telemetry and log with these files' text. */
+function serve(files: { telemetry?: string; log?: string }) {
+  const byUrl: Record<string, string | undefined> = {
+    "asset://t": files.telemetry,
+    "asset://l": files.log,
+  };
+  globalThis.fetch = vi.fn((url: string) =>
+    Promise.resolve(new Response(byUrl[url] ?? "")),
+  ) as unknown as typeof fetch;
+}
+
+/** The tick at note 1's moment: the hallway walls, Enemy_02's body and its mesh. */
+const ENEMY_TICK = JSON.stringify({
+  t: TAKE.startedAt + 41_000,
+  kind: "tick",
+  scene: "res://levels/hallway.tscn",
+  viewport: [1280, 720],
+  nodes: [
+    { path: "Hallway/Walls", type: "StaticBody3D", rect: [0, 0, 1280, 720] },
+    {
+      path: "Hallway/Enemy_02",
+      type: "CharacterBody3D",
+      rect: [905, 210, 250, 410],
+      pos: [14.2, 0, -6.8],
+    },
+    { path: "Hallway/Enemy_02/Mesh", type: "MeshInstance3D", rect: [915, 220, 230, 390] },
+  ],
+});
+
+const keys = () => screen.getByLabelText("Notes on this take");
+const press = (key: string, times = 1) => {
+  for (let i = 0; i < times; i++) fireEvent.keyDown(keys(), { key });
+};
+/** Open a note's card, which moves the playhead to it. */
+const pick = (n: number) =>
+  fireEvent.click(within(screen.getByLabelText(`Note ${n}`)).getAllByRole("button")[0]);
 
 function mount(over: Partial<ReviewProps> = {}) {
   const props = {
@@ -143,6 +255,7 @@ async function retype(body: string) {
 
 beforeEach(() => {
   bridge.invoke.mockReset();
+  bridge.handlers.clear();
   globalThis.fetch = vi.fn(() => Promise.resolve(new Response(""))) as unknown as typeof fetch;
   globalThis.ResizeObserver = class {
     observe() {}
@@ -150,6 +263,9 @@ beforeEach(() => {
     disconnect() {}
   } as unknown as typeof ResizeObserver;
   HTMLMediaElement.prototype.pause = vi.fn();
+  URL.createObjectURL = vi.fn(() => "blob:frame");
+  URL.revokeObjectURL = vi.fn();
+  markup.path = "";
 });
 afterEach(cleanup);
 
@@ -176,6 +292,144 @@ describe("Review", () => {
       notes: { notes: { n: number }[] };
     };
     expect(saved.notes.notes.map((n) => n.n)).toEqual([1, 3]);
+    // Spec §13 test 5: the usage event, with what the note is and where it came from.
+    expect(tracked("note_created")).toEqual([{ kind: "frame", from: "key" }]);
+  });
+
+  it("steps one frame with the arrows, and turns I, O and N into a range note", async () => {
+    backend();
+    const { container } = mount();
+    await screen.findByText("The door light flickers");
+    press("ArrowRight");
+    expect(container.querySelector(".pl-review__time")?.textContent).toMatch(/^0:00\.03 /);
+    press("ArrowLeft");
+    press("i");
+    press("ArrowRight", 30);
+    press("o");
+    press("n");
+    await screen.findByRole("textbox", { name: "Note 3" });
+    expect(tracked("note_created")).toEqual([{ kind: "range", from: "key" }]);
+    await waitFor(() => expect(savedNote(3)).toBeTruthy(), { timeout: 2000 });
+    const note = savedNote(3) as { kind: string; inMs: number; outMs: number };
+    expect(note.kind).toBe("range");
+    expect(note.inMs).toBe(0);
+    expect(note.outMs).toBeCloseTo(1000, 6);
+    // The range went into the note, so the timeline shows none pending.
+    expect(container.querySelector(".pl-tl__selection")).toBeNull();
+  });
+
+  // Make a note took the pending range and put the mark's note in its middle.
+  it("makes a mark's note at the mark, leaving a pending range for later", async () => {
+    backend();
+    const { container } = mount();
+    await screen.findByText("1:12 · your mark");
+    press("i");
+    press("ArrowRight", 3);
+    press("o");
+    fireEvent.click(screen.getByRole("button", { name: "Make a note" }));
+    await screen.findByRole("textbox", { name: "Note 3" });
+    expect(tracked("note_created")).toEqual([{ kind: "frame", from: "mark" }]);
+    await waitFor(() => expect(savedNote(3)).toBeTruthy(), { timeout: 2000 });
+    expect(savedNote(3)).toMatchObject({ kind: "frame", atMs: 72_010, fromMark: 72_010 });
+    expect(container.querySelector(".pl-tl__selection")).not.toBeNull();
+  });
+
+  it("names a pin on the enemy's mesh Enemy_02, from the recorded tick", async () => {
+    backend();
+    serve({ telemetry: ENEMY_TICK });
+    mount();
+    await screen.findByText("The door light flickers");
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(2));
+    pick(1);
+    fireEvent.click(screen.getByRole("button", { name: /Mark up this frame/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Pin the enemy" }));
+    await waitFor(() => expect(savedNote(1)?.target).toBeTruthy(), { timeout: 2000 });
+    expect(savedNote(1)?.target).toEqual({
+      nodePath: "Hallway/Enemy_02",
+      type: "CharacterBody3D",
+      worldPoint: [14.2, 0, -6.8],
+      source: "recorded",
+    });
+    // The frame is named as the take's video at the note's time, wherever the take lives.
+    expect(markup.path).toBe(`${TAKE.path}/take.mp4#t=41.000`);
+    // The selected note was marked up, so no note was made.
+    expect(tracked("note_created")).toEqual([]);
+  });
+
+  it("marks up a new note at the playhead once it has left the selected one", async () => {
+    backend();
+    mount();
+    await screen.findByText("The door light flickers");
+    pick(1);
+    press("ArrowRight", 2);
+    fireEvent.click(screen.getByRole("button", { name: /Mark up this frame/ }));
+    await screen.findByRole("button", { name: "Pin the enemy" });
+    expect(tracked("note_created")).toEqual([{ kind: "frame", from: "markup" }]);
+    await waitFor(() => expect(savedNote(3)).toBeTruthy(), { timeout: 2000 });
+    // Two frames on at 30 fps, kept to the millisecond.
+    expect(savedNote(3)?.atMs).toBe(41_067);
+  });
+
+  it("counts the errors and warnings near a note on its card", async () => {
+    backend();
+    const row = (ms: number, level: string, text: string) =>
+      JSON.stringify({ t: TAKE.startedAt + ms, ms, level, stream: "stderr", text });
+    serve({
+      log: [
+        row(45_000, "error", "Invalid get index 'light'"),
+        row(50_000, "warning", "Shader compile slow"),
+        row(60_000, "error", "Too late to count"),
+        row(42_000, "info", "door opened"),
+      ].join("\n"),
+    });
+    mount();
+    const chip = await screen.findByText("1 error · 1 warning near");
+    expect(chip.getAttribute("title")).toContain("Invalid get index 'light'");
+  });
+
+  // Main is read-only: notes are written there, but `play/send` is refused.
+  it("keeps notes on the read-only main checkout and does not try to send them", async () => {
+    backend();
+    mount({ readOnly: true });
+    await screen.findByText("The door light flickers");
+    fireEvent.keyDown(keys(), { key: "Enter", ctrlKey: true });
+    press("n");
+    await screen.findByRole("textbox", { name: "Note 3" });
+    expect((screen.getByRole("button", { name: /Add note/ }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+    expect(screen.getByRole("button", { name: "Delete" })).toBeTruthy();
+    expect(calls("play/send")).toHaveLength(0);
+  });
+
+  // Spec §13 test 5 asks for review within 2 s of F7. What it waits for is
+  // the first frame; the filmstrip's seeks start only once the player can play.
+  it("says how long it took to show the first frame, and starts the filmstrip after it", async () => {
+    backend();
+    const made = vi.spyOn(document, "createElement");
+    const strips = () =>
+      made.mock.results
+        .map((r) => r.value as unknown)
+        .filter((el): el is HTMLVideoElement => el instanceof HTMLVideoElement && !el.isConnected);
+    const { container } = mount({ openedAt: Date.now() - 1500 });
+    await screen.findByText("The door light flickers");
+    const player = container.querySelector("video.pl-review__video") as HTMLVideoElement;
+    const root = container.querySelector(".pl-review") as HTMLElement;
+    expect(root.dataset.openMs).toBeUndefined();
+    expect(container.querySelector(".pl-review__grabber")?.getAttribute("preload")).toBe(
+      "metadata",
+    );
+    fireEvent.loadedData(player);
+    await waitFor(() => expect(Number(root.dataset.openMs)).toBeGreaterThanOrEqual(1500));
+    expect(strips()).toHaveLength(0);
+    fireEvent.canPlay(player);
+    await waitFor(() => expect(strips()).toHaveLength(1));
+    fireEvent.loadedData(strips()[0]);
+    const { filmstrip } = await import("./frames");
+    await waitFor(() => expect(filmstrip).toHaveBeenCalled());
+    expect(vi.mocked(filmstrip).mock.calls[0].slice(1, 2)).toEqual([TAKE.durationMs]);
+    expect(vi.mocked(filmstrip).mock.calls[0][3]).toBe(2000);
+    made.mockRestore();
   });
 
   it("sends the drafts with their pictures, then puts packet.md in front of the agent", async () => {
@@ -199,7 +453,125 @@ describe("Review", () => {
       kind: "file",
       path: "C:/env/.veistra/feedback/2026-10-30-1402-0f3a-1/packet.md",
     });
-    expect(props.onNotice).toHaveBeenCalled();
+    // The default agent, the cluster's terminal, gets the one line; no tab does.
+    expect(calls("context/insert")[0][1]).toEqual({
+      itemIds: ["ctx_1"],
+      terminal: "t1",
+      before: "Playtest feedback: 1 note. Read ",
+      after: " first.",
+    });
+    expect(calls("veistra/attach-to-agent")).toHaveLength(0);
+    expect(calls("play/send")[0][1]).toMatchObject({ clip: false, sentTo: AGENTS[0] });
+    await waitFor(() => expect(props.onNotice).toHaveBeenCalled());
+    expect(props.onNotice).toHaveBeenCalledWith(
+      expect.stringContaining("waiting at Claude Code · Terminal 1's prompt"),
+    );
+    expect(tracked("notes_sent")).toEqual([
+      {
+        notes: 1,
+        ranged: 0,
+        markedUp: 0,
+        contact: true,
+        clip: false,
+        to: "terminal",
+        delivered: true,
+      },
+    ]);
+  });
+
+  it("sends to the agent picked in SEND TO, and to that one alone", async () => {
+    backend();
+    const { props } = mount();
+    await screen.findByText("The door light flickers");
+    const to = screen.getByRole("combobox", { name: "Send to" }) as HTMLSelectElement;
+    await waitFor(() => expect(to.options).toHaveLength(2));
+    expect(to.value).toBe("terminal:t1");
+    fireEvent.change(to, { target: { value: "agentTab:agent-2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send 1 note" }));
+    await waitFor(() => expect(props.onNotice).toHaveBeenCalled());
+    expect(calls("context/insert")).toHaveLength(0);
+    expect(calls("veistra/attach-to-agent")).toEqual([
+      [
+        "veistra/attach-to-agent",
+        {
+          contextId: "ctx_1",
+          label: ".veistra/feedback/2026-10-30-1402-0f3a-1/packet.md",
+          instanceId: "agent-2",
+          before: "Playtest feedback: 1 note. Read ",
+          after: " first.",
+        },
+      ],
+    ]);
+    // Each comment keeps who it went to (X7), for Still broken.
+    expect(calls("play/send")[0][1]).toMatchObject({ sentTo: AGENTS[1] });
+    expect(tracked("notes_sent")[0]).toMatchObject({ to: "agentTab", delivered: true });
+  });
+
+  it("says why the agent was not told, and what the packet is missing", async () => {
+    const reason = "the terminal you chose is no longer running an agent in this environment";
+    backend(undefined, {
+      insert: { inserted: false, reason },
+      problems: ["Note 1's clip was not cut: the take has no video."],
+    });
+    const { props } = mount();
+    await screen.findByText("The door light flickers");
+    fireEvent.click(screen.getByRole("button", { name: "Send 1 note" }));
+    await waitFor(() => expect(props.onNotice).toHaveBeenCalled());
+    const notice = vi.mocked(props.onNotice).mock.calls[0][0];
+    expect(notice).toContain(`No agent was told: ${reason}.`);
+    expect(notice).toContain("Note 1's clip was not cut: the take has no video.");
+    expect(tracked("notes_sent")[0]).toMatchObject({ to: "terminal", delivered: false });
+  });
+
+  it("writes the packet with no agent running, and tells nobody", async () => {
+    backend(undefined, { agents: [] });
+    const { props } = mount();
+    await screen.findByText("The door light flickers");
+    const to = screen.getByRole("combobox", { name: "Send to" }) as HTMLSelectElement;
+    expect(to.disabled).toBe(true);
+    expect(within(to).getByRole("option").textContent).toBe("No agent running here");
+    fireEvent.click(screen.getByRole("button", { name: "Send 1 note" }));
+    await waitFor(() => expect(props.onNotice).toHaveBeenCalled());
+    expect(calls("play/send")[0][1]).toMatchObject({ sentTo: null });
+    expect(calls("context/insert")).toHaveLength(0);
+    expect(calls("veistra/attach-to-agent")).toHaveLength(0);
+    expect(tracked("notes_sent")[0]).toMatchObject({ to: "none", delivered: false });
+  });
+
+  it("cuts a clip only when it is ticked, and cannot be ticked where none can be cut", async () => {
+    backend();
+    mount();
+    await screen.findByText("The door light flickers");
+    const tick = screen.getByRole("checkbox", { name: /Video clip per note/ }) as HTMLInputElement;
+    expect(tick.checked).toBe(false);
+    fireEvent.click(tick);
+    fireEvent.click(screen.getByRole("button", { name: "Send 1 note" }));
+    await waitFor(() => expect(calls("play/send")).toHaveLength(1));
+    expect(calls("play/send")[0][1]).toMatchObject({ clip: true });
+    // A clip is cut per note, so Send waits longer for it than the bridge's default.
+    expect(calls("play/send")[0][2]).toBeGreaterThan(30_000);
+    cleanup();
+
+    const why = "Video clips are cut by the Windows media transcoder, so only Windows makes them.";
+    backend(undefined, { clipUnavailable: why });
+    mount();
+    await screen.findByText("The door light flickers");
+    const off = screen.getByRole("checkbox", { name: /Video clip per note/ }) as HTMLInputElement;
+    expect(off.disabled).toBe(true);
+    expect(off.closest("label")?.title).toBe(why);
+  });
+
+  it("refuses a note with no picture on a take with no video, before anything is written", async () => {
+    backend(undefined, { hasVideo: false });
+    const { props } = mount();
+    await screen.findByText("The door light flickers");
+    fireEvent.click(screen.getByRole("button", { name: "Send 1 note" }));
+    await waitFor(() =>
+      expect(props.onProblem).toHaveBeenCalledWith(
+        expect.stringContaining("This take has no video, so note 1 has no frame to send."),
+      ),
+    );
+    expect(calls("play/send")).toHaveLength(0);
   });
 
   it("shows a fixed note's summary and sends Still broken with the reply", async () => {
@@ -228,8 +600,162 @@ describe("Review", () => {
       verdict: "broken",
       reply: "still clips at the door",
     });
-    fireEvent.click(screen.getByRole("button", { name: "Play hallway.tscn" }));
+    const play = screen.getByRole("button", { name: "Play hallway.tscn" });
+    // Play records that one run and leaves Record as it was (X9).
+    expect(play.title).toBe("Run the game in res://levels/hallway.tscn and record that run");
+    fireEvent.click(play);
     expect(props.onPlayScene).toHaveBeenCalledWith("res://levels/hallway.tscn");
+  });
+
+  it("hands Still broken to Play mode, which runs the scene for it, when it can", async () => {
+    backend([{ n: 1, kind: "frame", atMs: 41_000, body: "door", commentId: "c2" }]);
+    const onStillBroken = vi.fn();
+    mount({ onStillBroken });
+    await screen.findByText("Rebaked the nav mesh");
+    fireEvent.change(screen.getByLabelText("What is still broken, for note 1"), {
+      target: { value: "still clips at the door" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Still broken" }));
+    expect(onStillBroken).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "c2" }),
+      "still clips at the door",
+    );
+    expect(calls("comments/verdict")).toHaveLength(0);
+  });
+
+  describe("a Still broken take", () => {
+    /** Note 2 of Take 3, sent to the agent tab, fixed, and found still broken. */
+    const CHECKED = {
+      id: "c9",
+      anchor: {
+        kind: "take",
+        take: "2026-10-29-1100-1b2c",
+        number: 3,
+        n: 2,
+        atMs: 102_180,
+        packet: ".veistra/feedback/2026-10-29-1100-1b2c-1",
+        scene: "res://levels/hallway.tscn",
+      },
+      author: "user",
+      body: "The enemy walks into the east wall",
+      status: "open",
+      sentTo: AGENTS[1],
+      replies: [
+        { by: "agent", body: "Rebaked the nav mesh", at: 5, commit: "3f2a1c9" },
+        { by: "user", body: "still clips at the door", at: 6 },
+      ],
+      created: 1,
+      updated: 6,
+    };
+    /** The draft Rust seeds the take with: the reply, at the first mark. */
+    const DRAFT = {
+      n: 1,
+      kind: "frame",
+      atMs: 12_000,
+      body: "still clips at the door",
+      followUp: "c9",
+    };
+    const history = () =>
+      within(screen.getByRole("list", { name: "Takes of note 1" }))
+        .getAllByRole("listitem")
+        .map((li) => li.textContent);
+
+    it("says which note it checks and lists that note's takes, this one last", async () => {
+      backend([DRAFT], { filed: [CHECKED] });
+      mount();
+      await waitFor(() => expect(screen.getByText("Still broken · note 2 of Take 3")).toBeTruthy());
+      expect(history()).toEqual([
+        "Take 3 · 1:42 · sent",
+        "Take 4 · 0:12 · this take, not sent yet",
+      ]);
+      // The old note's thread: the fix that did not hold, and what was said.
+      expect(screen.getByText("Rebaked the nav mesh")).toBeTruthy();
+      // SEND TO starts at the agent the note went to, not the default terminal.
+      const to = screen.getByRole("combobox", { name: "Send to" }) as HTMLSelectElement;
+      expect(to.value).toBe("agentTab:agent-2");
+    });
+
+    it("goes back to that agent as still broken, linked to the note it checks", async () => {
+      backend([DRAFT], { filed: [CHECKED] });
+      mount();
+      await screen.findByText("Still broken · note 2 of Take 3");
+      fireEvent.click(screen.getByRole("button", { name: "Send 1 note" }));
+      await waitFor(() => expect(calls("veistra/attach-to-agent")).toHaveLength(1));
+      const sent = calls("play/send")[0][1] as {
+        notes: Record<string, unknown>[];
+        sentTo: unknown;
+      };
+      expect(sent.notes[0]).toMatchObject({ n: 1, followUp: "c9" });
+      expect(sent.sentTo).toEqual(AGENTS[1]);
+      expect(calls("context/put")[0][1]).toMatchObject({
+        title: "Still broken: note 2 of Take 3, with Take 4. Read packet.md first.",
+      });
+      expect(calls("veistra/attach-to-agent")[0][1]).toMatchObject({
+        instanceId: "agent-2",
+        before: "Still broken after your fix: 1 note. Read ",
+      });
+      expect(calls("context/insert")).toHaveLength(0);
+      expect(tracked("notes_sent")[0]).toMatchObject({ notes: 1, followUp: true });
+    });
+
+    it("shows both takes in its history once Send has added this one", async () => {
+      const joined = {
+        ...CHECKED,
+        replies: [
+          CHECKED.replies[0],
+          {
+            ...CHECKED.replies[1],
+            take: {
+              take: TAKE.id,
+              number: 4,
+              packet: ".veistra/feedback/2026-10-30-1402-0f3a-1",
+              n: 1,
+              atMs: 12_000,
+            },
+          },
+        ],
+      };
+      backend([{ ...DRAFT, commentId: "c9", packet: "p" }], { filed: [joined] });
+      mount();
+      await screen.findByText("Still broken · note 2 of Take 3");
+      expect(history()).toEqual([
+        "Take 3 · 1:42 · sent",
+        "Take 4 · 0:12 · still broken · this take",
+      ]);
+      expect(screen.getByRole("button", { name: "Send 0 notes" })).toBeTruthy();
+    });
+  });
+
+  // Review saw an agent's fix only by its 2 s poll. The push comes at once,
+  // and a change to another take's note lists nothing.
+  it("shows a fix as soon as the change is pushed, before the poll", async () => {
+    const filed: unknown[] = [{ ...FIXED, status: "working", resolution: undefined }];
+    backend(
+      [
+        {
+          n: 2,
+          kind: "range",
+          atMs: 102_180,
+          inMs: 98_000,
+          outMs: 106_000,
+          body: "wall",
+          commentId: "c2",
+        },
+      ],
+      { filed },
+    );
+    mount();
+    await screen.findByText("wall");
+    await waitFor(() => expect(calls("play/notes").length).toBeGreaterThan(0));
+    const listed = calls("play/notes").length;
+    const push = bridge.handlers.get("comments:changed");
+
+    push?.({ id: "x9", kind: "take", take: "2026-10-30-1500-aaaa", status: "fixed", from: "open" });
+    await new Promise((r) => setTimeout(r, 250));
+    expect(calls("play/notes")).toHaveLength(listed);
+    filed[0] = FIXED;
+    push?.({ id: "c2", kind: "take", take: TAKE.id, status: "fixed", from: "working" });
+    expect(await screen.findByText("Fixed, check it", undefined, { timeout: 1000 })).toBeTruthy();
   });
 
   // Typing and then sending inside the debounce left a write of the

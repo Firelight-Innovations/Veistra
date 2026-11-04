@@ -44,6 +44,16 @@ impl Wanted {
     }
 }
 
+fn when(at_ms: u64, in_ms: Option<u64>, out_ms: Option<u64>) -> String {
+    match (in_ms, out_ms) {
+        (Some(i), Some(o)) if o > i => format!("{} → {}", clock(i), clock(o)),
+        _ => clock(at_ms),
+    }
+}
+
+/// One note for an agent. `packet` and `packetMd` are the newest take's: a
+/// Still broken take's packet lists the earlier ones, and `takes` has them
+/// all, oldest first.
 fn row(ctx: &CallContext, c: &Comment) -> Option<Value> {
     let Anchor::Take {
         take,
@@ -51,21 +61,33 @@ fn row(ctx: &CallContext, c: &Comment) -> Option<Value> {
         at_ms,
         in_ms,
         out_ms,
-        packet,
         scene,
         node_path,
+        ..
     } = &c.anchor
     else {
         return None;
     };
-    let when = match (in_ms, out_ms) {
-        (Some(i), Some(o)) if o > i => format!("{} → {}", clock(*i), clock(*o)),
-        _ => clock(*at_ms),
-    };
-    let packet_md = ctx
-        .project
-        .as_ref()
-        .map(|root| root.join(packet).join("packet.md").display().to_string());
+    let history = c.takes();
+    let newest = history.last()?;
+    let packet_md = ctx.project.as_ref().map(|root| {
+        root.join(&newest.packet)
+            .join("packet.md")
+            .display()
+            .to_string()
+    });
+    let takes: Vec<Value> = history
+        .iter()
+        .map(|t| {
+            json!({
+                "take": t.take,
+                "number": t.number,
+                "n": t.n,
+                "when": when(t.at_ms, t.in_ms, t.out_ms),
+                "packet": t.packet,
+            })
+        })
+        .collect();
     Some(json!({
         "id": c.id,
         "cluster": ctx.cluster_id,
@@ -73,11 +95,12 @@ fn row(ctx: &CallContext, c: &Comment) -> Option<Value> {
         "take": take,
         "status": c.status,
         "body": c.body,
-        "when": when,
+        "when": when(*at_ms, *in_ms, *out_ms),
         "scene": scene,
         "nodePath": node_path,
-        "packet": packet,
+        "packet": newest.packet,
         "packetMd": packet_md,
+        "takes": takes,
         "fix": c.resolution,
         "replies": c.replies,
     }))
@@ -96,7 +119,8 @@ pub fn list(ctx: &CallContext, wanted: Wanted) -> Result<Value, String> {
         "notes": rows,
         "covers": "Notes the person wrote on recorded Play takes in this environment. Read each \
                    note's packet.md first; a note with replies was tried before and is still \
-                   broken. An empty list means no note is waiting, not that the game is fine.",
+                   broken, and one with more than one take has a newer recording of it. An \
+                   empty list means no note is waiting, not that the game is fine.",
     }))
 }
 
@@ -164,6 +188,7 @@ mod tests {
             Draft {
                 anchor: Anchor::Take {
                     take: "2026-10-30-1402-0f3a".into(),
+                    number: None,
                     n,
                     at_ms: 102_180,
                     in_ms: Some(98_000),
@@ -261,5 +286,49 @@ mod tests {
         assert!(start(&ctx, "nope").is_err());
         assert_eq!(Wanted::parse(None), Ok(Wanted::Open));
         assert!(Wanted::parse(Some("closed")).is_err());
+    }
+
+    /// An agent handed a Still broken note reads the newest take's packet,
+    /// which lists the earlier one, and sees both takes in `takes`.
+    #[test]
+    fn a_still_broken_note_points_the_agent_at_its_newest_take() {
+        let dir = TempDir::new().unwrap();
+        let ctx = ctx(&dir);
+        let id = note(&ctx, 2);
+        resolve(&ctx, &id, "Rebaked the nav mesh", None).unwrap();
+        comments::verdict(&ctx, &id, comments::Verdict::Broken, None).unwrap();
+        let five = comments::TakeRef {
+            take: "2026-10-30-1440-9b1c".into(),
+            number: Some(5),
+            packet: ".veistra/feedback/2026-10-30-1440-9b1c-1".into(),
+            n: 1,
+            at_ms: 12_000,
+            in_ms: None,
+            out_ms: None,
+        };
+        comments::add_take(&ctx, &id, five, "Still broken.".into(), None).unwrap();
+
+        let open = list(&ctx, Wanted::Open).unwrap();
+        let row = &open["notes"][0];
+        assert_eq!(open["total"], 1);
+        assert_eq!(row["take"], "2026-10-30-1402-0f3a", "the note it began as");
+        assert_eq!(row["packet"], ".veistra/feedback/2026-10-30-1440-9b1c-1");
+        assert!(row["packetMd"]
+            .as_str()
+            .unwrap()
+            .contains("2026-10-30-1440-9b1c-1"));
+        let takes: Vec<_> = row["takes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| (t["number"].clone(), t["when"].clone()))
+            .collect();
+        assert_eq!(
+            takes,
+            vec![
+                (json!(null), json!("1:38 → 1:46")),
+                (json!(5), json!("0:12"))
+            ]
+        );
     }
 }
