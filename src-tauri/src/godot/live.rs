@@ -30,7 +30,9 @@ struct P {
     project: Option<String>,
     x: f64,
     y: f64,
-    on: bool,
+    /// `play/record`: Record on or off, kept as it was when absent, so the
+    /// settings popover can change the quality alone.
+    on: Option<bool>,
     /// `play/record`: `"720p30"` or `"1080p60"`, kept as it was when absent.
     quality: Option<String>,
     /// `play/record`: takes each environment keeps, kept as it was when absent.
@@ -67,6 +69,7 @@ pub fn call(ctx: &Ctx, method: &str, raw: Option<&Value>) -> Option<Result<Value
         "play/pop-out" => pop_out(ctx),
         "play/dock" => dock(ctx),
         "play/takes" => list_takes(ctx),
+        "play/takes-reveal" => reveal_takes(ctx),
         "play/take" => one_take(ctx, &p),
         "play/take-delete" => delete_take(ctx, &p),
         "play/notes-save" => save_notes(ctx, &p),
@@ -162,9 +165,10 @@ fn dock(ctx: &Ctx) -> Result<Value, RpcError> {
     Ok(json!({ "embed": s.embed.state() }))
 }
 
-/// With Record on, plan a take of the rest of the run and start it if the
-/// window is in the pane already; one still being looked for starts it when
-/// it is placed (`session::attached`).
+/// With Record on, or on a run recorded once (Play <scene>, Still broken),
+/// plan a take of the rest of the run and start it if the window is in the
+/// pane already; one still being looked for starts it when it is placed
+/// (`session::attached`).
 fn replan(ctx: &Ctx, s: &Session) {
     let (Some(run), Some(root)) = (ctx.godot.runner.get(&ctx.key), ctx.root.as_ref()) else {
         return;
@@ -178,7 +182,7 @@ fn replan(ctx: &Ctx, s: &Session) {
         .filter(|r| !r.is_empty())
         .unwrap_or_else(|| ".".to_string());
     let godot = ctx.godot.version_for_takes();
-    if let Some(plan) = plan_for(ctx, &run.spec.project, &rel, &godot, false) {
+    if let Some(plan) = plan_for(ctx, &run.spec.project, &rel, &godot, s.records_once()) {
         s.plan(plan);
         if let Some(hwnd) = s.embed.hwnd() {
             s.begin_take(hwnd);
@@ -325,27 +329,32 @@ pub fn plan_for(
     })
 }
 
-/// Record on or off, with its quality and how many takes to keep. While a
-/// game runs, on starts a take now and off saves the one going, so the
-/// toggle means "from now", not "from the next run". The quality and keep
-/// apply from the next take.
+/// `play/record`: Record on or off, its quality, and how many takes each
+/// environment keeps; whatever is absent stays as it was. While a game runs,
+/// on starts a take now and off saves the one going, so the toggle means
+/// "from now", not "from the next run". The quality and keep apply from the
+/// next take: the one recording keeps what it began with, and the keep is
+/// applied when the next take is saved.
 fn set_record(ctx: &Ctx, p: &P) -> Result<Value, RpcError> {
     let project = pick_project_for(ctx, p.project.as_deref())?;
-    if p.on {
+    if p.on == Some(true) {
         if let Some(why) = record_blocked(ctx, &project.dir) {
             return Err(fail(why));
         }
     }
     let mut settings = rec_settings(ctx);
-    settings.on = p.on;
-    if let Some(quality) = &p.quality {
-        if Quality::named(quality).is_none() {
-            return Err(RpcError::new(
+    if let Some(on) = p.on {
+        settings.on = on;
+    }
+    let mut quality = Quality::named(&settings.quality).unwrap_or(Quality::DEFAULT);
+    if let Some(name) = &p.quality {
+        quality = Quality::named(name).ok_or_else(|| {
+            RpcError::new(
                 INVALID_PARAMS,
-                format!("quality is \"720p30\" or \"1080p60\", not {quality:?}"),
-            ));
-        }
-        settings.quality.clone_from(quality);
+                format!("quality is \"720p30\" or \"1080p60\", not {name:?}"),
+            )
+        })?;
+        settings.quality.clone_from(name);
     }
     if let Some(keep) = p.keep {
         if keep == 0 {
@@ -355,16 +364,21 @@ fn set_record(ctx: &Ctx, p: &P) -> Result<Value, RpcError> {
     }
     write_rec_settings(ctx, &settings)?;
     if let (Some(s), Some(run)) = (session(ctx), ctx.godot.runner.get(&ctx.key)) {
-        if p.on {
-            let godot = ctx.godot.version_for_takes();
-            if let Some(plan) = plan_for(ctx, &project.dir, &project.rel, &godot, false) {
-                s.plan(plan);
-                if let Some(hwnd) = s.embed.hwnd() {
-                    s.begin_take(hwnd);
+        match p.on {
+            Some(true) => {
+                let godot = ctx.godot.version_for_takes();
+                if let Some(plan) = plan_for(ctx, &project.dir, &project.rel, &godot, false) {
+                    s.plan(plan);
+                    if let Some(hwnd) = s.embed.hwnd() {
+                        s.begin_take(hwnd);
+                    }
                 }
             }
-        } else {
-            s.finish_take(&run);
+            Some(false) => {
+                s.stop_recording_once();
+                s.finish_take(&run);
+            }
+            None => s.retune(quality, settings.keep),
         }
     }
     Ok(json!({ "on": settings.on, "quality": settings.quality, "keep": settings.keep }))
@@ -485,6 +499,23 @@ fn list_takes(ctx: &Ctx) -> Result<Value, RpcError> {
     Ok(json!({ "takes": to_value(&listed)?, "dir": dir.display().to_string() }))
 }
 
+/// `play/takes-reveal`: open this environment's takes folder in the file
+/// manager, making it first when no take has been saved yet. The folder is
+/// shown, never chosen: the asset scope, retention and the git exclude all
+/// assume takes live where [`takes_dir`] says.
+fn reveal_takes(ctx: &Ctx) -> Result<Value, RpcError> {
+    let dir = takes_dir(ctx)?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| fail(format!("could not create {}: {e}", dir.display())))?;
+    if let Some(root) = ctx.root.as_ref().filter(|_| !ctx.read_only) {
+        if let Err(e) = takes::ensure_excluded(root) {
+            crate::veistra_log!("play: could not keep takes out of git: {e}");
+        }
+    }
+    (ctx.reveal)(&dir).map_err(fail)?;
+    Ok(json!({ "dir": dir.display().to_string() }))
+}
+
 fn take_id(p: &P) -> Result<String, RpcError> {
     p.id.clone()
         .or_else(|| p.take.clone())
@@ -546,20 +577,32 @@ fn send(ctx: &Ctx, raw: Option<&Value>) -> Result<Value, RpcError> {
     to_value(&sent)
 }
 
-/// The notes Send filed for this environment, with their status, newest
-/// take first; `take` narrows it to one take.
+/// The notes Send filed for this environment, with their status; `take`
+/// narrows it to the notes with that take in their history, and the one a
+/// Still broken take was recorded for, so its review shows that note's
+/// thread before anything is sent from it.
 fn notes(ctx: &Ctx, p: &P) -> Result<Value, RpcError> {
     let context = crate::apps::CallContext {
         cluster_id: Some(ctx.key.clone()),
         project: ctx.root.clone(),
     };
     let all = crate::comments::list(&context)?;
+    let checking = match &p.take {
+        Some(take) => takes_dir(ctx)
+            .ok()
+            .and_then(|dir| takes::read(&dir, take).ok())
+            .and_then(|t| t.summary.follow_up)
+            .map(|f| f.comment),
+        None => None,
+    };
     let wanted: Vec<_> = all
         .into_iter()
-        .filter(|c| match (&c.anchor, &p.take) {
-            (crate::comments::Anchor::Take { take, .. }, Some(want)) => take == want,
-            (crate::comments::Anchor::Take { .. }, None) => true,
-            _ => false,
+        .filter(|c| match &p.take {
+            Some(want) => {
+                checking.as_deref() == Some(c.id.as_str())
+                    || c.takes().iter().any(|t| &t.take == want)
+            }
+            None => matches!(c.anchor, crate::comments::Anchor::Take { .. }),
         })
         .collect();
     Ok(json!({ "notes": to_value(&wanted)? }))
@@ -615,11 +658,15 @@ pub fn state(ctx: &Ctx, key_since: u64, project: Option<&str>) -> Value {
     );
     let blocked = dir.as_ref().and_then(|d| record_blocked(ctx, d));
     let settings = rec_settings(ctx);
+    // `inEnvironment`: the folder is the environment's `.veistra/takes/`,
+    // kept out of git; on read-only main it is under the app's data instead.
     let record = json!({
         "on": settings.on,
         "quality": settings.quality,
         "keep": settings.keep,
         "blocked": blocked,
+        "dir": takes_dir(ctx).ok().map(|d| d.display().to_string()),
+        "inEnvironment": !ctx.read_only,
     });
     let Some(s) = s else {
         return json!({ "record": record, "session": Value::Null });
@@ -644,6 +691,7 @@ pub fn state(ctx: &Ctx, key_since: u64, project: Option<&str>) -> Value {
             "ticks": s.ticks(),
             "mouseCaptured": s.mouse_captured(),
             "addon": s.channel.as_deref().and_then(super::addon::running_version),
+            "followUp": s.follow_up,
         },
     })
 }
@@ -687,6 +735,7 @@ mod tests {
             scratch: w.dir.path().join("scratch"),
             owner: Arc::new(|_| None),
             allow_asset: &|_| {},
+            reveal: &|_| Ok(()),
             hosts: &w.hosts,
             instance: Some("play-1".into()),
             shown: &|_| true,
@@ -749,6 +798,190 @@ mod tests {
         let read = rec_settings(&elsewhere);
         assert!(read.on, "the old per-environment switch still counts");
         assert_eq!((read.quality.as_str(), read.keep), ("720p30", takes::KEEP));
+    }
+
+    /// The settings popover sends the quality or the keep alone. Neither may
+    /// switch Record off, nor save the take a running game is waiting to start.
+    #[test]
+    fn a_settings_change_alone_leaves_record_and_the_take_as_they_were() {
+        let w = world();
+        let c = ctx(&w);
+        let on = RecSettings {
+            on: true,
+            ..RecSettings::default()
+        };
+        write_rec_settings(&c, &on).unwrap();
+        let spec = super::super::runner::RunSpec {
+            program: super::super::testing::fake_godot(w.dir.path(), true),
+            project: w.dir.path().join("game"),
+            scene: None,
+            channel: None,
+            window: None,
+        };
+        let run = w.godot.runner.start("c1", spec).unwrap();
+        let takes = takes_dir(&c).unwrap();
+        let plan = Plan {
+            takes_dir: takes.clone(),
+            env_root: None,
+            project: "game".into(),
+            godot: "4.5.1".into(),
+            godot_build: String::new(),
+            environment: takes::EnvInfo::default(),
+            quality: Quality::DEFAULT,
+            keep: 10,
+            usage: Arc::new(|_, _| {}),
+        };
+        let s = Arc::new(Session::new(run.id, None, Some(plan)));
+        w.godot.set_session("c1", s.clone());
+        let params = json!({ "project": "game", "quality": "1080p60", "keep": 4 });
+        let saved = call(&c, "play/record", Some(&params)).unwrap();
+        let after = s.take_state();
+        assert_eq!(w.godot.runner.stop("c1"), Ok(true));
+        assert_eq!(
+            saved.unwrap(),
+            json!({ "on": true, "quality": "1080p60", "keep": 4 })
+        );
+        assert_eq!(after, TakeState::Starting { number: 1 }, "not saved");
+        let record = state(&c, 0, None)["record"].clone();
+        assert_eq!(record["dir"], takes.display().to_string());
+        assert_eq!(record["inEnvironment"], true);
+    }
+
+    /// Show folder opens the environment's own takes folder, made if no take
+    /// was saved yet, and on read-only main the one under the app's data,
+    /// leaving main's checkout untouched.
+    #[test]
+    fn show_folder_opens_the_takes_folder_and_never_writes_to_main() {
+        let w = world();
+        let opened: Mutex<Vec<PathBuf>> = Mutex::default();
+        let reveal = |dir: &Path| {
+            opened.lock().unwrap().push(dir.to_path_buf());
+            Ok(())
+        };
+        let worktree = Ctx {
+            reveal: &reveal,
+            ..ctx(&w)
+        };
+        let answer = call(&worktree, "play/takes-reveal", None).unwrap().unwrap();
+        let own = takes::dir_in(w.dir.path());
+        assert!(own.is_dir(), "made before it is opened");
+        assert_eq!(answer["dir"], own.display().to_string());
+
+        std::fs::remove_dir_all(w.dir.path().join(".veistra")).unwrap();
+        let main = Ctx {
+            read_only: true,
+            reveal: &reveal,
+            ..ctx(&w)
+        };
+        call(&main, "play/takes-reveal", None).unwrap().unwrap();
+        let opened = opened.lock().unwrap().clone();
+        assert_eq!(opened.len(), 2);
+        assert_eq!(opened[0], own);
+        assert!(
+            opened[1].starts_with(w.dir.path().join("appdata")),
+            "{opened:?}"
+        );
+        assert!(
+            !w.dir.path().join(".veistra").exists(),
+            "main is not written"
+        );
+        assert_eq!(state(&main, 0, None)["record"]["inEnvironment"], false);
+
+        let refused = Ctx {
+            reveal: &|_| Err("no file manager".into()),
+            ..ctx(&w)
+        };
+        let e = call(&refused, "play/takes-reveal", None)
+            .unwrap()
+            .unwrap_err();
+        assert!(e.message.contains("no file manager"), "{}", e.message);
+    }
+
+    /// A Still broken take's review lists the note it checks before anything
+    /// is sent from it, and each take in a note's history finds the note.
+    #[test]
+    fn a_take_lists_the_notes_in_its_history_and_the_one_it_checks() {
+        use crate::comments::{self, Anchor, Draft, TakeRef};
+        let w = world();
+        let c = ctx(&w);
+        let context = crate::apps::CallContext {
+            cluster_id: Some("c1".into()),
+            project: Some(w.dir.path().to_path_buf()),
+        };
+        let (four, five, six) = (
+            "2026-10-30-1402-0f3a",
+            "2026-10-30-1440-9b1c",
+            "2026-10-30-1502-0c0c",
+        );
+        let note = comments::create(
+            &context,
+            Draft {
+                anchor: Anchor::Take {
+                    take: four.into(),
+                    number: Some(4),
+                    n: 2,
+                    at_ms: 102_000,
+                    in_ms: None,
+                    out_ms: None,
+                    packet: format!(".veistra/feedback/{four}-1"),
+                    scene: None,
+                    node_path: None,
+                },
+                body: "walks into the wall".into(),
+                screenshot_png: None,
+            },
+        )
+        .unwrap();
+        let checking = takes::FollowUp {
+            comment: note.id.clone(),
+            take: four.into(),
+            n: 2,
+            number: Some(4),
+            reply: "Still broken.".into(),
+        };
+        takes::finish(&takes::Finish {
+            dir: &takes::dir_in(w.dir.path()).join(five),
+            id: five,
+            number: 5,
+            project: "game",
+            environment: takes::EnvInfo::default(),
+            godot: "4.5.1",
+            godot_build: "4.5.1.stable.official.f62fdbde1",
+            started_at: 1_000,
+            ended_at: 9_000,
+            video: takes::VideoInfo::default(),
+            channel: None,
+            log: &[],
+            marks: &[],
+            follow_up: Some(&checking),
+        })
+        .unwrap();
+        let listed = |take: &str| -> Vec<Value> {
+            let answer = call(&c, "play/notes", Some(&json!({ "take": take })))
+                .unwrap()
+                .unwrap();
+            answer["notes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|n| n["id"].clone())
+                .collect()
+        };
+        let one = vec![json!(note.id)];
+        assert_eq!(listed(four), one);
+        assert_eq!(listed(five), one, "checked before it is sent");
+        assert!(listed(six).is_empty());
+        let link = TakeRef {
+            take: six.into(),
+            number: Some(6),
+            packet: format!(".veistra/feedback/{six}-1"),
+            n: 1,
+            at_ms: 0,
+            in_ms: None,
+            out_ms: None,
+        };
+        comments::add_take(&context, &note.id, link, "still".into(), None).unwrap();
+        assert_eq!(listed(six), one, "sent from it");
     }
 
     #[test]

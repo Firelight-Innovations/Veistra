@@ -9,6 +9,8 @@ import { liveAction, reviewAction } from "./keys";
 import { newF8Marks } from "./markTelemetry";
 import {
   addNote,
+  checkedOf,
+  commentOf,
   dismissMark,
   emptyDoc,
   errorsNear,
@@ -77,6 +79,17 @@ describe("notes", () => {
     expect(say(1)).toBe("Playtest feedback: 1 note. Read .veistra/feedback/t-1/packet.md first.");
   });
 
+  it("say which notes are still broken after the agent's fix", () => {
+    const say = (n: number, still: number) => {
+      const { before, after } = packetMessage(n, still);
+      return `${before}p/packet.md${after}`;
+    };
+    expect(say(1, 1)).toBe("Still broken after your fix: 1 note. Read p/packet.md first.");
+    expect(say(3, 1)).toBe(
+      "Playtest feedback: 3 notes, 1 still broken after your fix. Read p/packet.md first.",
+    );
+  });
+
   it("read a notes.json leniently and keep numbers above what is there", () => {
     const doc = normalize({ notes: [{ n: 4, atMs: 0 }, { nope: true }], nextN: 2 });
     expect(doc.notes).toHaveLength(1);
@@ -107,6 +120,17 @@ describe("notes", () => {
     const comment = { id: "c1", status: "fixed" } as Comment;
     expect(noteStatus(note, [comment])).toBe("fixed");
     expect(noteStatus({ ...note, commentId: undefined }, [comment])).toBe("draft");
+  });
+
+  it("find the note a Still broken draft checks, before Send and after it", () => {
+    const checked = { id: "c2", status: "open" } as Comment;
+    const draft = { ...addNote(emptyDoc(), 1).note, followUp: "c2" };
+    expect(checkedOf(draft, [checked])).toBe(checked);
+    expect(commentOf(draft, [checked])).toBeUndefined();
+    expect(noteStatus(draft, [checked])).toBe("draft");
+    const sent = { ...draft, commentId: "c2" };
+    expect(commentOf(sent, [checked])).toBe(checked);
+    expect(checkedOf({ ...draft, followUp: undefined }, [checked])).toBeUndefined();
   });
 });
 

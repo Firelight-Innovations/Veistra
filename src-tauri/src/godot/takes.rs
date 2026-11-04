@@ -167,6 +167,26 @@ pub struct Summary {
     /// answer when this reached the addon's cap of 64.
     #[serde(default)]
     pub tick_nodes: usize,
+    /// The note this take was recorded to check, when Still broken ran it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_up: Option<FollowUp>,
+}
+
+/// The note a Still broken run went back to: its comment, and the take and
+/// number it was first sent with, so the review can say "Still broken · note 2
+/// of Take 4" before anything is sent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FollowUp {
+    pub comment: String,
+    pub take: String,
+    pub n: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<u32>,
+    /// The person's reply, which the take's draft starts from. Only the run
+    /// needs it; take.json does not keep it.
+    #[serde(skip)]
+    pub reply: String,
 }
 
 /// [`SceneSpan`] as `take.json` spells it.
@@ -207,15 +227,17 @@ pub struct Finish<'a> {
     /// Marks from the toolbar, in wall time. F8 marks come from telemetry;
     /// one given here as well is still kept once.
     pub marks: &'a [u64],
+    /// Set on a Still broken run: the take starts with a draft for that note.
+    pub follow_up: Option<&'a FollowUp>,
 }
 
 /// How far either side of the take its telemetry copy reaches, so the tick
 /// nearest a mark at either end is still in it.
 const TELEMETRY_MARGIN: u64 = 200;
 
-/// Write `telemetry.jsonl`, `log.jsonl`, an empty `notes.json` and then
-/// `take.json`, last because it is what makes the folder a take to the list,
-/// and answer the summary.
+/// Write `telemetry.jsonl`, `log.jsonl`, `notes.json` (empty, or holding a
+/// Still broken run's draft) and then `take.json`, last because it is what
+/// makes the folder a take to the list, and answer the summary.
 pub fn finish(f: &Finish) -> std::io::Result<Summary> {
     std::fs::create_dir_all(f.dir)?;
     let duration = f.ended_at.saturating_sub(f.started_at);
@@ -266,16 +288,7 @@ pub fn finish(f: &Finish) -> std::io::Result<Summary> {
         log.push('\n');
     }
     std::fs::write(f.dir.join(LOG), log)?;
-    // Never over drafts: the page may have saved some already.
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(f.dir.join(NOTES))
-    {
-        Ok(file) => serde_json::to_writer_pretty(file, &no_notes())?,
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(e) => return Err(e),
-    }
+    first_notes(f.dir, f.follow_up, marks.first().copied())?;
 
     let ticks = telemetry::tick_stats(&lines, f.started_at, f.ended_at);
     let summary = Summary {
@@ -299,9 +312,70 @@ pub fn finish(f: &Finish) -> std::io::Result<Summary> {
         tick_rate: (ticks.per_second * 10.0).round() / 10.0,
         tick_us_p95: ticks.tick_us_p95,
         tick_nodes: ticks.max_nodes,
+        follow_up: f.follow_up.cloned(),
     };
     write_json(&f.dir.join(SUMMARY), &summary)?;
     Ok(summary)
+}
+
+/// A take's first `notes.json`, never over drafts the page saved already.
+/// A Still broken take gets one draft: the person's reply, linked to the
+/// note, at the first mark (F8 where it still breaks) or the start. It counts
+/// as a draft, so retention keeps the take until it is sent or deleted.
+fn first_notes(dir: &Path, follow_up: Option<&FollowUp>, mark: Option<u64>) -> std::io::Result<()> {
+    let path = dir.join(NOTES);
+    let _lock = NOTES_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let saved = match std::fs::read_to_string(&path) {
+        Ok(text) => match serde_json::from_str::<Value>(&text) {
+            Ok(doc) if doc["notes"].is_array() => Some(doc),
+            // Unreadable drafts are left for the person, not replaced.
+            _ => return Ok(()),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e),
+    };
+    let mut doc = saved.clone().unwrap_or_else(no_notes);
+    if let Some(follow_up) = follow_up {
+        add_follow_up(&mut doc, follow_up, mark);
+    }
+    if saved.as_ref() == Some(&doc) {
+        return Ok(());
+    }
+    write_json(&path, &doc)
+}
+
+fn add_follow_up(doc: &mut Value, follow_up: &FollowUp, mark: Option<u64>) {
+    let Some(notes) = doc["notes"].as_array() else {
+        return;
+    };
+    if notes
+        .iter()
+        .any(|n| n["followUp"] == follow_up.comment.as_str())
+    {
+        return;
+    }
+    let highest = notes
+        .iter()
+        .filter_map(|n| n["n"].as_u64())
+        .max()
+        .unwrap_or(0);
+    let n = doc["nextN"].as_u64().unwrap_or(1).max(highest + 1);
+    let mut draft = json!({
+        "n": n,
+        "kind": "frame",
+        "atMs": mark.unwrap_or(0),
+        "body": follow_up.reply,
+        "followUp": follow_up.comment,
+    });
+    if let Some(mark) = mark {
+        draft["fromMark"] = json!(mark);
+    }
+    if let Some(notes) = doc["notes"].as_array_mut() {
+        notes.push(draft);
+    }
+    doc["nextN"] = json!(n + 1);
 }
 
 /// Correct `take.json`'s video once the file is closed and its size is known
@@ -685,6 +759,7 @@ mod tests {
             channel: Some(&channel),
             log: &log,
             marks: &[started + 72_010, started + 999_999],
+            follow_up: None,
         })
         .unwrap()
     }
@@ -799,6 +874,7 @@ mod tests {
                 channel: Some(&channel),
                 log: &[],
                 marks: &[],
+                follow_up: None,
             })
             .unwrap()
         };
@@ -1070,9 +1146,123 @@ mod tests {
             channel: Some(&channel),
             log: &[],
             marks: &[1_500, 4_000],
+            follow_up: None,
         })
         .unwrap();
         assert_eq!(s.marks, vec![500, 3_000]);
+    }
+
+    fn still_broken() -> FollowUp {
+        FollowUp {
+            comment: "cmt-0001".into(),
+            take: "2026-10-30-1402-0f3a".into(),
+            n: 2,
+            number: Some(4),
+            reply: "still clips at the corner".into(),
+        }
+    }
+
+    fn finish_checking(takes: &Path, id: &str, follow_up: &FollowUp) -> Summary {
+        let channel = takes.join("chan");
+        std::fs::create_dir_all(&channel).unwrap();
+        std::fs::write(
+            channel.join(telemetry::FILE),
+            "{\"t\":13000,\"kind\":\"mark\"}\n",
+        )
+        .unwrap();
+        finish(&Finish {
+            dir: &takes.join(id),
+            id,
+            number: 5,
+            project: ".",
+            environment: EnvInfo::default(),
+            godot: "4.5.1",
+            godot_build: "4.5.1.stable.official.f62fdbde1",
+            started_at: 1_000,
+            ended_at: 60_000,
+            video: VideoInfo::default(),
+            channel: Some(&channel),
+            log: &[],
+            marks: &[],
+            follow_up: Some(follow_up),
+        })
+        .unwrap()
+    }
+
+    /// A Still broken run's take opens with the person's reply as a draft at
+    /// the first F8, linked to the note, and says in take.json which note it
+    /// checks. The reply stays out of take.json: the draft has it.
+    #[test]
+    fn a_still_broken_take_starts_with_a_draft_for_the_note_it_checks() {
+        let dir = TempDir::new().unwrap();
+        let takes = dir.path().to_path_buf();
+        let id = "2026-10-30-1440-9b1c";
+        let s = finish_checking(&takes, id, &still_broken());
+        assert_eq!(s.follow_up.as_ref().map(|f| f.n), Some(2));
+
+        let notes = load_notes(&takes, id);
+        assert_eq!(
+            notes["notes"],
+            json!([{
+                "n": 1,
+                "kind": "frame",
+                "atMs": 12_000,
+                "fromMark": 12_000,
+                "body": "still clips at the corner",
+                "followUp": "cmt-0001",
+            }])
+        );
+        assert_eq!(notes["nextN"], 2);
+        let listed = read(&takes, id).unwrap();
+        assert_eq!(listed.drafts, 1, "it keeps its take until it is sent");
+        let saved: Value =
+            serde_json::from_str(&std::fs::read_to_string(takes.join(id).join(SUMMARY)).unwrap())
+                .unwrap();
+        assert_eq!(
+            saved["followUp"],
+            json!({ "comment": "cmt-0001", "take": "2026-10-30-1402-0f3a", "n": 2, "number": 4 })
+        );
+        assert_eq!(listed.summary.follow_up.unwrap().reply, "");
+    }
+
+    #[test]
+    fn a_still_broken_draft_is_added_once_and_after_drafts_already_saved() {
+        let dir = TempDir::new().unwrap();
+        let takes = dir.path().to_path_buf();
+        let id = "2026-10-30-1440-9b1c";
+        let saved = json!({ "version": 1, "nextN": 4, "notes": [{ "n": 3, "body": "door" }] });
+        std::fs::create_dir_all(takes.join(id)).unwrap();
+        std::fs::write(takes.join(id).join(NOTES), saved.to_string()).unwrap();
+        finish_checking(&takes, id, &still_broken());
+        finish_checking(&takes, id, &still_broken());
+        let notes = load_notes(&takes, id);
+        let ns: Vec<_> = notes["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| (n["n"].clone(), n["followUp"].clone()))
+            .collect();
+        assert_eq!(
+            ns,
+            vec![(json!(3), Value::Null), (json!(4), json!("cmt-0001"))],
+            "numbered after the page's drafts, and only once"
+        );
+    }
+
+    /// Retention never takes a Still broken take before its note is sent:
+    /// its seeded draft counts.
+    #[test]
+    fn retention_keeps_a_still_broken_take_until_it_is_sent() {
+        let dir = TempDir::new().unwrap();
+        let takes = dir.path().to_path_buf();
+        let old = new_id(1_000, 1);
+        finish_checking(&takes, &old, &still_broken());
+        for i in 2..5u16 {
+            let id = new_id(u64::from(i) * 60_000, i);
+            finish_one(&takes, &id, u64::from(i) * 60_000, u32::from(i));
+        }
+        assert!(!retain(&takes, 1).contains(&old));
+        assert!(read(&takes, &old).is_ok());
     }
 
     #[test]

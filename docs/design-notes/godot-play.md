@@ -97,7 +97,9 @@ the capture addon's.
 
 **Takes** (`record.rs`, `encode.rs`, `takes.rs`, `session.rs`). Record is per project, per
 computer, off by default, and needs addon v2 and Windows; its settings are `{on, quality,
-keep}`. A take is `.veistra/takes/<utc minute>-<4 hex>/` with `take.mp4`, `telemetry.jsonl`,
+keep}`, opened from the chevron beside Record (`play/RecordSettings.tsx`, #321). A quality or
+keep chosen there applies from the next take, never the one recording, and Show folder opens
+the takes folder (`play/takes-reveal`); the folder itself is not a setting. A take is `.veistra/takes/<utc minute>-<4 hex>/` with `take.mp4`, `telemetry.jsonl`,
 `log.jsonl`, `take.json` and `notes.json`; the last `keep` (ten) are kept, plus any with drafts,
 and `.git/info/exclude` keeps them out of git. On read-only main they go under the app's data
 instead. The video is H.264 with no audio, fitted inside 1280x720 at 30 fps with a keyframe a
@@ -150,6 +152,18 @@ taken from the addon's key event, to that first frame is on the review's root as
 comment with a `take` anchor, and the page attaches `packet.md` at the agent's prompt. Agents
 use `list_play_notes`, `start_play_note` and `resolve_play_note` on the workspace server, or
 on the context server from an agent tab.
+
+**Still broken** (#321). Still broken on a fixed take note reopens it with the person's reply
+(`comments/verdict`), then runs the note's scene in its take's project with `play/run`
+`followUp: <comment id>`, which records that run whatever Record says and leaves Record as it
+was. The take it saves names the note in `take.json` (`followUp`) and starts with one draft,
+the reply, at the first F8 or the start. Its review says "Still broken · note N of Take M" and
+lists the note's takes; SEND TO starts on the agent in the note's `sentTo`. Send files the
+draft onto the same comment (`comments::add_take`): the take joins the note's history as
+`Reply.take`, the packet says the note is still broken and lists every earlier packet and the
+fix that did not hold, and the line is "Still broken after your fix: 1 note. Read …".
+`list_play_notes` points at the newest packet and lists every take. Where Record is blocked,
+nothing runs: the words go to the `sentTo` agent as a text item, Enter never pressed.
 
 **Note status reaches panes by push** (#311). Every comment write is announced as
 `comments:changed` (`comment_events.rs`), relayed by each window's shell to the app frames of
@@ -228,6 +242,20 @@ check it". The same chokepoint reports `godot:note_fixed` and `godot:note_resolv
 | Contact sheets (#315) | Cells 320 px wide at the take's own shape; `context.json` and `packet.md` give the times when they are not one a second apart | A 4:3 or ultrawide game was squashed into 16:9 cells, and a span longer than sixteen seconds is sampled evenly, which "1 frame a second" would misdescribe. |
 | A note with no ink (#315) | Its `markup.json` names `frames/note.png` in the markup format with no pins; its `markup.png` is the frame | Every note has the three files the packet promises, and an agent reads one format for both. |
 | `notes_sent` (#315) | Fired in the page once `play/send` answers: `notes`, `ranged`, `markedUp`, `contact`, `clip`, `to` and `delivered` | Decision X1: counts and flags only. `delivered` false with `to` set means the agent chosen did not take the line. |
+| Record settings (#321) | A chevron beside Record, "Settings for Record", opens a popover: Record every run, quality (720p · 30 fps or 1080p · 60, with its size for two minutes), takes to keep (5, 10, 20, 50, or the one set), the folder and Show folder, and Talk while you play as Later | The "Record settings" board. Its own name keeps "Record" a single button for every test and screen reader that looks for it. Open, it counts as covering the game, like the drawer. |
+| One setting at a time (#321) | `play/record` takes `on`, `quality` and `keep`, each optional, kept as it was when absent; a call without `on` touches no take | `on` read as false when absent, so choosing 1080p switched Record off and saved the take a running game was waiting for. |
+| When a change applies (#321) | The quality from the next take begun, the keep at the next save; the take recording keeps the quality it began with | Decision X9 and the board's "From the next take". `take.json` read the fps from the plan, which a change replaced mid-take. |
+| The takes folder (#321) | Shown, not chosen: `.veistra/takes/ · git-ignored`, or "Outside this read-only checkout" with the app-data path as its title; Show folder opens it, made first, through the opener plugin | Retention, the asset scope and the git exclude all assume takes live where Rust puts them. On read-only main nothing is written to the checkout. |
+| What Still broken runs (#321) | `play/run` `followUp`: the note's take's project and scene, recorded once (it implies `recordOnce`), Record left as it was; a game already running is stopped first | The issue asks for the scene with Record on. Turning Record on for it would leave every later run recorded. The take's project, not the picker's, because the take menu lists every project's takes. |
+| `followUp` is checked first (#321) | A take note that is not resolved, before anything starts; Dock and a restart keep it, Record switched off ends it, and a restart that asks for its own `recordOnce` or `followUp` drops it | A run for a note that cannot take one would record a take nothing files. |
+| The follow-up draft (#321) | Rust writes it into the take's first `notes.json`: the person's reply, `followUp` the comment id, at the first F8 or 0:00; it counts as a draft for retention | The reply is already the description of what still breaks, and F8 is where the person showed it. Written by Rust, the draft is there before the review opens and survives a closed pane. |
+| One note, many takes (#321) | Send files a follow-up through `comments::add_take`: the take goes on the reply when the words are the reply unchanged, else on a new reply; a note marked fixed since opens again; `sentTo` updates | A second comment for the same problem gave the agent no way to tie the attempts together. `TakeRef` carries the take, its number, packet and time. |
+| The same agent (#321) | SEND TO's default is the checked note's `sentTo` when that agent is still listed, else the head of the list | Decision X7. An agent that has gone is not a refusal here, unlike a chosen one at Send (#315): the person sees the default before pressing Send. |
+| Still broken where Record is blocked (#321) | Nothing runs; the words go to the `sentTo` agent (else the first listed) as a `context/put` text item with the reason no take was recorded, referenced at its prompt as "Still broken after your fix: note N of Take M. Read <item>." | Decision X8: Enter is never pressed. A run nothing records would leave the person a game and no way to send what they saw. Owner question. |
+| The packet for a follow-up (#321) | `packet.md` marks the note still broken and lists "Sent before" (each earlier packet) and "Last fix" (the agent's summary and commit) | The agent reads one packet, the newest, and is told where the earlier ones are. |
+| `list_play_notes` for a follow-up (#321) | `packet` and `packetMd` are the newest take's; `takes` lists each `{take, number, n, when, packet}`, oldest first | An agent given the first packet would work from the take that no longer shows the problem. |
+| Play <scene> from review (#321) | Runs the scene with `recordOnce` | Decision X9: Play <scene> records that run, so its take can be reviewed against this one. |
+| `followUp` on `notes_sent` (#321) | `followUp: true`, only on a Send with a Still broken note in it | Decision X1. Absent otherwise, so earlier Sends read as they did. |
 
 ### Not verified on a real machine
 
@@ -328,6 +356,25 @@ agent tab, video decoder or media transcoder ran:
 - The seek timeout (5 s) never firing on a healthy take, so a slow first seek does not drop a
   picture.
 - `godot:notes_sent` reaching PostHog.
+
+From #321, unit-tested through fakes and jsdom and type-checked for Windows; no WebView2, Godot,
+recorder, terminal or agent tab ran:
+
+- A take at 1080p · 60 after choosing it with a game running: the take recording keeps 720p,
+  the next is 1920x1080 at 60 fps (`take.json`), and its size for two minutes is near 120 MB.
+  The board's 60 MB is the default quality's.
+- Keep 5 with more takes on disk: the next save leaves five plus any with drafts.
+- Show folder opening Explorer on `.veistra/takes/`, and on read-only main on the folder under
+  the app's data, with nothing written to the checkout.
+- The popover over the embedded game: the game hides while it is open, and Escape and a press
+  on the game's still close it.
+- The loop end to end with a Claude Code terminal and with an agent tab: Send, the agent's
+  `resolve_play_note`, Still broken with a reply, the scene starting recorded, F8, F7, the
+  review saying "Still broken · note N of Take M" with both takes listed, SEND TO on the same
+  agent, and the line "Still broken after your fix: 1 note. Read @…/packet.md first." waiting
+  unsent. `list_play_notes` then names the new packet and both takes.
+- Still broken with capture missing: the text item at the agent's prompt, nothing run.
+- `godot:notes_sent` with `followUp` reaching PostHog.
 
 From #311, not yet run in a real Veistra (unit-tested only):
 

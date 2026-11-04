@@ -9,7 +9,7 @@
  * in every packet and every message about it.
  */
 import type { MarkupJson } from "@veistra/markup";
-import type { Comment, Status } from "../../../../shared/comments";
+import type { Comment, Status, TakeRef } from "../../../../shared/comments";
 
 /** What a note is about: picked live by ray, or found in the take's recorded boxes. */
 export interface Target {
@@ -37,6 +37,12 @@ export interface NoteDraft {
   /** Set by Send: the comment this note became, and its packet. */
   commentId?: string;
   packet?: string;
+  /**
+   * On a Still broken take's draft (#321): the take note, a comment id, this
+   * take was recorded to check. Send adds the take to that comment rather than
+   * filing a new one, so `commentId` becomes the same id.
+   */
+  followUp?: string;
 }
 
 export interface NotesDoc {
@@ -161,11 +167,15 @@ export function markSent(
  * reference: "Playtest feedback: 2 notes. Read <packet>/packet.md first."
  * Veistra never presses Enter; the person reads it and sends it.
  */
-export function packetMessage(count: number): { before: string; after: string } {
-  return {
-    before: `Playtest feedback: ${count} ${count === 1 ? "note" : "notes"}. Read `,
-    after: " first.",
-  };
+export function packetMessage(count: number, stillBroken = 0): { before: string; after: string } {
+  const notes = (n: number) => `${n} ${n === 1 ? "note" : "notes"}`;
+  const before =
+    stillBroken === 0
+      ? `Playtest feedback: ${notes(count)}. Read `
+      : stillBroken >= count
+        ? `Still broken after your fix: ${notes(count)}. Read `
+        : `Playtest feedback: ${notes(count)}, ${stillBroken} still broken after your fix. Read `;
+  return { before, after: " first." };
 }
 
 /** Drafts with words: what Send sends. */
@@ -254,4 +264,17 @@ export function noteStatus(note: NoteDraft, comments: readonly Comment[]): Statu
 
 export function commentOf(note: NoteDraft, comments: readonly Comment[]): Comment | undefined {
   return note.commentId ? comments.find((c) => c.id === note.commentId) : undefined;
+}
+
+/** "note 2 of Take 4", or "note 2" for a note sent before takes kept their number. */
+export function noteName(ref: Pick<TakeRef, "n" | "number">): string {
+  return `note ${ref.n}${ref.number !== undefined ? ` of Take ${ref.number}` : ""}`;
+}
+
+/**
+ * The take note a Still broken draft checks, before Send and after it (when
+ * it is `commentOf` too). `play/notes` lists it with the take, so it is found.
+ */
+export function checkedOf(note: NoteDraft, comments: readonly Comment[]): Comment | undefined {
+  return note.followUp ? comments.find((c) => c.id === note.followUp) : undefined;
 }

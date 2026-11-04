@@ -51,13 +51,19 @@ report it done (`fixed`, with its note and commit), through the context server's
 keeps the thread: the agent's fix note moves into `replies`, followed by the
 person's reply, so the next attempt sees what was tried.
 
+For a Play note, Still broken also records the scene again, and the take sent
+from that run joins the same comment rather than making a new one
+(`comments::add_take`): it rides on a reply as `Reply.take`, and
+`Comment::takes` lists the note's takes, oldest first. It goes to the agent in
+the comment's `sentTo`, the one the note was sent to before (#321).
+
 The rejected alternative was letting an agent's resolve close the comment, as
 it did before. The person who saw the problem is the one who can say it is
 gone, and a closed comment drops out of every list where that check would
 happen.
 
-Play's notes are comments with a `take` anchor: the take, the note's number,
-its time or range, the feedback packet's folder, and the scene and node when
+Play's notes are comments with a `take` anchor: the take and its number, the
+note's number, its time or range, the feedback packet's folder, and the scene and node when
 known, so the Scene and Blender views can show a note on its node or part.
 
 The rules are the store's, not its callers': `resolve_with_commit` refuses an

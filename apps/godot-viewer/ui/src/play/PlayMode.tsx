@@ -48,10 +48,12 @@ import {
   createComment,
   listComments,
   resolveComment,
+  takeHistory,
   verdictComment,
   formatPlayTime,
   type Comment,
 } from "../../../../shared/comments";
+import { handToAgent, listAgents, type Delivery } from "../../../../shared/context";
 import { errorText, openInGodot } from "../../../../shared/godot";
 import type { WindowRect } from "../../../../shared/nativeBox";
 import { blobBase64, sendMarkup } from "../../../../shared/markupFlow";
@@ -67,7 +69,8 @@ import { clock } from "./frames";
 import { isTyping, liveAction } from "./keys";
 import { LiveStrip, LiveView, LogView, type LiveMarking } from "./LiveView";
 import { newF8Marks, type MarkCount } from "./markTelemetry";
-import type { Target } from "./notes";
+import { noteName, type Target } from "./notes";
+import { RecordSettings } from "./RecordSettings";
 import Review, { reportNote, type LiveNote } from "./Review";
 import {
   addonStatus,
@@ -81,18 +84,21 @@ import {
   popOut,
   removeAddon,
   restart,
+  revealTakes,
   run,
   setPaused,
   setRecord,
+  setRecordSettings,
   stop,
   type AddonStatus,
   type Capture,
   type ListedTake,
   type Live,
   type LogLine,
+  type RecordQuality,
   type RunInfo,
 } from "./rpc";
-import { dragContext, putLog, putShot } from "./context";
+import { dragContext, putLog, putShot, putStillBroken } from "./context";
 import type { RunRequest } from "../App";
 import { focusIfDropped, type ModeProps } from "../modes";
 import { getState as readScenes } from "../rpc";
@@ -174,6 +180,8 @@ export default function PlayMode(props: PlayModeProps) {
   const [view, setView] = useState<View>({ kind: "live" });
   const [takes, setTakes] = useState<ListedTake[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
+  /** Record settings' popover, which covers the game like the picker does. */
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [marking, setMarking] = useState<
     (LiveMarking & { atWall: number; wasPaused: boolean }) | null
   >(null);
@@ -416,23 +424,29 @@ export default function PlayMode(props: PlayModeProps) {
     }
   }, []);
 
+  /** Run a scene, throwing what failed; `options` are `play/run`'s (X9, #321). */
+  const launch = useCallback(
+    async (scene?: string, projectRel?: string, options?: Parameters<typeof run>[2]) => {
+      const rel = projectRel ?? chosenRel;
+      const s = await run(
+        rel,
+        scene ?? (picked && picked.rel === rel ? picked.scene : undefined),
+        options,
+      );
+      // Played from elsewhere (Play scene, review), the scene is what F5 runs next.
+      if (scene && rel !== undefined) setPicked({ rel, scene });
+      setInfo(s.run);
+      setLive(s.live ?? null);
+      setShot(null);
+      setMarking(null);
+      setView({ kind: "live" });
+    },
+    [chosenRel, picked],
+  );
   const start = useCallback(
-    (scene?: string, projectRel?: string) =>
-      guarded(async () => {
-        const rel = projectRel ?? chosenRel;
-        const s = await run(
-          rel,
-          scene ?? (picked && picked.rel === rel ? picked.scene : undefined),
-        );
-        // Played from elsewhere (Play scene, review), the scene is what F5 runs next.
-        if (scene && rel !== undefined) setPicked({ rel, scene });
-        setInfo(s.run);
-        setLive(s.live ?? null);
-        setShot(null);
-        setMarking(null);
-        setView({ kind: "live" });
-      }),
-    [chosenRel, guarded, picked],
+    (scene?: string, projectRel?: string, options?: Parameters<typeof run>[2]) =>
+      guarded(() => launch(scene, projectRel, options)),
+    [guarded, launch],
   );
 
   // From review, Play again, F5 and a fixed note's Play run the reviewed
@@ -442,11 +456,67 @@ export default function PlayMode(props: PlayModeProps) {
   const reviewedRel =
     reviewed && projects.some((p) => p.rel === reviewed.project) ? reviewed.project : chosenRel;
   const playAgain = useCallback(
-    (scene?: string) => {
+    (scene?: string, options?: Parameters<typeof run>[2]) => {
       if (reviewedRel !== undefined && reviewedRel !== chosenRel) setProject(reviewedRel);
-      return start(scene, reviewedRel);
+      return start(scene, reviewedRel, options);
     },
     [reviewedRel, chosenRel, setProject, start],
+  );
+
+  /**
+   * Still broken on a take note (#321): the verdict, then the note's scene
+   * again in its take's project, recorded once and carrying the note, so the
+   * take Rust saves starts with a draft for it and Send adds that take to the
+   * same comment for the same agent (`sentTo`). Where Record cannot run there
+   * is no take: the agent that had the note gets the person's words instead.
+   * Any other note takes the verdict alone, as before.
+   */
+  const stillBroken = useCallback(
+    (comment: Comment, reply?: string) =>
+      guarded(async () => {
+        await verdictComment(comment.id, "broken", reply);
+        void refreshComments();
+        const anchor = comment.anchor.kind === "take" ? comment.anchor : null;
+        const first = takeHistory(comment)[0];
+        if (!anchor || !first) return;
+        if (recordBlocked) {
+          const to = comment.sentTo ?? (await listAgents().catch(() => []))[0] ?? null;
+          const item = await putStillBroken(comment, reply, recordBlocked);
+          const said: Delivery = to
+            ? await handToAgent(to, item.id, "Play - still broken", {
+                before: `Still broken after your fix: ${noteName(first)}. Read `,
+                after: ".",
+              }).catch((e: unknown) => ({ delivered: false as const, reason: errorText(e) }))
+            : { delivered: false, reason: "no agent is running here" };
+          setNotice(
+            said.delivered
+              ? `No new take: ${recordBlocked} Your words are waiting at ${to?.label ?? "the agent"}'s prompt.`
+              : `No new take: ${recordBlocked} No agent was told: ${said.reason}.`,
+          );
+          return;
+        }
+        // The note's take says which project; a take since deleted leaves the picked one.
+        const from = takes.find((t) => t.id === anchor.take);
+        const known = status?.projects ?? [];
+        const rel = from && known.some((p) => p.rel === from.project) ? from.project : chosenRel;
+        if (running) await stop();
+        if (rel !== undefined && rel !== chosenRel) setProject(rel);
+        await launch(anchor.scene ?? undefined, rel, { followUp: comment.id });
+        setNotice(
+          `Checking ${noteName(first)}: press F8 where it still breaks, F7 when you are done.`,
+        );
+      }),
+    [
+      guarded,
+      refreshComments,
+      recordBlocked,
+      takes,
+      status,
+      chosenRel,
+      running,
+      setProject,
+      launch,
+    ],
   );
 
   // Play scene, from Editor mode or another pane, names its project: a
@@ -641,6 +711,18 @@ export default function PlayMode(props: PlayModeProps) {
       setLive((l) => (l ? { ...l, record: { ...l.record, on: !recordOn } } : l));
     });
   }, [recordOn, recordBlocked, guarded, chosenRel]);
+
+  /** Quality or keep from Record settings: kept now, used from the next take. */
+  const changeRecordSettings = useCallback(
+    (next: { quality?: RecordQuality; keep?: number }) =>
+      void guarded(async () => {
+        const saved = await setRecordSettings(next, chosenRel);
+        setLive((l) =>
+          l ? { ...l, record: { ...l.record, quality: saved.quality, keep: saved.keep } } : l,
+        );
+      }),
+    [guarded, chosenRel],
+  );
 
   const onLiveNotesTaken = useCallback(
     (id: string) => setLiveNotes((notes) => notes.filter((n) => n.take !== id)),
@@ -945,6 +1027,14 @@ export default function PlayMode(props: PlayModeProps) {
   const liveActions = (
     <Fragment key="live">
       {recButton}
+      <RecordSettings
+        open={settingsOpen}
+        onOpen={setSettingsOpen}
+        record={live?.record ?? { on: false, blocked: null }}
+        onRecord={toggleRecord}
+        onChange={changeRecordSettings}
+        onReveal={() => void guarded(revealTakes)}
+      />
       <ToolbarButton
         kbd="F8"
         disabled={!running}
@@ -1086,12 +1176,8 @@ export default function PlayMode(props: PlayModeProps) {
           readOnly={readOnly}
           liveNotes={liveNotes}
           onLiveNotesTaken={onLiveNotesTaken}
-          onPlayScene={(scene) =>
-            void guarded(async () => {
-              if (!recordOn && !recordBlocked) await setRecord(true, reviewedRel);
-              await playAgain(scene);
-            })
-          }
+          onPlayScene={(scene) => void playAgain(scene, { recordOnce: true })}
+          onStillBroken={(c, reply) => void stillBroken(c, reply)}
           onProblem={setProblem}
           onNotice={setNotice}
           onDeleted={() => {
@@ -1108,7 +1194,7 @@ export default function PlayMode(props: PlayModeProps) {
               lines={lines}
               frameRect={frameRect}
               overlays={overlays}
-              coveredHere={pickerOpen || consentOpen || shot !== null}
+              coveredHere={pickerOpen || settingsOpen || consentOpen || shot !== null}
               marking={marking}
               hint={hint}
               onMarkupDone={(r, shown) => void doneLiveMarkup(r, shown)}
@@ -1211,6 +1297,11 @@ export default function PlayMode(props: PlayModeProps) {
                     await refreshComments();
                   }}
                   onVerdict={async (id, verdict, reply) => {
+                    const c = comments.find((x) => x.id === id);
+                    if (verdict === "broken" && c?.anchor.kind === "take") {
+                      await stillBroken(c, reply);
+                      return;
+                    }
                     await verdictComment(id, verdict, reply);
                     await refreshComments();
                   }}

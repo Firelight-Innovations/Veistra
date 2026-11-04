@@ -7,7 +7,15 @@
 // `vitest.config.ts`'s note on why this is a per-file docblock rather than a
 // DOM for the whole config.
 import { describe, expect, it } from "vitest";
-import { anchorLabel, formatPlayTime, isActive, statusView, type Anchor } from "./comments";
+import {
+  anchorLabel,
+  formatPlayTime,
+  isActive,
+  statusView,
+  takeHistory,
+  type Anchor,
+  type Comment,
+} from "./comments";
 
 describe("formatPlayTime", () => {
   it("pads minutes and seconds to the board's mm:ss.s shape", () => {
@@ -76,5 +84,44 @@ describe("take notes", () => {
       isActive("fixed"),
       isActive("resolved"),
     ]).toEqual([true, true, false, false]);
+  });
+
+  it("list a Still broken note's takes oldest first, the first from its anchor", () => {
+    const comment: Comment = {
+      id: "cmt-1",
+      anchor: {
+        kind: "take",
+        take: "2026-10-30-1402-0f3a",
+        number: 4,
+        n: 2,
+        atMs: 102_000,
+        packet: ".veistra/feedback/2026-10-30-1402-0f3a-1",
+      },
+      author: "user",
+      body: "walks into the wall",
+      status: "open",
+      replies: [
+        { by: "agent", body: "rebaked the nav mesh", at: 1 },
+        {
+          by: "user",
+          body: "still clips at the corner",
+          at: 2,
+          take: {
+            take: "2026-10-30-1440-9b1c",
+            number: 5,
+            packet: ".veistra/feedback/2026-10-30-1440-9b1c-1",
+            n: 1,
+            atMs: 12_000,
+          },
+        },
+      ],
+      created: 0,
+      updated: 2,
+    };
+    expect(takeHistory(comment).map((t) => [t.number, t.n, t.atMs])).toEqual([
+      [4, 2, 102_000],
+      [5, 1, 12_000],
+    ]);
+    expect(takeHistory({ ...comment, anchor: { kind: "node", path: "World" } })).toEqual([]);
   });
 });

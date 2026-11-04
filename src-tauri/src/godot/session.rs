@@ -26,6 +26,7 @@ use serde::Serialize;
 use serde_json::json;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -108,6 +109,10 @@ struct Active {
     capture: Box<dyn Capture>,
     id: String,
     number: u32,
+    /// What it is being encoded at: a quality chosen while it records
+    /// applies from the next take, so take.json must not read it from the
+    /// plan.
+    quality: Quality,
 }
 
 pub struct Session {
@@ -132,6 +137,13 @@ pub struct Session {
     start_capture: record::Start,
     /// The take's own log, kept by [`Self::log_tap`] while one records.
     take_log: Mutex<Option<VecDeque<LogLine>>>,
+    /// This run is recorded whatever Record is set to (Play <scene>, Still
+    /// broken), so a take planned again after Dock records too. Record
+    /// switched off mid-run clears it.
+    once: AtomicBool,
+    /// The note a Still broken run went back to; every take it saves starts
+    /// with a draft for it.
+    pub follow_up: Option<takes::FollowUp>,
 }
 
 impl Session {
@@ -168,7 +180,27 @@ impl Session {
             mouse: Mutex::new(None),
             start_capture: Arc::new(record::start),
             take_log: Mutex::new(None),
+            once: AtomicBool::new(false),
+            follow_up: None,
         }
+    }
+
+    /// The same session recorded whatever Record says, for `play/run`'s
+    /// `recordOnce`, and linked to the note Still broken went back to.
+    pub fn recording_once(mut self, once: bool, follow_up: Option<takes::FollowUp>) -> Self {
+        self.once = AtomicBool::new(once || follow_up.is_some());
+        self.follow_up = follow_up;
+        self
+    }
+
+    /// Whether this run records whatever Record is set to.
+    pub fn records_once(&self) -> bool {
+        self.once.load(Ordering::Relaxed)
+    }
+
+    /// Record switched off mid-run: no later take of this run records.
+    pub fn stop_recording_once(&self) {
+        self.once.store(false, Ordering::Relaxed);
     }
 
     /// The same session recording through `start` instead of the screen.
@@ -200,6 +232,16 @@ impl Session {
 
     pub fn take_state(&self) -> TakeState {
         self.take.lock_or_panic().clone()
+    }
+
+    /// A new quality or keep for the takes still to come: one not begun yet
+    /// is encoded at `quality`, and the next one saved keeps `keep`. The take
+    /// recording now keeps the quality it began with.
+    pub fn retune(&self, quality: Quality, keep: usize) {
+        if let Some(plan) = self.plan.lock_or_panic().as_mut() {
+            plan.quality = quality;
+            plan.keep = keep.max(1);
+        }
     }
 
     /// Plan a take for a run already going (Record switched on mid-run).
@@ -261,6 +303,7 @@ impl Session {
                     capture,
                     id,
                     number,
+                    quality: plan.quality,
                 });
             }
             Err(reason) => {
@@ -338,11 +381,12 @@ impl Session {
             video: VideoInfo {
                 width: stopped.width,
                 height: stopped.height,
-                fps: plan.quality.fps,
+                fps: active.quality.fps,
             },
             channel: self.channel.as_deref(),
             log: &log,
             marks: &marks,
+            follow_up: self.follow_up.as_ref(),
         });
         let summary = match written {
             Ok(summary) => summary,
@@ -868,6 +912,7 @@ mod tests {
             channel: Some(&channel),
             log: &[],
             marks: &s.take_marks(),
+            follow_up: None,
         })
         .unwrap();
         assert_eq!(summary.marks, vec![3_000, 5_000]);
@@ -1035,6 +1080,78 @@ mod tests {
             s.take_log.lock_or_panic().is_none(),
             "kept only while recording"
         );
+    }
+
+    /// A quality chosen in Record's settings reaches the take not begun yet,
+    /// and one chosen while a take records waits for the next: the take
+    /// going keeps what it began with, in its encoder and in take.json.
+    #[test]
+    fn a_quality_chosen_mid_take_applies_from_the_next_take() {
+        let dir = TempDir::new().unwrap();
+        let (_runner, run) = exited_run(dir.path());
+        let plan = plan(dir.path());
+        let takes_dir = plan.takes_dir.clone();
+        let asked: Arc<Mutex<Vec<u32>>> = Arc::default();
+        let seen = asked.clone();
+        let inner = fake_capture(Some(now_ms()), Duration::ZERO);
+        let start: record::Start = Arc::new(move |hwnd, path: &Path, quality: &Quality| {
+            seen.lock_or_panic().push(quality.fps);
+            inner(hwnd, path, quality)
+        });
+        let s = Session::with_embed(run.id, None, Some(plan), embedded()).with_capture(start);
+        s.retune(Quality::HIGH, 3);
+        s.begin_take(7);
+        assert_eq!(*asked.lock_or_panic(), vec![60], "not begun: the new one");
+        s.retune(Quality::DEFAULT, 0);
+        assert_eq!(
+            s.plan.lock_or_panic().as_ref().map(|p| p.keep),
+            Some(1),
+            "at least the take just saved is kept"
+        );
+        s.finish_take(&run);
+        let TakeState::Saved { id, .. } = s.take_state() else {
+            panic!("{:?}", s.take_state());
+        };
+        let summary = takes::read(&takes_dir, &id).unwrap().summary;
+        assert_eq!(summary.video.fps, 60, "the take keeps what it began with");
+    }
+
+    /// A Still broken run records whatever Record says, and the take it saves
+    /// opens with the note's draft. Record switched off ends the once.
+    #[test]
+    fn a_still_broken_run_saves_its_take_with_the_note_s_draft() {
+        let dir = TempDir::new().unwrap();
+        let (_runner, run) = exited_run(dir.path());
+        let plan = plan(dir.path());
+        let takes_dir = plan.takes_dir.clone();
+        let checking = takes::FollowUp {
+            comment: "cmt-0001".into(),
+            take: "2026-10-30-1402-0f3a".into(),
+            n: 2,
+            number: Some(4),
+            reply: "still clips at the corner".into(),
+        };
+        let s = Session::with_embed(run.id, None, Some(plan), embedded())
+            .with_capture(fake_capture(Some(now_ms()), Duration::ZERO))
+            .recording_once(false, Some(checking));
+        assert!(s.records_once(), "a Still broken run is recorded once");
+        s.begin_take(7);
+        s.finish_take(&run);
+        let TakeState::Saved { id, .. } = s.take_state() else {
+            panic!("{:?}", s.take_state());
+        };
+        let listed = takes::read(&takes_dir, &id).unwrap();
+        assert_eq!(
+            listed.summary.follow_up.map(|f| f.comment).as_deref(),
+            Some("cmt-0001")
+        );
+        assert_eq!(listed.drafts, 1);
+        assert_eq!(
+            takes::load_notes(&takes_dir, &id)["notes"][0]["body"],
+            "still clips at the corner"
+        );
+        s.stop_recording_once();
+        assert!(!s.records_once());
     }
 
     #[test]
