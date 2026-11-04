@@ -177,16 +177,24 @@ export default function CompareMode(props: CompareModeProps) {
     [region, regions],
   );
 
+  // N is bound on the mode's root, as every mode's keys are, so it never
+  // fires for a pane that does not have the focus.
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key.toLowerCase() !== "n" || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (typing(e.target)) return;
+    e.preventDefault();
+    next(e.shiftKey);
+  };
+
+  // The mode tab that switched here went with the other mode's toolbar, so
+  // the focus fell to the page; put it here, where N works, and only then.
+  const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key.toLowerCase() !== "n" || e.ctrlKey || e.metaKey || e.altKey) return;
-      if (typing(e.target)) return;
-      e.preventDefault();
-      next(e.shiftKey);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [next]);
+    const at = document.activeElement;
+    if ((at === null || at === document.body) && document.hasFocus()) {
+      root.current?.focus({ preventScroll: true });
+    }
+  }, []);
 
   const byN = (n: number | undefined) => list?.versions.find((v) => v.n === n) ?? null;
   const a = byN(picks?.a);
@@ -261,7 +269,7 @@ export default function CompareMode(props: CompareModeProps) {
   const keepWhy = viewer.readOnly ? READ_ONLY : keptB ? `v${b?.n} is the version you kept.` : null;
 
   return (
-    <div className="bv cmp">
+    <div className="bv cmp" ref={root} tabIndex={-1} onKeyDown={onKeyDown}>
       <ViewerToolbar
         label="Blender"
         mode={modeSwitch}

@@ -111,7 +111,7 @@ function show(
 ) {
   const onCommentsChanged = vi.fn();
   const onOpenBlend = vi.fn(() => Promise.resolve());
-  render(
+  const { container } = render(
     <CompareMode
       modeSwitch={{ value: "compare", options: modesFor(2), onChange: vi.fn() }}
       viewer={{ ...VIEWER, ...props.viewer }}
@@ -121,7 +121,9 @@ function show(
       onOpenBlend={onOpenBlend}
     />,
   );
-  return { onCommentsChanged, onOpenBlend };
+  const root = container.querySelector<HTMLElement>(".cmp");
+  if (!root) throw new Error("Compare mode drew no root");
+  return { onCommentsChanged, onOpenBlend, root };
 }
 
 const legend = () => screen.findByRole("group", { name: "Change classes" });
@@ -172,17 +174,20 @@ describe("Compare mode", () => {
   });
 
   it("frames the next change on N, wraps, and leaves N alone in a picker", async () => {
-    show();
+    const { root } = show();
     await legend();
-    fireEvent.keyDown(window, { key: "n" });
+    fireEvent.keyDown(root, { key: "n" });
     expect(view.frameBox).toHaveBeenCalledTimes(1);
     const [min, max] = view.frameBox.mock.calls[0] as [number[], number[]];
     expect(max[1]).toBeCloseTo(0.52, 5);
     expect(min[1]).toBeCloseTo(0.5, 5);
     expect(screen.getByText("1 of 1")).toBeTruthy();
-    fireEvent.keyDown(window, { key: "N", shiftKey: true });
+    fireEvent.keyDown(root, { key: "N", shiftKey: true });
     expect(view.frameBox).toHaveBeenCalledTimes(2);
     fireEvent.keyDown(screen.getByRole("combobox", { name: "Version A" }), { key: "n" });
+    expect(view.frameBox).toHaveBeenCalledTimes(2);
+    // Bound on the mode, not the page: a key the mode never sees does nothing.
+    fireEvent.keyDown(window, { key: "n" });
     expect(view.frameBox).toHaveBeenCalledTimes(2);
   });
 
