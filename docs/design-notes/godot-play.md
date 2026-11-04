@@ -248,6 +248,19 @@ check it". The same chokepoint reports `godot:note_fixed` and `godot:note_resolv
 | Opening a file Blender in a pane holds (#317) | `blender-viewer/open` and `files/open-in-blender` look for a live lock in every folder above the file (`lock::live_above`) and refuse it, naming the process | Files' Open in Blender gets an absolute path with no environment, and two Blenders on one file save over each other. The detached opens still take no lock of their own. |
 | Two bugs (#317) | `blender-viewer/open` resolves a project-relative path inside the environment, as `export-start` does; the wire render is SOLID with temporary Wireframe modifiers, dark lines on a light world, undone afterwards, and the `.glb` is exported with modifiers applied | The open refused `props/bed.blend`, the only kind the viewer and agents send. Workbench ignores WIREFRAME shading in a final render, so the wire pass was a blank white PNG. |
 | Agents editing a `.blend` (#317) | Not built: an agent exports and reads, and never saves a `.blend`, locked or not | Whether an agent may change a `.blend` while nobody has it open is the owner's question (X12). |
+| Compare's δ rule (#319) | Spec §12.1 with both δ searches limited to what the ε pass left on the other side: a B triangle is Changed only when the centroid of an A triangle with no Unchanged match is within δ, and an A triangle is Removed only when no left-over B centroid is within δ. The ε match ignores corner order and is one to one. ε = 1 mm, δ = 5 cm (`packages/scene-view/src/compare/types.ts`) | As written, the spec searches all of A and all of B, so a knob on an untouched face reads as Changed and the faces around a hole hide what was cut from it. The refined rule keeps test 13 at 8 added, 2 changed, 0 removed and 10 unchanged (`compare.fixture.test.ts`) and makes the knob Added and the hole Removed (`diff.test.ts`). A normal-angle test was rejected: it fixes a dense extrude but splits a steep deformation into Added and Removed. |
+| Test 13's pair (#319) | `packages/scene-view/fixtures/cube-a.glb` and `cube-b.glb`, made by Blender 5.0.1 with the export's own settings (`scripts/make-compare-fixtures.py`) | The test is about what a real export holds: which diagonal each quad splits on and where the extruded strip's corners land. A pair written by hand would pin the triangulation guessed, not Blender's. |
+| The diff's grids (#319) | Centroids sorted by cell key in two typed arrays and found by binary search; cells of 2ε for the ε pass and δ for the δ passes, counted from the part's box and grown when the box is over 100,000 cells across, so a key stays exact in a float64; every search covers one cell each way | The spec's single 5 cm grid tests thousands of candidates a triangle in a dense mesh during the ε pass, and a Map of arrays took 1.3 to 1.5 s at the budget's size. This takes about 0.3 s for 200,000 triangles a side here (`budget.test.ts`, median of five under 2 s). Parsing is not in that number; the footer shows both. |
+| Where the diff runs (#319) | A module worker per diff (`diff.worker.ts`, started with `new URL(…, import.meta.url)` so Vite bundles it), handed both `.glb`s and answering with the classes as transferable buffers; a newer pick ends the running worker. It parses with three's GLTFLoader and a plugin that drops every material first, in world space, with parts by glTF node name. Where there is no `Worker` (jsdom, Node) the same handler runs on the calling thread and the footer says so | Spec §12.1 item 1. Textures are the expensive part of a parse, and a worker has no DOM to decode them with. `export_apply` was already on in #317's export, so a part's modifiers are in its triangles. |
+| Parts in Compare (#319) | Matched by name; a part only in B is all Added and a part only in A all Removed, which is also how a rename reads | Blender keeps no record of an object's old name, and guessing one from the geometry is wrong exactly when it matters, for a part renamed and edited. |
+| The four classes (#319) | Added solid blue; Changed amber with a screen-space hatch, so it reads the same at any zoom; Removed A's triangles as a faint coral fill with a dashed outline of their sharp edges, drawn through B; Unchanged grey. Each has a toggle with its count. One camera and one set of controls for Changes and Split; Split draws A and B either side of a divider in one frame, by scissor | Spec §12 item 3 asks for a pattern as well as a colour, so a class never depends on telling blue from coral. A second camera for Split would have to be kept in step. |
+| Next change (#319) | N and Shift N, on the mode's root, step through places: the changed triangles' corner and centroid cells joined by union-find across touching δ cells, biggest first, each framed by its box. The side list frames a part's box on a click | A face and the strip around it share corners, so they are one stop however large the triangles; a change on the far side of the model is another. |
+| What a version holds (#319) | #317's `export.json` (`commit`, `time`, `author`, `triangles`, the parts and each material's colour, metallic, roughness and alpha) and `model.glb`; `blender-viewer/export-versions` adds `kept` and each version's `blendCopy`, the path of `v<n>/source.blend` when it has one | Spec §12.1 item 6: material changes come from that metadata, not from the `.glb`, and are named per part in the side list (tolerance 1e-3). |
+| Keep B and Go back to A (#319) | DECISIONS X12's minimum, flagged to the owner. Keep vB pins B in `asset.json` (`kept`) so pruning to ten never removes it, and changes no other file; only the person keeps a version (`blender-viewer/version-keep` refuses an agent and `system`, and is a write, refused on main). Go back to vA opens A's `source.blend` in Editor mode through `editor-open` when the version has one, and is otherwise disabled with the reason. Versions are append-only | Writing A over the person's file, or exporting A again as a new version, are decisions about the person's work that X12 leaves to the owner. Nothing writes `source.blend` yet: agents never save a `.blend` (#317's row), so Go back is disabled everywhere today. |
+| The version a Blender note was made on (#319) | A mesh anchor also carries the file (`blend`, environment-relative) and the version shown when it was written (`version`); both optional, so a note from before reads and writes back unchanged | Notes from A needs both, and #320's N-panel should reuse them, not add its own. |
+| Notes from A (#319) | The file's mesh notes, not resolved, made on A or an earlier version; a note with no version counts when its part is in A and it was written before B was exported. Looks good and Still broken are `comments/verdict`, as everywhere else | Spec §12 item 5. Still broken here is a reply and a reopen, not Play's new-take loop. |
+| Compare and the embedded Blender (#319) | Compare draws in the page; the Editor mode unmounts while it shows, which hides Blender's window as Renders does, and it is not closed | A native window paints over the page, and Blender in the pane is the person's: leaving Compare finds it as it was. |
+| Compare with one version (#319) | Still drawn in the mode switch and not chosen (`aria-disabled`, as #317 drew it), its tooltip saying Compare needs two exports; the banner's Compare with v<n> is disabled with the same reason, and with two it opens Compare with that version as B | A file's first export has nothing to compare it with, and the switch keeps its place either way. |
 | Where pick's physics query runs (#312) | `_physics_process`; the command poll only queues the pick | Godot makes the direct space state safe there alone: from `_process` it refuses with physics on its own thread, and Jolt refuses while it steps, so the pick fell back to boxes without saying why. The node runs while paused, so a pick still answers during Mark up. |
 | Exported builds (#312) | Inert whenever `OS.has_feature("template")` | Relying on a missing `--veistra-dir` alone was rejected: a shipped game started with the argument by hand would write telemetry and answer commands, against §5.5 rule 6 and the consent text. |
 | When Update capture is offered (#312) | Whenever the installed script's text is not this build's, CRLF read as LF; an earlier v2 goes out as `partial` but keeps its channel | The marker alone called every earlier v2 current, so no fix to the script ever reached a project that had one. Treating an earlier v2 as a broken install was rejected: its game would lose capture and Rec until updated. |
@@ -501,6 +514,23 @@ Blender with a window ran:
 - The Editor bar and banner against the Components and BlenderModel boards at 1440 and 1024 px
   wide; Compare's tooltip.
 
+From #319, the diff is unit-tested in Node on Blender 5.0.1's own export of test 13's pair and on
+generated meshes, the worker's handler and its fallback run in Node, Compare mode runs in jsdom
+with the real diff and a stand-in view, and the Rust half runs here and is type-checked and linted
+for Windows; no WebView2, WebGL or Blender with a window ran:
+
+- The worker bundled by `vite build` starting in WebView2 (`type: "module"`), and the footer
+  saying "in a worker" rather than "on this thread".
+- The budget on the owner's laptop: 200,000 triangles a side in 2 s or less, with the parse on top.
+- The change view drawn: the amber hatch's width at 100, 150 and 200 % scaling, the removed ghost's
+  dashes under ANGLE, Split's divider and its one camera, N framing each place, and a part framed
+  from the side list.
+- The embedded Blender hidden while Compare shows and back, unmoved, when Editor mode returns.
+- Go back to A opening a version's `source.blend` in Blender in the pane. Nothing writes one yet,
+  so this has only run against a fake editor.
+- Compare's pickers, legend, side list and footer against the BlenderModel board at 1440 and
+  1024 px wide.
+
 From #314, tested in jsdom and type-checked only; no WebView2, video decoder or Godot ran:
 
 - Spec test 5: review within 2 s of F7 for a two-minute take of the demo (`data-open-ms`, above),
@@ -715,7 +745,7 @@ the N-panel adds its commands to the same `COMMANDS` table and uses the two name
 **One writer.** While Blender has the file open, `.veistra/locks/<file>.lock` holds Blender's pid
 and start time, the cluster and the channel. A banner under the bar says "You have bed.blend open.
 The agent's next export goes to v6 beside it and never overwrites your file.", with Compare with
-v5 waiting for #319. Opening the same file again, from another pane, `blender-viewer/open` or
+v5, which opens Compare on that version (#319). Opening the same file again, from another pane, `blender-viewer/open` or
 Files' Open in Blender, is refused with the holding process; a file Blender reaches through
 File > Open that another Blender holds gets the conflict banner and no lock, until that one
 closes.
@@ -729,3 +759,26 @@ On main the same tree is under app-local data.
 unsaved work and the person may cancel; the chip says Closing until the process ends, and the
 watcher removes the lock. The pane closing or Veistra exiting hands the window back, still
 running, and its lock stays until it exits.
+
+## Blender Compare (#319)
+
+`packages/scene-view/src/compare/` is the diff and the change view; `apps/blender-viewer/ui/src/compare/`
+is the mode; `blender/versions.rs` and `blender-viewer/version-keep` are the backend's part. It
+compares any two of a `.blend`'s kept versions, and only reads them, so it is there on main and
+wherever the editor cannot open, with Keep and the note buttons disabled on main.
+
+**Choosing.** The mode switch offers Compare once a file has two versions, and its tooltip says why
+before then; the Editor banner's Compare with v<n> opens it on that version. B defaults to the
+newest, A to the kept version when it is older, otherwise the one before B. The pickers name each
+version's number, who exported it, its commit, its age and its triangles, and Swap trades them.
+
+**The change view.** The two `.glb`s are fetched once each and diffed in a worker (spec §12.1, with
+the refined δ rule in the Decisions table). Changes is the default; Split shows A and B either side
+of a divider under the same camera. The legend over the view is the four classes, each a toggle
+with its count, and Next change (N, Shift N) steps through the places that changed. The side list is
+each part with its counts and its material changes, then the notes made on A with Looks good and
+Still broken.
+
+**Keeping.** Keep vB pins B so it outlives the ten-version window; Go back to vA opens A's own copy
+of the `.blend` in Editor mode where the version kept one. Both are X12's minimum and flagged to the
+owner; neither writes a version or the person's file.

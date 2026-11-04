@@ -488,10 +488,20 @@ wireframe pass.
 *Renders* is what an export made: the preview stills, the `.glb` in an orbitable
 3D view with the markup layer, Blender's wireframe pass and the parts list, with
 comments. Every export is kept as `.veistra/exports/<asset>/v<n>/`, the last
-ten of them (`blender-viewer/export-versions`). *Compare* is drawn and cannot be
-chosen until #319 builds it; its tooltip says so. `blender-viewer/open` and
+ten of them (`blender-viewer/export-versions`). `blender-viewer/open` and
 `files/open-in-blender` are refused on main, and the export cache for main is
 kept under app-local data, not in the checkout.
+
+*Compare* (`ui/src/compare/`, #319) is what changed between two of those
+versions, and can be chosen once a file has two. A and B are picked from the
+kept versions; the diff runs in a worker (`packages/scene-view/src/compare/`)
+and is drawn as Added, Changed, Removed and Unchanged, each with a toggle, a
+count, a pattern and a colour, under one camera in Changes or Split. N frames
+the next change. The side list is each part's counts and material changes, then
+the notes made on A with Looks good and Still broken. Keep vB pins B against
+pruning (`blender-viewer/version-keep`, the person only, never on main); Go back
+to vA opens A's own copy of the `.blend` in Editor mode where the version kept
+one, and says why not where it did not.
 
 *Play* (`ui/src/play/`) runs the environment's game in the pane: on Windows
 the game's own window is placed over the pane's game box, elsewhere it keeps
@@ -544,13 +554,14 @@ which is why it lives under `apps/shared/` rather than in whichever app needed
 it first — see that directory's note above on why the isolation rule excludes
 it.
 
-A comment anchors to a Godot node path, a Blender part plus material, a Play
-scene plus a playhead time (`docs/VEISTRA-UX-REWORK.md` §3.4), or a note on a
-recorded take (`take`: the take, the note's number, its time or range, the
-feedback packet, and the scene and node when known). It is a file — one per
-comment — under `.veistra/comments/` inside the calling cluster's environment,
-not a database row, for the same reason the rest of this repo's structured state
-is files: it travels with the branch and merges the way git already merges text.
+A comment anchors to a Godot node path, a Blender part plus material (and the
+file and version it was made on, for Compare), a Play scene plus a playhead time
+(`docs/VEISTRA-UX-REWORK.md` §3.4), or a note on a recorded take (`take`: the
+take, the note's number, its time or range, the feedback packet, and the scene
+and node when known). It is a file — one per comment — under `.veistra/comments/`
+inside the calling cluster's environment, not a database row, for the same
+reason the rest of this repo's structured state is files: it travels with the
+branch and merges the way git already merges text.
 `src-tauri/src/comments.rs`'s doc comment has the ID scheme and the merge
 reasoning in full.
 

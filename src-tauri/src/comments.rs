@@ -43,7 +43,17 @@ pub enum Anchor {
     /// `"Player/Flashlight"`.
     Node { path: String },
     /// The Blender viewer: a mesh part and the material selected on it.
-    Mesh { part: String, material: String },
+    /// `blend` (environment-relative) and `version`, the export that was
+    /// newest when the note was written, are how Compare finds the notes
+    /// left on version A (#319). Notes from before they existed have neither.
+    Mesh {
+        part: String,
+        material: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blend: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u32>,
+    },
     /// Play: the scene the build was in, the playhead time in seconds, and
     /// whether a screenshot was captured alongside the comment. `screenshot`
     /// is set by [`create`] from whether a picture was actually written, on
@@ -1380,6 +1390,8 @@ mod tests {
             anchor: Anchor::Mesh {
                 part: "headboard".to_string(),
                 material: "oak".to_string(),
+                blend: None,
+                version: None,
             },
             body: "note".to_string(),
             screenshot_png: Some(vec![1, 2, 3]),
@@ -1420,7 +1432,9 @@ mod tests {
         assert_eq!(
             serde_json::to_value(Anchor::Mesh {
                 part: "p".to_string(),
-                material: "m".to_string()
+                material: "m".to_string(),
+                blend: None,
+                version: None,
             })
             .ok()
             .and_then(|v| v.get("kind").cloned()),
@@ -1476,6 +1490,42 @@ mod tests {
             .expect("comments/list is claimed")
             .expect("list succeeds");
         assert_eq!(listed.as_array().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn a_mesh_note_keeps_the_file_and_version_compare_finds_it_by() {
+        use serde_json::json;
+
+        let env = TempDir::new().expect("tempdir");
+        let params = json!({
+            "anchor": {
+                "kind": "mesh", "part": "Blanket", "material": "Wool",
+                "blend": "props/bed.blend", "version": 4,
+            },
+            "body": "fold the corner",
+        });
+        let made = call(&context(env.path()), "comments/create", Some(&params))
+            .expect("claimed")
+            .expect("created");
+        assert_eq!(made["anchor"]["blend"], "props/bed.blend");
+        assert_eq!(made["anchor"]["version"], 4);
+
+        // A note from before #319 has neither, reads back with neither, and
+        // is written back without inventing them.
+        let old: Anchor =
+            serde_json::from_value(json!({ "kind": "mesh", "part": "p", "material": "m" }))
+                .expect("an old mesh anchor still reads");
+        assert_eq!(
+            old,
+            Anchor::Mesh {
+                part: "p".into(),
+                material: "m".into(),
+                blend: None,
+                version: None,
+            }
+        );
+        let written = serde_json::to_value(&old).expect("serialize");
+        assert!(written.get("blend").is_none() && written.get("version").is_none());
     }
 
     #[test]

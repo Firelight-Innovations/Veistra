@@ -1,0 +1,48 @@
+/*
+ * Styles for <CompareView>, over the shared .sv-* frame. Tokens only, from
+ * src/tokens.css, as scene-view.css asks.
+ */
+.cv-label {
+  position: absolute;
+  top: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  background: var(--bg-layer-2);
+  border: 1px solid var(--border-subtle-1);
+  border-radius: var(--radius-md);
+  color: var(--txt-primary);
+  font-size: 11px;
+  pointer-events: none;
+}
+
+.cv-label-a {
+  left: var(--space-2);
+}
+
+.cv-label-b {
+  right: var(--space-2);
+}
+
+.cv-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--border-strong);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+}
+
+.cv-nudge {
+  background: var(--bg-layer-2);
+  border: 1px solid var(--border-subtle-1);
+  color: var(--txt-secondary);
+}
+
+.cv-foot {
+  left: auto;
+  right: var(--space-2);
+}

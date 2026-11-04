@@ -811,6 +811,8 @@ pub const WRITE_METHODS: &[&str] = &[
     "blender-viewer/open",
     // Blender in the pane, which saves the file it has open (#317).
     "blender-viewer/editor-open",
+    // Compare's Keep B (#319): a decision about the work, like a verdict.
+    "blender-viewer/version-keep",
     "files/open-in-blender",
     "play/addon-install",
     "play/addon-remove",
