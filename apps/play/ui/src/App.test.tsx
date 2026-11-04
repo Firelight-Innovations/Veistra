@@ -475,7 +475,10 @@ describe("Play live view", () => {
     }, 400);
     await screen.findByText("Reviewing", undefined, { timeout: 2000 });
     expect(screen.queryByText(/not recorded/)).toBeNull();
-    expect(calls("play/take").some((c) => (c[1] as { id: string }).id === TAKE_ID)).toBe(true);
+    // Review loads the take in an effect after the "Reviewing" label renders, so wait for it.
+    await waitFor(() =>
+      expect(calls("play/take").some((c) => (c[1] as { id: string }).id === TAKE_ID)).toBe(true),
+    );
   });
 
   it("lists a take the game's own exit saved", async () => {
