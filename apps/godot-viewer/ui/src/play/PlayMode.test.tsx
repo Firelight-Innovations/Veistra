@@ -304,7 +304,12 @@ function liveBackend(over: Partial<World> = {}): World {
         return Promise.resolve({
           environment: world.cloud
             ? { root: null, readOnly: false, kind: "cloud", branch: "wt/cloud" }
-            : { root: "C:/p", readOnly: world.readOnly, kind: world.readOnly ? "main" : null },
+            : {
+                root: "C:/p",
+                readOnly: world.readOnly,
+                kind: world.readOnly ? "main" : "localWorktree",
+                branch: world.readOnly ? "main" : "wt/game",
+              },
           executable: { found: world.found ? FOUND : null, problems: [], setting: "" },
           projects: world.cloud ? [] : world.projects,
           editor: world.cloud
@@ -439,6 +444,11 @@ describe("Play review toolbar", () => {
     await screen.findByText("Reviewing");
     const bar = screen.getByRole("toolbar", { name: "Godot" });
     expect(within(bar).getAllByRole("status")).toHaveLength(1);
+    // The environment leads slot 2 here too, before the take picker.
+    const env = bar.querySelector(".k-vtb__env")!;
+    const picker = within(bar).getByRole("combobox", { name: "Take" });
+    expect(env.getAttribute("data-env-kind")).toBe("localWorktree");
+    expect(env.compareDocumentPosition(picker) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     const again = within(bar).getByRole("button", { name: /Play again/ });
     expect(again.getAttribute("title")).toContain("Record is on");
   });

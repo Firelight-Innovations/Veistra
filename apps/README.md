@@ -437,24 +437,37 @@ whichever mode shows (the bridge keeps no event nobody listened for), reads
 `godot/status` for both modes and again on every `project:changed`, and holds
 what must outlive a switch.
 
-*Editor* is, until the embedded editor arrives (C1), the read-only scene view:
-the node tree beside a 3D view or a rendered frame, read from the scene file
-or by a headless Godot. Selecting a node offers a comment. Play scene, or F5,
-turns the pane to Play and runs the game there; Open in Godot opens the real
-editor in its own window.
+*Editor* shows where the backend says: `godot/status` answers `editor`,
+`{surface, reason, code}`, decided once in `src-tauri/src/editor_surface.rs`
+(a cloud session, then main, then no Godot, then the pane where there is an
+embedder and its own window where there is not). On the first three it is the
+read-only scene view, and until the embedded editor arrives (C1) it is that
+view every time: the node tree beside a 3D view or a rendered frame, read from
+the scene file or by a headless Godot. Selecting a node offers a comment. Play
+scene, or F5, turns the pane to Play and runs the game there; Open in Godot
+opens the real editor in its own window. `apps/shared/editorSurface.ts`'s
+`editorBody` is the one switch from the answer to what renders; the reason is
+one line under the toolbar (`EditorReason`), with Open Settings when Godot is
+missing.
 
 **Blender Viewer** (`blender-viewer/state`) — read-only, the same shape for
 Blender: a Model/Renders/Wire switch, an honest placeholder in place of a real
 3D viewport (deliberately not three.js — see
 `docs/VEISTRA-UX-REWORK.md` §3.2), a parts list, a renders strip. Same story as
-the Godot Viewer on emptiness and "Open in Blender".
+the Godot Viewer on emptiness and "Open in Blender". Its state answers the same
+`editor` as Godot's status, so main and a cloud session get the same line under
+the toolbar and a disabled Open in Blender; `blender-viewer/open` and
+`files/open-in-blender` are refused on main, and the export cache for main is
+kept under app-local data, not in the checkout.
 
 *Play* (`ui/src/play/`) runs the environment's game in the pane: on Windows
 the game's own window is placed over the pane's game box, elsewhere it keeps
 its own window and the pane shows its log. Its toolbar has the board's five
-slots: the mode, the project and scene pickers, the state chip, Rec, Mark and
-Mark up, and Pop out; a button that cannot act is disabled with its reason,
-never hidden. With Record on, a run is kept as a take; review shows it on a
+slots, shared with Editor and the Blender viewer (`apps/shared/ViewerToolbar.tsx`):
+the mode, the environment chip and the project and scene pickers, one state
+chip, Rec, Mark and Mark up, and Pop out; a button that cannot act is disabled
+with its reason, never hidden. Mark up is in slot 4 in every surface. On main
+and on a cloud session the reason is the same one line under the bar. With Record on, a run is kept as a take; review shows it on a
 timeline where notes are written, marked up and sent to the agent as a
 feedback packet. F5 runs or restarts, Shift F5 stops, F6 pauses, F7 stops and
 opens review, F8 marks, Ctrl R toggles Record and Ctrl Shift M marks up the

@@ -57,6 +57,7 @@ import { blobBase64, sendMarkup } from "../../../../shared/markupFlow";
 import { SendButton, SendFooter, useSendAction } from "../../../../shared/SendFooter";
 import {
   ToolbarButton,
+  ToolbarEnvChip,
   ToolbarReason,
   ViewerToolbar,
   type ToolbarStatus,
@@ -804,7 +805,12 @@ export default function PlayMode(props: PlayModeProps) {
       <span className="pl-subject">{leaf(info?.scene ?? main) || "no scene"}</span>
     );
 
-  const subject =
+  // The environment first, as in every surface (DECISIONS X4): which checkout
+  // a run, a take and a note belong to.
+  const envChip = (
+    <ToolbarEnvChip kind={status?.environment.kind} branch={status?.environment.branch} />
+  );
+  const picker =
     view.kind === "review" ? (
       <select
         className="k-vtb__select"
@@ -843,6 +849,12 @@ export default function PlayMode(props: PlayModeProps) {
         {scenePicker}
       </span>
     );
+  const subject = (
+    <>
+      {envChip}
+      {picker}
+    </>
+  );
 
   const transport = (
     <>
