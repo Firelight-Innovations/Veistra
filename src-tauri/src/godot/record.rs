@@ -1,41 +1,86 @@
-//! Recording a run to `take.mp4` (design §5.2), Windows only.
+//! Recording a run's window for a take (design §5.2), Windows only.
 //!
-//! `windows-capture` wraps Windows Graphics Capture and Media Foundation's
-//! hardware encoder. It captures the game's own window (R2 in [`super::embed`]),
-//! so a take never contains Veistra's UI.
+//! Windows Graphics Capture, through `windows-capture`, captures the game's
+//! own window (R2 in [`crate::embed`]), so a take never contains Veistra's UI.
+//! Each frame goes to [`super::encode`], which fits it inside the take's size
+//! and writes H.264.
 //!
-//! **The video is the window's size, not 720p.** The crate's encoder pads or
-//! crops a frame to its target size; it does not scale, and the pane decides
-//! the window's size. A scaling pass (a D3D11 video processor before the
-//! encoder) is the follow-up that gets the design's 720p. Until then the
-//! bitrate is fixed at [`BITRATE`], which is what keeps a two-minute take
-//! under the 60 MB the acceptance test allows whatever the window's size.
+//! **Take time zero is the first frame**, in wall-clock milliseconds: the
+//! frame's own capture time (`SystemRelativeTime`, on the QPC clock) moved onto
+//! the wall clock by [`frame_wall_ms`], rather than when the callback ran,
+//! which can be a frame or two later. The encoder writes frame times relative
+//! to the first frame, so video time plus that stamp is wall time, the clock
+//! the addon's telemetry and the log share.
 //!
-//! **Take time zero is the first frame**, stamped in wall-clock milliseconds
-//! when it reaches this process. The encoder writes frame times relative to
-//! the first frame, so video time plus that stamp is wall time, the clock the
-//! addon's telemetry and the log share.
+//! **Stopping is two steps**, [`Capture::halt`] and then [`Halted::finish`]:
+//! capture stops at once and the MP4 is closed after, so the take's other
+//! files never wait for the encoder to drain (take.json within a second of
+//! Stop, §13 test 3).
 //!
 //! **Older Windows still records**: see [`Gate`].
 
+use super::encode::Quality;
 use serde::Serialize;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
-/// 3.5 Mbit/s: two minutes is 52.5 MB. Read only by the Windows recorder.
-#[cfg_attr(not(windows), allow(dead_code))]
-pub const BITRATE: u32 = 3_500_000;
-pub const FPS: u32 = 30;
-
-/// What a finished recording reports.
+/// What a stopped recording reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Stopped {
     /// Wall-clock milliseconds of the first frame, `None` when none arrived.
     pub first_frame_ms: Option<u64>,
     pub frames: u64,
+    /// Frames the encoder could not keep up with.
+    pub dropped: u64,
+    /// The size the video is encoded at, not the window's.
     pub width: u32,
     pub height: u32,
+}
+
+/// A stopped recording whose MP4 is still being closed.
+pub struct Halted {
+    pub stopped: Stopped,
+    /// Drains the encoder and closes the file: up to a second or so, which is
+    /// why the caller runs it beside the take's other files.
+    pub finish: Box<dyn FnOnce() -> Result<(), String> + Send>,
+}
+
+/// A recording in progress: Graphics Capture on Windows, a fake in the tests.
+pub trait Capture: Send {
+    fn first_frame_ms(&self) -> Option<u64>;
+    /// The latest frame as a PNG, for a still over the pane (design §4.3).
+    fn still_png(&self) -> Option<Vec<u8>>;
+    /// Stop capturing. No frame arrives after this returns.
+    fn halt(self: Box<Self>) -> Result<Halted, String>;
+}
+
+/// How a session starts recording a window into a file.
+pub type Start =
+    Arc<dyn Fn(isize, &Path, &Quality) -> Result<Box<dyn Capture>, String> + Send + Sync>;
+
+/// Start recording `hwnd` into `path` at `quality`.
+pub fn start(hwnd: isize, path: &Path, quality: &Quality) -> Result<Box<dyn Capture>, String> {
+    sys::Handle::start(hwnd, path, quality).map(|h| Box::new(h) as Box<dyn Capture>)
+}
+
+/// Why recording cannot start here, or `None` when it can.
+pub fn unavailable() -> Option<&'static str> {
+    sys::unavailable()
+}
+
+/// The wall-clock time of a frame captured at `frame_100ns` on the QPC clock,
+/// given that clock and the wall clock read together now. A frame stamped in
+/// the future, or more than a second ago, means the two clocks disagree, and
+/// then now is the better answer.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn frame_wall_ms(frame_100ns: i64, qpc_now_100ns: i64, wall_now_ms: u64) -> u64 {
+    let ago = qpc_now_100ns.saturating_sub(frame_100ns) / 10_000;
+    match u64::try_from(ago) {
+        Ok(ago) if ago <= 1_000 => wall_now_ms.saturating_sub(ago),
+        _ => wall_now_ms,
+    }
 }
 
 /// Lets frames through at no more than one per `every`, for a capture
@@ -44,7 +89,7 @@ pub struct Stopped {
 /// Hiding the cursor and the yellow border, and capping the frame rate, are
 /// properties Windows 10 and early Windows 11 lack, and asking for one the
 /// session does not have fails the whole capture. Each is asked for only
-/// where it exists; without the cap, this drops frames to [`FPS`] instead.
+/// where it exists; without the cap, this drops frames to the take's rate.
 #[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub struct Gate {
@@ -74,49 +119,16 @@ impl Gate {
     }
 }
 
-/// Why recording cannot start here, or `None` when it can.
-pub fn unavailable() -> Option<&'static str> {
-    sys::unavailable()
-}
-
-/// A recording in progress.
-pub struct Recorder(sys::Handle);
-
-impl Recorder {
-    /// Start recording `hwnd` into `path`.
-    pub fn start(hwnd: isize, path: &Path) -> Result<Self, String> {
-        sys::Handle::start(hwnd, path).map(Recorder)
-    }
-
-    pub fn first_frame_ms(&self) -> Option<u64> {
-        self.0.first_frame_ms()
-    }
-
-    /// The latest frame as a PNG, for a still over the pane (design §4.3).
-    /// The frame is copied out raw about twice a second, so this is one PNG
-    /// encode away and costs nothing when no overlay ever opens.
-    pub fn still_png(&self) -> Option<Vec<u8>> {
-        self.0.still_png()
-    }
-
-    /// Stop and finish the file. Blocks until the MP4 is closed, about a second.
-    pub fn stop(self) -> Result<Stopped, String> {
-        self.0.stop()
-    }
-}
-
 #[cfg(windows)]
 mod sys {
-    use super::{Gate, Stopped, BITRATE, FPS};
+    use super::{frame_wall_ms, Capture, Gate, Halted, Stopped};
+    use crate::godot::encode::{output_size, Encoder, Quality};
     use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, PoisonError};
     use std::time::{Duration, Instant};
     use windows_capture::capture::{CaptureControl, Context, GraphicsCaptureApiHandler};
-    use windows_capture::encoder::{
-        AudioSettingsBuilder, ContainerSettingsBuilder, ImageEncoder, ImageEncoderPixelFormat,
-        ImageFormat, VideoEncoder, VideoSettingsBuilder, VideoSettingsSubType,
-    };
+    use windows_capture::encoder::{ImageEncoder, ImageEncoderPixelFormat, ImageFormat};
     use windows_capture::frame::Frame;
     use windows_capture::graphics_capture_api::{GraphicsCaptureApi, InternalCaptureControl};
     use windows_capture::settings::{
@@ -136,44 +148,58 @@ mod sys {
         first_frame_ms: AtomicU64,
         frames: AtomicU64,
         last: Mutex<Option<(Vec<u8>, u32, u32)>>,
+        /// Why the encoder refused a frame. That ends the video but not the
+        /// take, whose telemetry and log are still worth keeping.
+        failed: Mutex<Option<String>>,
     }
 
     struct Flags {
         path: std::path::PathBuf,
         width: u32,
         height: u32,
+        quality: Quality,
         shared: Arc<Shared>,
         gate: Option<Gate>,
     }
 
-    struct Capture {
-        encoder: Option<VideoEncoder>,
+    struct Recording {
+        encoder: Option<Encoder>,
         shared: Arc<Shared>,
         last_copy: Option<Instant>,
         gate: Option<Gate>,
+        failed: bool,
     }
 
-    impl GraphicsCaptureApiHandler for Capture {
+    /// The QPC clock now, in the 100 ns ticks a frame's time is given in.
+    fn qpc_now_100ns() -> i64 {
+        use windows_sys::Win32::System::Performance::{
+            QueryPerformanceCounter, QueryPerformanceFrequency,
+        };
+        let (mut count, mut freq) = (0i64, 0i64);
+        // SAFETY: each writes one i64 through a pointer to a live local.
+        unsafe {
+            QueryPerformanceCounter(&mut count);
+            QueryPerformanceFrequency(&mut freq);
+        }
+        if freq <= 0 {
+            return 0;
+        }
+        i64::try_from(i128::from(count) * 10_000_000 / i128::from(freq)).unwrap_or(i64::MAX)
+    }
+
+    impl GraphicsCaptureApiHandler for Recording {
         type Flags = Flags;
         type Error = BoxError;
 
         fn new(ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
             let f = ctx.flags;
-            let video = VideoSettingsBuilder::new(f.width, f.height)
-                .sub_type(VideoSettingsSubType::H264)
-                .bitrate(BITRATE)
-                .frame_rate(FPS);
-            let encoder = VideoEncoder::new(
-                video,
-                AudioSettingsBuilder::default().disabled(true),
-                ContainerSettingsBuilder::default(),
-                &f.path,
-            )?;
+            let encoder = Encoder::new(&f.path, f.width, f.height, &f.quality)?;
             Ok(Self {
                 encoder: Some(encoder),
                 shared: f.shared,
                 last_copy: None,
                 gate: f.gate,
+                failed: false,
             })
         }
 
@@ -182,22 +208,32 @@ mod sys {
             frame: &mut Frame,
             _control: InternalCaptureControl,
         ) -> Result<(), Self::Error> {
+            let at = frame.timestamp()?.Duration;
             if let Some(gate) = self.gate.as_mut() {
-                // `SystemRelativeTime` counts in 100 ns ticks.
-                let ticks = u64::try_from(frame.timestamp()?.Duration).unwrap_or(0);
+                let ticks = u64::try_from(at).unwrap_or(0);
                 if !gate.admit(Duration::from_nanos(ticks.saturating_mul(100))) {
                     return Ok(());
                 }
             }
-            let _ = self.shared.first_frame_ms.compare_exchange(
-                0,
-                crate::godot::runner::now_ms(),
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            );
+            if self.shared.first_frame_ms.load(Ordering::SeqCst) == 0 {
+                let wall = frame_wall_ms(at, qpc_now_100ns(), crate::godot::runner::now_ms());
+                self.shared
+                    .first_frame_ms
+                    .store(wall.max(1), Ordering::SeqCst);
+            }
             self.shared.frames.fetch_add(1, Ordering::Relaxed);
-            if let Some(encoder) = self.encoder.as_mut() {
-                encoder.send_frame(frame)?;
+            if let (Some(encoder), false) = (self.encoder.as_mut(), self.failed) {
+                // Not returned as an error: that ends the capture with the
+                // encoder still open, where `halt` can close it.
+                if let Err(e) = encoder.push(frame) {
+                    crate::veistra_log!("play: the recording stopped encoding: {e}");
+                    self.failed = true;
+                    *self
+                        .shared
+                        .failed
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner) = Some(e);
+                }
             }
             if self.last_copy.is_none_or(|t| t.elapsed() >= STILL_EVERY) {
                 self.last_copy = Some(Instant::now());
@@ -214,17 +250,16 @@ mod sys {
     }
 
     pub struct Handle {
-        control: Option<CaptureControl<Capture, BoxError>>,
+        control: Option<CaptureControl<Recording, BoxError>>,
         shared: Arc<Shared>,
-        width: u32,
-        height: u32,
+        size: (u32, u32),
     }
 
     pub fn unavailable() -> Option<&'static str> {
         None
     }
 
-    /// The window's client size, rounded down to even numbers for H.264.
+    /// The window's client size, which the video's size is fitted from.
     fn client_size(hwnd: isize) -> Result<(u32, u32), String> {
         use windows_sys::Win32::Foundation::RECT;
         use windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect;
@@ -241,15 +276,15 @@ mod sys {
                 std::io::Error::last_os_error()
             ));
         }
-        let even = |v: i32| (v.max(2) as u32) & !1;
-        Ok((even(r.right - r.left), even(r.bottom - r.top)))
+        let side = |v: i32| u32::try_from(v.max(2)).unwrap_or(2);
+        Ok((side(r.right - r.left), side(r.bottom - r.top)))
     }
 
     impl Handle {
-        pub fn start(hwnd: isize, path: &Path) -> Result<Self, String> {
+        pub fn start(hwnd: isize, path: &Path, quality: &Quality) -> Result<Self, String> {
             let (width, height) = client_size(hwnd)?;
             let shared = Arc::new(Shared::default());
-            let every = Duration::from_secs(1) / FPS;
+            let every = Duration::from_secs(1) / quality.fps.max(1);
             let can = |q: fn() -> Result<bool, windows_capture::graphics_capture_api::Error>| {
                 q().unwrap_or(false)
             };
@@ -278,28 +313,30 @@ mod sys {
                     path: path.to_path_buf(),
                     width,
                     height,
+                    quality: *quality,
                     shared: shared.clone(),
                     gate: (!capped).then(|| Gate::new(every)),
                 },
             );
-            let control = Capture::start_free_threaded(settings)
+            let control = Recording::start_free_threaded(settings)
                 .map_err(|e| format!("could not start recording: {e}"))?;
             Ok(Self {
                 control: Some(control),
                 shared,
-                width,
-                height,
+                size: output_size(width, height, quality),
             })
         }
+    }
 
-        pub fn first_frame_ms(&self) -> Option<u64> {
+    impl Capture for Handle {
+        fn first_frame_ms(&self) -> Option<u64> {
             match self.shared.first_frame_ms.load(Ordering::SeqCst) {
                 0 => None,
                 t => Some(t),
             }
         }
 
-        pub fn still_png(&self) -> Option<Vec<u8>> {
+        fn still_png(&self) -> Option<Vec<u8>> {
             let last = self.shared.last.lock().ok()?;
             let (raw, w, h) = last.as_ref()?;
             ImageEncoder::new(ImageFormat::Png, ImageEncoderPixelFormat::Bgra8)
@@ -309,8 +346,8 @@ mod sys {
         }
 
         /// Stop capturing first, so no frame arrives after the encoder is
-        /// told the stream has ended, then finish the encoder.
-        pub fn stop(mut self) -> Result<Stopped, String> {
+        /// told the stream has ended; the caller finishes the encoder.
+        fn halt(mut self: Box<Self>) -> Result<Halted, String> {
             let Some(control) = self.control.take() else {
                 return Err("already stopped".into());
             };
@@ -319,21 +356,38 @@ mod sys {
                 .stop()
                 .map_err(|e| format!("could not stop recording: {e}"))?;
             let encoder = callback.lock().encoder.take();
-            if let Some(encoder) = encoder {
-                encoder
-                    .finish()
-                    .map_err(|e| format!("could not finish take.mp4: {e}"))?;
-            }
-            Ok(Stopped {
+            let counts = encoder.as_ref().map(Encoder::counts);
+            let failed = self
+                .shared
+                .failed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            let stopped = Stopped {
                 first_frame_ms: self.first_frame_ms(),
                 frames: self.shared.frames.load(Ordering::Relaxed),
-                width: self.width,
-                height: self.height,
+                dropped: counts
+                    .as_ref()
+                    .map_or(0, |c| c.dropped.load(Ordering::Relaxed)),
+                width: self.size.0,
+                height: self.size.1,
+            };
+            let finish = move || {
+                let closed = encoder.map_or(Ok(()), Encoder::finish);
+                let busy = counts.map_or(0, |c| c.reused_busy.load(Ordering::Relaxed));
+                if busy > 0 {
+                    crate::veistra_log!("play: {busy} frames drawn over one still encoding");
+                }
+                failed.map_or(closed, Err)
+            };
+            Ok(Halted {
+                stopped,
+                finish: Box::new(finish),
             })
         }
     }
 
-    /// A recording dropped without `stop` (a panic on the way to it) still
+    /// A recording dropped without `halt` (a panic on the way to it) still
     /// ends its capture thread rather than leaving it running.
     impl Drop for Handle {
         fn drop(&mut self) {
@@ -342,12 +396,98 @@ mod sys {
             }
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::super::start;
+        use crate::godot::encode::Quality;
+        use crate::godot::mp4;
+        use windows_sys::Win32::Foundation::HWND;
+        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, DispatchMessageW, PeekMessageW, SetWindowTextW,
+            TranslateMessage, MSG, PM_REMOVE, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+        };
+
+        fn wide(s: &str) -> Vec<u16> {
+            s.encode_utf16().chain(Some(0)).collect()
+        }
+
+        /// Pump this thread's messages for `ms`, changing the window's text
+        /// each pass so every frame differs and Graphics Capture sends one.
+        fn pump(hwnd: HWND, ms: u64) {
+            let until = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+            let mut n = 0u64;
+            while std::time::Instant::now() < until {
+                n += 1;
+                let text = wide(&format!("frame {n}"));
+                // SAFETY: a window this thread made and a live message buffer.
+                unsafe {
+                    SetWindowTextW(hwnd, text.as_ptr());
+                    let mut msg: MSG = std::mem::zeroed();
+                    while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+                        TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(16));
+            }
+        }
+
+        /// Needs a desktop session: `cargo test -p veistra-orchestrator
+        /// record_ -- --ignored` on Windows 11. The design's §13 test 3 is the
+        /// same check on a real game.
+        #[test]
+        #[ignore = "needs a Windows 11 desktop session"]
+        fn record_a_window_to_a_720p_mp4_with_a_keyframe_a_second_and_no_audio() {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("take.mp4");
+            let class = wide("STATIC");
+            let title = wide("veistra record test");
+            // SAFETY: a plain STATIC window, destroyed below.
+            let hwnd = unsafe {
+                CreateWindowExW(
+                    0,
+                    class.as_ptr(),
+                    title.as_ptr(),
+                    WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                    100,
+                    100,
+                    1600,
+                    900,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    GetModuleHandleW(std::ptr::null()),
+                    std::ptr::null(),
+                )
+            };
+            assert!(!hwnd.is_null(), "CreateWindowExW");
+            let capture = start(hwnd as isize, &path, &Quality::DEFAULT).unwrap();
+            pump(hwnd, 3_000);
+            let halted = capture.halt().unwrap();
+            (halted.finish)().unwrap();
+            // SAFETY: the window made above.
+            unsafe { DestroyWindow(hwnd) };
+            assert!(halted.stopped.frames > 30, "{:?}", halted.stopped);
+            let info = mp4::read(&path).unwrap();
+            assert!(info.width <= 1280 && info.height <= 720, "{info:?}");
+            assert!(info.max_keyframe_gap_ms <= 1_100, "{info:?}");
+            assert!(!info.has_audio, "{info:?}");
+            let bytes = std::fs::metadata(&path).unwrap().len();
+            let two_minutes = bytes * 120_000 / info.duration_ms.max(1);
+            assert!(
+                two_minutes <= 60_000_000,
+                "{two_minutes} bytes for two minutes"
+            );
+        }
+    }
 }
 
 /// Everywhere but Windows there is no recorder yet, and Rec says so.
 #[cfg(not(windows))]
 mod sys {
-    use super::Stopped;
+    use super::{Capture, Halted};
+    use crate::godot::encode::Quality;
     use std::path::Path;
 
     pub struct Handle;
@@ -357,19 +497,21 @@ mod sys {
     }
 
     impl Handle {
-        pub fn start(_hwnd: isize, _path: &Path) -> Result<Self, String> {
+        pub fn start(_hwnd: isize, _path: &Path, _quality: &Quality) -> Result<Self, String> {
             Err(unavailable().unwrap_or_default().to_string())
         }
+    }
 
-        pub fn first_frame_ms(&self) -> Option<u64> {
+    impl Capture for Handle {
+        fn first_frame_ms(&self) -> Option<u64> {
             None
         }
 
-        pub fn still_png(&self) -> Option<Vec<u8>> {
+        fn still_png(&self) -> Option<Vec<u8>> {
             None
         }
 
-        pub fn stop(self) -> Result<Stopped, String> {
+        fn halt(self: Box<Self>) -> Result<Halted, String> {
             Err(unavailable().unwrap_or_default().to_string())
         }
     }
@@ -383,11 +525,11 @@ mod tests {
     #[test]
     fn without_a_recorder_rec_says_why_and_starting_is_refused() {
         assert!(unavailable().is_some_and(|w| w.contains("Windows")));
-        assert!(Recorder::start(0, Path::new("take.mp4")).is_err());
+        assert!(start(0, Path::new("take.mp4"), &Quality::DEFAULT).is_err());
     }
 
     fn kept(fps_in: u64, seconds: u64) -> usize {
-        let mut gate = Gate::new(Duration::from_secs(1) / FPS);
+        let mut gate = Gate::new(Duration::from_secs(1) / Quality::DEFAULT.fps);
         let step = 1_000_000_000 / fps_in;
         (0..fps_in * seconds)
             .filter(|i| gate.admit(Duration::from_nanos(i * step)))
@@ -414,8 +556,25 @@ mod tests {
     }
 
     #[test]
-    fn the_bitrate_keeps_two_minutes_under_sixty_megabytes() {
-        let bytes = u64::from(BITRATE) / 8 * 120;
-        assert!(bytes <= 60 * 1_000_000, "{bytes} bytes");
+    fn a_frame_is_stamped_with_when_it_was_captured_not_when_it_arrived() {
+        let wall = 1_793_398_920_000;
+        let qpc = 50_000_000_000;
+        assert_eq!(
+            frame_wall_ms(qpc - 450_000, qpc, wall),
+            wall - 45,
+            "45 ms ago"
+        );
+        assert_eq!(frame_wall_ms(qpc, qpc, wall), wall);
+        assert_eq!(
+            frame_wall_ms(qpc + 10_000, qpc, wall),
+            wall,
+            "from the future"
+        );
+        assert_eq!(
+            frame_wall_ms(qpc - 20_000_000, qpc, wall),
+            wall,
+            "two seconds old: the clocks disagree"
+        );
+        assert_eq!(frame_wall_ms(i64::MIN, i64::MAX, wall), wall);
     }
 }

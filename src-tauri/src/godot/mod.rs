@@ -13,14 +13,20 @@
 
 /// The opt-in capture script and its file channel.
 pub mod addon;
+/// A note's `clip.mp4`, trimmed from the take by Send when asked (Windows).
+pub mod clip;
 /// The executable and the projects inside an environment.
 pub mod detect;
 /// The Godot editor in the pane: launched, followed, closed, and asked.
 pub mod editor;
+/// A take's H.264 video: its size, rate and keyframes, and the encoder (Windows).
+pub mod encode;
 /// Send's packet: `packet.md`, pictures, context, comments.
 pub mod feedback;
 /// Play's methods for the pane, Record, takes and Send.
 pub mod live;
+/// What a finished `take.mp4` holds, read back from its boxes.
+pub mod mp4;
 /// Play notes as the workspace MCP server shows them to agents.
 pub mod notes;
 /// The Veistra editor plugin: installed, removed, and what it needs.

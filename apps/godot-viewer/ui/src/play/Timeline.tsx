@@ -22,7 +22,9 @@ export interface TimelineProps {
   durationMs: number;
   playheadMs: number;
   range: { inMs: number | null; outMs: number | null };
+  /** Filmstrip frames, one every `stripEveryMs`; holes are frames still being made. */
   thumbs: string[];
+  stripEveryMs: number;
   notes: LaneNote[];
   /** Marks in take time, and whether each is a note yet. */
   marks: { ms: number; made: boolean }[];
@@ -63,6 +65,10 @@ export function Timeline(props: TimelineProps) {
     .join(" ");
   const inMs = range.inMs;
   const outMs = range.outMs;
+  // Each frame sits over the 2 s it stands for, the last one over what is
+  // left, so the strip matches the playhead while frames are still arriving.
+  const every = Math.max(1, props.stripEveryMs);
+  const slots = Array.from({ length: Math.ceil(d / every) }, (_, i) => i * every);
 
   return (
     <div className="pl-tl" aria-label="Timeline">
@@ -95,8 +101,14 @@ export function Timeline(props: TimelineProps) {
           ))}
         </div>
         <div className="pl-tl__frames">
-          {thumbs.map((url, i) => (
-            <img key={i} src={url} alt="" draggable={false} />
+          {slots.map((ms, i) => (
+            <span
+              key={ms}
+              className="pl-tl__thumb"
+              style={{ left: pct(ms), width: pct(Math.min(every, d - ms)) }}
+            >
+              {thumbs[i] && <img src={thumbs[i]} alt="" draggable={false} />}
+            </span>
           ))}
         </div>
         <div className="pl-tl__lane pl-tl__lane--notes">
@@ -172,12 +184,22 @@ export function Timeline(props: TimelineProps) {
             {line && <polyline className="pl-tl__ft" points={line} />}
           </svg>
         </div>
-        {inMs !== null && outMs !== null && outMs > inMs && (
+        {inMs !== null && outMs !== null && outMs > inMs ? (
           <div
             className="pl-tl__selection"
             aria-hidden="true"
             style={{ left: pct(inMs), width: pct(outMs - inMs) }}
           />
+        ) : (
+          // One end set so far: show it, or I looks as if it did nothing.
+          <>
+            {inMs !== null && (
+              <div className="pl-tl__in" aria-hidden="true" style={{ left: pct(inMs) }} />
+            )}
+            {outMs !== null && (
+              <div className="pl-tl__out" aria-hidden="true" style={{ left: pct(outMs) }} />
+            )}
+          </>
         )}
         <div className="pl-tl__playhead" aria-hidden="true" style={{ left: pct(playheadMs) }} />
       </div>

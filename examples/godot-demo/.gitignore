@@ -1,0 +1,6 @@
+# Godot's import cache and editor state, rebuilt on every open.
+.godot/
+*.import
+# Play > Enable capture installs the capture addon here; it is Veistra's
+# copy, not the demo's.
+addons/veistra/

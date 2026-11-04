@@ -13,7 +13,10 @@
 //! `res-<id>.json` back. No listener, no port, nothing reachable from the
 //! network.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 pub const SCRIPT: &str = include_str!("veistra_capture.gd");
@@ -22,8 +25,8 @@ pub const SCRIPT: &str = include_str!("veistra_capture.gd");
 const AUTOLOAD_KEY: &str = "VeistraCapture";
 const SCRIPT_RES_PATH: &str = "res://addons/veistra/veistra_capture.gd";
 
-/// Where the version marker on the script's first line says it is from, so a
-/// project holding an older copy can be told to update.
+/// The protocol the script on disk speaks, on its first line: a game whose
+/// script carries it gets a channel even when the text is an earlier one.
 const VERSION_MARKER: &str = "# veistra-capture v2";
 
 /// The addon version a running game reported in its `hello.json`: 2 writes
@@ -39,10 +42,24 @@ pub fn running_version(dir: &Path) -> Option<u32> {
 #[serde(rename_all = "camelCase")]
 pub enum Installed {
     No,
-    /// The script and the autoload line are both present and current.
+    /// The script and the autoload line are both present, and the script is
+    /// this build's.
     Yes,
+    /// Both present, and the script is an earlier version 2. It speaks this
+    /// build's channel, so games keep their capture while the pane offers the
+    /// update; it goes out as `partial` because that is the state the pane
+    /// already offers Update capture for.
+    #[serde(rename = "partial")]
+    Outdated,
     /// One of the two is missing, or the script is from another version.
     Partial,
+}
+
+impl Installed {
+    /// Whether a game started now is given a channel.
+    pub fn usable(self) -> bool {
+        matches!(self, Self::Yes | Self::Outdated)
+    }
 }
 
 pub fn script_path(project: &Path) -> PathBuf {
@@ -56,18 +73,25 @@ fn autoload_line() -> String {
     format!("{AUTOLOAD_KEY}=\"*{SCRIPT_RES_PATH}\"")
 }
 
+/// Where the project's addon stands. The whole text is compared, not the
+/// marker: the script changes between releases without a new protocol, and a
+/// marker-only check called every earlier version 2 current forever, so a
+/// fix to it never reached a project that had it already.
 pub fn status(project: &Path) -> Installed {
     let script = std::fs::read_to_string(script_path(project)).ok();
     let project_file = std::fs::read_to_string(project.join("project.godot")).unwrap_or_default();
-    let registered = has_autoload(&project_file);
-    let current = script
-        .as_deref()
-        .is_some_and(|s| s.starts_with(VERSION_MARKER));
-    match (script.is_some(), registered) {
-        (false, false) => Installed::No,
-        (true, true) if current => Installed::Yes,
+    match (script.as_deref(), has_autoload(&project_file)) {
+        (None, false) => Installed::No,
+        (Some(text), true) if same_text(text, SCRIPT) => Installed::Yes,
+        (Some(text), true) if text.starts_with(VERSION_MARKER) => Installed::Outdated,
         _ => Installed::Partial,
     }
+}
+
+/// Equal apart from line endings: Git on Windows checks a committed copy out
+/// with CRLF, and that is still this build's script.
+fn same_text(a: &str, b: &str) -> bool {
+    a.replace("\r\n", "\n") == b.replace("\r\n", "\n")
 }
 
 fn has_autoload(project_file: &str) -> bool {
@@ -271,7 +295,22 @@ pub fn send(dir: &Path, id: u64, action: &str, wait: Duration) -> Result<Reply, 
 const GAME_SILENT: &str =
     "the game did not answer. It may have been started before capture was enabled - restart it.";
 
+/// The turn of one channel. The game reads a single `cmd.json`, so a second
+/// command renamed into place before it read the first would replace it, and
+/// the first would wait out its timeout as if the game were gone; Stop's
+/// flush can arrive while the pane waits on a pick. Entries no sender holds
+/// are dropped as others are added, so the map stays as small as the runs
+/// going.
+fn channel_turn(dir: &Path) -> Arc<Mutex<()>> {
+    static TURNS: Mutex<BTreeMap<PathBuf, Arc<Mutex<()>>>> = Mutex::new(BTreeMap::new());
+    let mut turns = TURNS.lock().unwrap_or_else(PoisonError::into_inner);
+    turns.retain(|_, turn| Arc::strong_count(turn) > 1);
+    turns.entry(dir.to_path_buf()).or_default().clone()
+}
+
 /// [`send`] with fields beside `id` and `action`, such as `pick`'s `x` and `y`.
+/// Commands to one game go one at a time ([`channel_turn`]); `wait` counts
+/// from this command's own turn.
 pub fn send_with(
     dir: &Path,
     id: u64,
@@ -284,7 +323,8 @@ pub fn send_with(
 
 /// One round trip on a channel folder, read by `parse`: the capture addon's,
 /// and the editor plugin's, which answers in the same files. `silent` is the
-/// error when nothing answers within `wait`.
+/// error when nothing answers within `wait`. Commands on one folder take
+/// turns ([`channel_turn`]), whichever of the two is listening.
 pub(super) fn exchange<T>(
     dir: &Path,
     id: u64,
@@ -294,6 +334,8 @@ pub(super) fn exchange<T>(
     silent: &str,
     parse: impl Fn(&Path, &str) -> Result<T, String>,
 ) -> Result<T, String> {
+    let turn = channel_turn(dir);
+    let _turn = turn.lock().unwrap_or_else(PoisonError::into_inner);
     std::fs::create_dir_all(dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
     let tmp = dir.join("cmd.json.tmp");
     let mut cmd = serde_json::json!({ "id": id, "action": action });
@@ -337,6 +379,27 @@ pub(super) fn png_in(dir: &Path, reply: &serde_json::Value) -> std::io::Result<O
     }
 }
 
+/// Ids for commands Veistra sends on its own rather than for the pane. The
+/// pane's count up from 1 ([`super::Godot::next_command_id`]) and each id is
+/// answered in a file of its own, so these start far above anything that
+/// count reaches, and below 2^53, where the game's JSON reader stays exact.
+const OWN_IDS: u64 = 1 << 40;
+
+/// Have a running game write out the telemetry it is holding: it flushes
+/// once a second, and a take copies the file the moment it stops, so its
+/// last second of ticks was missing. A game that does not answer within
+/// `wait` (an earlier script, a frame that hangs) costs only the wait.
+pub fn flush(dir: &Path, wait: Duration) -> Result<(), String> {
+    static NEXT: AtomicU64 = AtomicU64::new(OWN_IDS);
+    let reply = send(dir, NEXT.fetch_add(1, Ordering::Relaxed), "flush", wait)?;
+    match reply.ok {
+        true => Ok(()),
+        false => Err(reply
+            .error
+            .unwrap_or_else(|| "the game did not flush".into())),
+    }
+}
+
 fn parse_reply(dir: &Path, text: &str) -> Result<Reply, String> {
     let v: serde_json::Value =
         serde_json::from_str(text).map_err(|e| format!("unreadable reply: {e}"))?;
@@ -361,6 +424,7 @@ fn parse_reply(dir: &Path, text: &str) -> Result<Reply, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{json, Value};
     use tempfile::TempDir;
 
     const PROJECT: &str =
@@ -579,6 +643,264 @@ mod tests {
         assert_eq!(status(dir.path()), Installed::Partial);
         install(dir.path()).unwrap();
         assert_eq!(status(dir.path()), Installed::Yes);
+    }
+
+    #[test]
+    fn an_earlier_v2_is_offered_the_update_and_keeps_its_capture_meanwhile() {
+        let dir = project(PROJECT);
+        install(dir.path()).unwrap();
+        let earlier = SCRIPT.replacen("const TICK_SEC := 0.1", "const TICK_SEC := 0.2", 1);
+        assert_ne!(earlier, SCRIPT);
+        std::fs::write(script_path(dir.path()), &earlier).unwrap();
+
+        let found = status(dir.path());
+        assert_eq!(found, Installed::Outdated);
+        assert!(found.usable(), "an earlier v2 still speaks the channel");
+        assert_eq!(
+            serde_json::to_value(found).unwrap(),
+            "partial",
+            "the pane offers Update capture for it"
+        );
+        assert!(!Installed::Partial.usable() && !Installed::No.usable());
+
+        install(dir.path()).unwrap();
+        assert_eq!(status(dir.path()), Installed::Yes);
+    }
+
+    #[test]
+    fn a_crlf_copy_of_the_shipped_script_is_current() {
+        let dir = project(PROJECT);
+        install(dir.path()).unwrap();
+        let crlf = SCRIPT.replace("\r\n", "\n").replace('\n', "\r\n");
+        std::fs::write(script_path(dir.path()), crlf).unwrap();
+        assert_eq!(status(dir.path()), Installed::Yes);
+    }
+
+    /// Answers the next command in `dir` with `reply`, and hands back the command.
+    fn answer_once(dir: &Path, reply: Value) -> std::thread::JoinHandle<Value> {
+        let game = dir.to_path_buf();
+        std::thread::spawn(move || {
+            let cmd = game.join("cmd.json");
+            for _ in 0..200 {
+                if let Ok(text) = std::fs::read_to_string(&cmd) {
+                    let v: Value = serde_json::from_str(&text).unwrap();
+                    std::fs::remove_file(&cmd).unwrap();
+                    let mut reply = reply.clone();
+                    reply["id"] = v["id"].clone();
+                    let id = v["id"].as_u64().unwrap();
+                    std::fs::write(game.join(format!("res-{id}.json")), reply.to_string()).unwrap();
+                    return v;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            panic!("no command arrived");
+        })
+    }
+
+    #[test]
+    fn a_flush_uses_ids_the_pane_never_does_and_an_earlier_script_refuses_it() {
+        let dir = TempDir::new().unwrap();
+        let game = answer_once(dir.path(), json!({ "ok": true }));
+        flush(dir.path(), Duration::from_secs(5)).unwrap();
+        let sent = game.join().unwrap();
+        assert_eq!(sent["action"], "flush");
+        assert!(sent["id"].as_u64().unwrap() >= OWN_IDS);
+
+        let game = answer_once(
+            dir.path(),
+            json!({ "ok": false, "error": "unknown action" }),
+        );
+        let err = flush(dir.path(), Duration::from_secs(5)).unwrap_err();
+        let again = game.join().unwrap();
+        assert_eq!(err, "unknown action");
+        assert_ne!(sent["id"], again["id"], "a stale answer is never read back");
+    }
+
+    #[test]
+    fn two_commands_at_once_both_reach_a_game_that_reads_one_file() {
+        let dir = TempDir::new().unwrap();
+        // A game that looks for cmd.json five times a second, as slowly as a
+        // busy frame might: two commands written inside one look would leave
+        // only the second.
+        let game = dir.path().to_path_buf();
+        let reader = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            for _ in 0..50 {
+                std::thread::sleep(Duration::from_millis(200));
+                let Ok(text) = std::fs::read_to_string(game.join("cmd.json")) else {
+                    continue;
+                };
+                std::fs::remove_file(game.join("cmd.json")).unwrap();
+                let v: Value = serde_json::from_str(&text).unwrap();
+                let id = v["id"].as_u64().unwrap();
+                let reply = json!({ "id": id, "ok": true });
+                std::fs::write(game.join(format!("res-{id}.json")), reply.to_string()).unwrap();
+                seen.push(v["action"].as_str().unwrap().to_string());
+                if seen.len() == 2 {
+                    break;
+                }
+            }
+            seen
+        });
+        let pane = {
+            let dir = dir.path().to_path_buf();
+            std::thread::spawn(move || send(&dir, 7, "pause", Duration::from_secs(2)))
+        };
+        std::thread::sleep(Duration::from_millis(20));
+        flush(dir.path(), Duration::from_secs(2)).unwrap();
+        assert!(pane.join().unwrap().unwrap().ok);
+        let mut seen = reader.join().unwrap();
+        seen.sort();
+        assert_eq!(seen, ["flush", "pause"]);
+    }
+
+    // --- the script ----------------------------------------------------------
+    // No Godot runs in CI. These pin the mechanism each of the script's fixes
+    // uses, as apps/godot-viewer/ui/src/play/capture.gd.test.ts does for the older ones;
+    // what the engine does with it rests on the API facts the script names.
+
+    /// One function of the shipped script without its comment lines, from its
+    /// `func` line to the next line that starts at column zero.
+    fn script_fn(name: &str) -> String {
+        let head = format!("func {name}(");
+        let mut lines = SCRIPT.lines().skip_while(|l| !l.starts_with(&head));
+        let first = lines
+            .next()
+            .unwrap_or_else(|| panic!("func {name} is missing"));
+        std::iter::once(first)
+            .chain(lines.take_while(|l| l.is_empty() || l.starts_with(char::is_whitespace)))
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn script_code() -> String {
+        SCRIPT
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Where `needle` is in `hay`, which must hold it.
+    fn at(hay: &str, needle: &str) -> usize {
+        hay.find(needle)
+            .unwrap_or_else(|| panic!("`{needle}` is missing"))
+    }
+
+    #[test]
+    fn the_script_answers_every_action_this_build_sends() {
+        let poll = script_fn("_poll_command");
+        for action in ["capture", "pause", "resume", "pick", "flush"] {
+            assert!(poll.contains(&format!("\"{action}\":")), "{action}");
+        }
+        assert!(poll.contains("_log.flush()"));
+    }
+
+    #[test]
+    fn an_exported_build_never_reads_the_channel_argument() {
+        let ready = script_fn("_ready");
+        assert!(
+            at(&ready, "OS.has_feature(\"template\")") < at(&ready, "_arg_dir()"),
+            "the guard comes first"
+        );
+        assert_eq!(
+            script_code().matches("get_cmdline_user_args").count(),
+            1,
+            "nothing else reads the arguments"
+        );
+        assert!(script_fn("_arg_dir").contains("get_cmdline_user_args"));
+        for off in ["set_process(false)", "set_physics_process(false)"] {
+            assert!(ready.contains(off), "{off}");
+        }
+    }
+
+    #[test]
+    fn a_pick_s_physics_query_runs_in_the_physics_frame_only() {
+        assert!(!script_fn("_poll_command").contains("_pick("));
+        assert!(script_fn("_physics_process").contains("_pick("));
+        let code = script_code();
+        assert_eq!(
+            code.matches("_pick(").count(),
+            2,
+            "defined once and called once, from _physics_process"
+        );
+        let pick = script_fn("_pick");
+        assert!(pick.contains("intersect_ray(") && pick.contains("intersect_point("));
+        assert_eq!(code.matches("intersect_ray(").count(), 1);
+        assert_eq!(code.matches("intersect_point(").count(), 1);
+    }
+
+    #[test]
+    fn a_body_s_own_mesh_folds_into_the_body_and_lights_are_not_tracked() {
+        let defaults = script_fn("_default_candidates");
+        for class in [
+            "GeometryInstance3D",
+            "AnimatedSprite2D",
+            "CollisionObject3D",
+        ] {
+            assert!(defaults.contains(&format!("\"{class}\"")), "{class}");
+        }
+        assert!(!defaults.contains("\"VisualInstance3D\""));
+        assert!(defaults.contains("_in_body("));
+        assert!(
+            defaults.contains("get_tree().root"),
+            "a tree with no current scene is still searched"
+        );
+        let refresh = script_fn("_refresh_candidates");
+        assert!(
+            at(&refresh, "get_nodes_in_group(TRACK_GROUP)") < at(&refresh, "_default_candidates()"),
+            "group members do not wait for a current scene"
+        );
+        assert!(
+            !refresh.contains("return"),
+            "nothing returns before the group is read"
+        );
+    }
+
+    #[test]
+    fn the_frustum_test_uses_the_box_centre_stored_at_refresh() {
+        assert!(script_fn("_refresh_candidates").contains("box.get_center()"));
+        let rects = script_fn("_tracked_rects");
+        assert!(rects.contains("var at: Vector3 = n3.global_transform * c[5]"));
+        assert!(rects.contains("is_position_in_frustum(at)"));
+    }
+
+    #[test]
+    fn a_tick_reports_the_mouse_mode_and_what_a_refresh_cost() {
+        let tick = script_fn("_tick");
+        assert!(tick.contains("\"mouse\": Input.mouse_mode"));
+        assert!(tick.contains("data[\"refreshUs\"] = _refresh_usec"));
+        assert!(
+            at(&tick, "_refresh_candidates()") < at(&tick, "var started := Time.get_ticks_usec()"),
+            "a refresh is not counted in tickUs"
+        );
+    }
+
+    #[test]
+    fn the_scene_godot_passes_through_between_two_is_not_an_event() {
+        let tick = script_fn("_tick");
+        assert!(at(&tick, "if scene != \"\":") < at(&tick, "\"kind\": \"scene\""));
+    }
+
+    #[test]
+    fn a_handled_key_s_release_and_bound_actions_are_kept_from_the_game() {
+        let input = script_fn("_input");
+        assert!(input.contains("_held.has(key.keycode)"));
+        assert_eq!(
+            input
+                .matches("get_viewport().set_input_as_handled()")
+                .count(),
+            2,
+            "the press, and its repeats and release"
+        );
+        assert!(input.contains("_release_actions(key)"));
+        assert!(script_fn("_release_actions").contains("Input.action_release(action)"));
+        let fresh = input.rfind("_held.erase(key.keycode)").unwrap();
+        assert!(
+            fresh < at(&input, "_veistra_key(key)"),
+            "a fresh press forgets a release lost to a change of focus"
+        );
     }
 
     #[test]
