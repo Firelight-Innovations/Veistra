@@ -1,8 +1,10 @@
-# Godot: Play, the Godot Viewer, and Open in Godot
+# Godot: one app with Editor and Play, and Open in Godot
 
-Code: `src-tauri/src/godot/` (`detect`, `runner`, `addon`, `scene`, `rpc`), routed from
-`apps/play.rs` and `apps/godot_viewer.rs`. Frontends: `apps/play/ui`, `apps/godot-viewer/ui`,
-shared types in `apps/shared/godot.ts`.
+Code: `src-tauri/src/godot/` (`detect`, `runner`, `addon`, `scene`, `rpc`, `live`), one entry
+(`godot::rpc::godot`) routed from `apps/godot_viewer.rs` for the Godot app's id, `godot-viewer`,
+and its `play` alias. Frontend: `apps/godot-viewer/ui`, where `App.tsx` is the mode shell,
+`SceneMode.tsx` is Editor mode and `play/` is Play mode. Shared types are in
+`apps/shared/godot.ts`.
 
 The rule everything obeys is `VEISTRA-UX-REWORK.md` section 3.1: Godot is never embedded in the
 webview. It is a native process Veistra starts, watches and stops.
@@ -115,7 +117,7 @@ on the context server from an agent tab.
 | Decision | Chosen | Why, and what was rejected |
 |---|---|---|
 | R1 child window or R2 owned popup | R2, pending the Day 1 spike | Graphics Capture records the game window alone, never Veistra's UI. R1 (`SetParent`) is not built; the spike is where `CreateForWindow` on a child window gets tried. |
-| One Godot app or two | Two, with the shared toolbar | Scene · Play switches between the apps (`veistra/open`). Folding Play into the Godot app (open decision 1) is left for the owner; it is a move, not a rewrite. |
+| One Godot app or two (#313) | One app, two modes: Editor · Play (owner decision 1) | Play's UI moved into `apps/godot-viewer/ui/src/play/`, and one Rust entry answers both modes. The two apps that switched with `veistra/open` were rejected by the owner: a pane is the Godot app, and the mode is what it shows. |
 | Record default | Off | Takes cost disk (open decision 2's recommendation). |
 | Tracked nodes | The design's default | `veistra_track` when it has members, else bodies and visible meshes in view, nearest 64. |
 | Video clip in the packet | Not built | The agent reads the contact sheet; the checkbox is shown disabled with why. |
@@ -131,6 +133,17 @@ on the context server from an agent tab.
 | `WS_EX_TOOLWINDOW` on a placed window (#309) | Kept | `windows-capture` 2.0.1 skips tool windows only in `Window::enumerate` (`is_valid`); the recorder and the still build the item from the handle (`from_raw_hwnd`, then `CreateForWindow`), which does not check. To confirm in the spike run. |
 | Input queues under R2 (#309) | Detached once the window is owned (`AttachThreadInput(.., FALSE)`), as Godot's own embedding does | The owner link joins the two queues, so a hung game or a long editor import would stall Veistra's focus changes. |
 | Where play_embedded and play_embed_failed fire (#309) | Rust, once per run when the outcome settles, through `telemetry::track`: `{ms}` or `{cause}`; nothing for a game that closed first, or for Pop out. A run with no pane open settles when a pane first places it | The page sees the outcome only while a Play pane polls, so an agent's run would go uncounted. Counting "no pane" as a failure was rejected: nothing was tried, and agents' runs would swamp the failure rate. The shell forwards these once #311's `features/godot.ts` and `backendTrack.ts` are in. |
+| The `play` id (#313) | An alias in the registry: it serves the Godot app with `?mode=play`, shares its dispatch, keeps its own title and is left out of the Apps menu | Saved layouts, the Godot starting layout, presets, and agents' `veistra/open` and `app_call` name `play`, so deleting it would break them. An initial message to pick the mode was rejected: the bridge drops an event nobody listens for yet, and the mode must be known at first paint. |
+| Mode names and Editor before C1 (#313) | Editor · Play; `?mode=scene` still means Editor. Until C1, Editor is the read-only scene view, with one line saying the editor opens in its own window | The spec names the modes Editor · Play. C1 replaces Editor's content with the embedded editor, and C3 keeps the scene view as its fallback, so the view stays where it is. |
+| Which mode a pane opens in (#313) | The URL's first, then the pane's own choice, saved per pane instance in `localStorage` | A cluster switch unloads every frame and loads it afresh, and a Play pane must come back in Play over its game. Every Godot frame shares one origin, hence the instance in the key; with no instance nothing is kept. |
+| What the mode shell holds (#313) | The window rect, the overlays and an open's payload, caught from the first moment; the Godot status; Play's project and the live notes | The modes load lazily, the bridge keeps no event nobody listened for, and the shell sends an unchanged window rect only once, so a mode loaded later would never hear where it is. |
+| The status after a project move (#313) | Read again on every `project:changed`, and each mode reads what it took from the old root again | Read once at mount, the read-only banner and flag stayed on the main checkout's answer after the cluster moved to a worktree, which is where the banner sends people. |
+| Rec's disabled state (#313) | Off and blocked, Record is disabled with the reason as its title, and Ctrl R does nothing; on and blocked it stays clickable to turn Record off | §5.1 asks for a disabled state. Off and blocked opened the capture consent; Enable capture stays in the footer, where it always was, and the strip says why. |
+| Slot 5 (#313) | Pop out alone, always there, disabled with a reason when there is no game in the pane; Open in Godot is Editor's | A button that comes and goes shifts the toolbar as a run starts. Ctrl Shift O still opens the editor from Play until C1 embeds it. |
+| Slot 2 in Play (#313) | The project picker when there are several, then a scene picker from `godot-viewer/state`, the main scene first, disabled while running | There was no way to choose what F5 runs, though `play/run` takes a scene. Restart keeps the running scene, so a pick while running would not be honoured. |
+| The drawer's counts (#313) | Output counts every line; Errors counts what its tab lists, warnings with errors; the strip counts errors only | The Errors count was errors only while its tab listed warnings too. The strip says "errors", and counts those. |
+| Reload keys (#313) | F5 and Ctrl R are kept from WebView2 inside the Godot app, Shift F5 too; F5 in Editor turns to Play and runs, as Godot's Run Project does; each mode's root takes the focus back when it falls to the page | WebView2's reload unloads the pane and, in Play, the game's place in it. Ctrl R typed into a note reached the page. A focused button that left with its view dropped the focus where F5 is the reload. |
+| Comment pushes and the mark telemetry (#313) | Not wired here; #314 does both | The issue moves Play; the comment push (`useCommentsChanged`) and `mark_dropped` belong to review and its notes. |
 | A game an agent started with no Play pane open (#309) | Its own window until a Play pane shows it; that pane places it when the window appears, or docks it at once if it is already up | Failing the pane's first box because the window had not shown yet left the game in its own frame for the whole run. The 10 s wait restarts when the pane opens: time with no pane had nothing to place the window in, and counting it kept a slow window out of a pane opened at 15 s while one opened at 25 s docked it. |
 
 ### Not verified on a real machine
@@ -155,6 +168,22 @@ From #309, unit-tested through a fake window system and type-checked for Windows
 - The window classes `Engine` (Godot 4, game and editor) and `GHOST_WindowClass` (Blender).
 - The real-window test in `embed/win32.rs`, which runs on CI's `windows-latest` only.
 - `godot:play_embedded` and `godot:play_embed_failed` reaching PostHog.
+
+From #313, tested in jsdom and type-checked for Windows only; no WebView2 or Godot ran:
+
+- The layout against the board at 1440 × 900 and at 1024 px wide: the five slots on one row,
+  the pickers giving way, the strip and drawer under the box, nothing of Veistra's inside it.
+  jsdom does no layout; only the CSS declarations are checked (`narrow.css.test.ts`).
+- F5, Shift F5, F6, F7, F8, Ctrl R and Ctrl Shift M with the pane focused in WebView2, and that
+  F5, Shift F5 and Ctrl R never reload the pane, in either mode. The focus returning to the
+  mode's root after Back to live or a mode switch was tested with `document.hasFocus` stubbed,
+  since jsdom forgets it when the focused element goes.
+- Switching a pane with an embedded game to Editor hides the game, and back to Play shows it in
+  the box; the scene picker's native dropdown hides the game while it is open.
+- A Play pane reloaded by a cluster switch comes back in Play, and an Editor pane in Editor
+  (`localStorage` per origin in WebView2).
+- The read-only banner going when the title bar's switcher or `set_project` moves the cluster
+  from the main checkout to a worktree.
 
 ## The Godot Viewer
 
