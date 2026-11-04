@@ -45,7 +45,7 @@ whether they can check their own work. Without those, you do both by hand, and
 every loop waits on you. Veistra supplies both, so the agent can close the loop
 itself.
 
-![Without Veistra, you hand the agent its context and check its work yourself. With Veistra, context goes in and the agent checks its own work](assets/bottleneck.svg)
+![A funnel: a very capable model narrows to a neck made of context and validation, and Veistra widens that neck](assets/bottleneck.svg)
 
 Veistra is a development tool. It does not run the software you build with it.
 
