@@ -184,8 +184,10 @@ export default function SceneMode({ modeSwitch, status, epoch, onPlay }: SceneMo
 
   // F5 is Godot's Run Project, and WebView2's reload, which would unload the
   // pane: here it turns to Play and runs, as Play's own F5 does. Shift F5,
-  // Play's Stop, is a hard reload, so it is kept from the page too.
+  // Play's Stop, is a hard reload, and Ctrl R, Play's Record, a reload too, so
+  // both are kept from the page and do nothing here.
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "r") e.preventDefault();
     if (e.key !== "F5") return;
     e.preventDefault();
     if (!e.shiftKey && !e.ctrlKey && state) onPlay(undefined, state.project);

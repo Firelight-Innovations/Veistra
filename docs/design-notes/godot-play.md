@@ -6,8 +6,9 @@ and its `play` alias. Frontend: `apps/godot-viewer/ui`, where `App.tsx` is the m
 `SceneMode.tsx` is Editor mode and `play/` is Play mode. Shared types are in
 `apps/shared/godot.ts`.
 
-The rule everything obeys is `VEISTRA-UX-REWORK.md` section 3.1: Godot is never embedded in the
-webview. It is a native process Veistra starts, watches and stops.
+Godot is never drawn by the webview. It is a native process Veistra starts, watches and stops,
+and Play places the game's window over its pane (owner decision 6 and spec section 11 replace
+`VEISTRA-UX-REWORK.md` section 3.1's "never embedded"; the editor joins it there with C1).
 
 ## Section 9.2, decided: a native run
 
