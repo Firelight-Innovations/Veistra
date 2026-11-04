@@ -75,7 +75,9 @@ const ProjectPill = forwardRef<HTMLButtonElement, ProjectPillProps>(function Pro
       ) : (
         <span className="projectpill__chip">
           {Glyph && <Glyph size={11} strokeWidth={1.5} className="projectpill__chip-icon" />}
-          {environmentLabel ?? environment.branch ?? environment.kind}
+          <span className="projectpill__chip-label">
+            {environmentLabel ?? environment.branch ?? environment.kind}
+          </span>
         </span>
       )}
 

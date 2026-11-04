@@ -1,0 +1,36 @@
+/*
+ * The markup tools over one still frame (`FrameMarkup.tsx`): a take's frame
+ * in review, Play's live frame, or the Godot editor's viewport. Its own file
+ * so Editor mode, which loads none of Play's stylesheet, draws it the same.
+ */
+
+.pl-markup {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-canvas);
+}
+
+.pl-markup__frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  user-select: none;
+}
+
+.pl-markup__loading {
+  margin: 0;
+  font: var(--type-caption);
+  color: var(--txt-tertiary);
+  position: absolute;
+  left: 12px;
+  top: 12px;
+}
+
+.pl-markup__cancel {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  z-index: 2;
+}

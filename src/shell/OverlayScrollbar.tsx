@@ -27,6 +27,7 @@ import {
 } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { instant, instantOut } from "./motion";
+import { horizontalWheelDelta } from "./stripScroll";
 import "./overlayScrollbar.css";
 
 /**
@@ -52,45 +53,6 @@ const SCROLL_IDLE_MS = 700;
  * narrowest tab in either row is well over 2px on its own.
  */
 const OVERFLOW_EPSILON = 2;
-
-/**
- * CSS pixels per "line" for a wheel event reporting `deltaMode: 1`
- * (`DOM_DELTA_LINE`) rather than `0` (`DOM_DELTA_PIXEL`). Some devices and
- * OS wheel-speed settings report in lines, where a `deltaY` of `1` means
- * "one notch" rather than "one pixel" — applied unscaled, a wheel like that
- * would nudge `scrollLeft` by a couple of pixels per notch and read as
- * "barely scrolls at all". 16 is the approximation most browsers themselves
- * use to turn a line into pixels; there is no more authoritative number to
- * take it from; `deltaMode: 2` (`DOM_DELTA_PAGE`) is rarer still and scaled
- * by `el`'s own width instead, since a "page" on the axis this redirects
- * *into* is the strip's width, not its height.
- */
-const WHEEL_LINE_PX = 16;
-
-/**
- * How far a wheel tick should move `scrollLeft`, or `null` if this tick is
- * not this component's to take.
- *
- * `null` whenever `deltaX` is already the larger of the two axes: a
- * trackpad's horizontal swipe or a held-Shift wheel report there, native
- * scrolling already drives `scrollLeft` from it directly, and redirecting on
- * top of that would double the movement. Strictly greater rather than
- * greater-or-equal, so a dead-even tick — including the common all-zero
- * case on a plain vertical wheel — still redirects instead of being read as
- * "already horizontal" and dropped; this container has no vertical overflow
- * for an equal `deltaY` to go to instead.
- */
-function horizontalWheelDelta(
-  el: HTMLElement,
-  deltaX: number,
-  deltaY: number,
-  deltaMode: number,
-): number | null {
-  if (Math.abs(deltaX) > Math.abs(deltaY)) return null;
-  if (deltaMode === 1) return deltaY * WHEEL_LINE_PX;
-  if (deltaMode === 2) return deltaY * el.clientWidth;
-  return deltaY;
-}
 
 export interface OverlayScrollbarProps {
   /**
@@ -179,9 +141,9 @@ export default function OverlayScrollbar({ targetRef }: OverlayScrollbarProps) {
     // scroll gesture on a mouse the way a trackpad's two-finger swipe or a
     // held Shift give one, and neither of those needs help: the browser
     // already drives `scrollLeft` from `deltaX` on its own. Redirecting
-    // `deltaY` here (through `horizontalWheelDelta`, see above) is what lets
-    // a plain wheel scroll these strips at all, which is the whole point of
-    // drawing a horizontal scrollbar for them.
+    // `deltaY` here (through `horizontalWheelDelta`, in `stripScroll.ts`) is
+    // what lets a plain wheel scroll these strips at all, which is the whole
+    // point of drawing a horizontal scrollbar for them.
     //
     // `{ passive: false }` because redirecting *is* calling
     // `preventDefault()`: left passive, the browser would still try to

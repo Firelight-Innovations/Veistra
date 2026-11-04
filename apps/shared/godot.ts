@@ -27,6 +27,8 @@ export interface GodotProject {
   mainScenePath: string | null;
   engineMajor: number;
   addon: AddonState;
+  /** The Veistra editor plugin (`godot/plugin.rs`), which Editor mode's tools need. */
+  plugin: AddonState;
 }
 
 export interface GodotStatus {
@@ -35,6 +37,8 @@ export interface GodotStatus {
   projects: GodotProject[];
   /** Where Editor mode shows, and why when not in the pane (`editorSurface.ts`). */
   editor: EditorSurface;
+  /** Why this Godot cannot run the editor plugin (older than 4.2), or `null`. */
+  pluginProblem: string | null;
 }
 
 /** `refresh` forgets the remembered executable and searches again. */

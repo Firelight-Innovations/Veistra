@@ -573,6 +573,14 @@ impl AgentHost {
             })
     }
 
+    /// Where the tab's session is, while its process lives. Cheaper than
+    /// [`Self::attach`], which copies every item.
+    pub fn state(&self, instance_id: &str) -> Option<crate::SessionState> {
+        self.get(instance_id)
+            .filter(|s| s.is_alive())
+            .map(|s| s.status().state)
+    }
+
     /// The harness the tab's agent runs, while its process lives.
     pub fn running(&self, instance_id: &str) -> Option<Harness> {
         self.get(instance_id)

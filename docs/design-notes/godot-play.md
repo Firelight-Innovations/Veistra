@@ -1,14 +1,16 @@
 # Godot: one app with Editor and Play, and Open in Godot
 
-Code: `src-tauri/src/godot/` (`detect`, `runner`, `addon`, `scene`, `rpc`, `live`), one entry
-(`godot::rpc::godot`) routed from `apps/godot_viewer.rs` for the Godot app's id, `godot-viewer`,
-and its `play` alias. Frontend: `apps/godot-viewer/ui`, where `App.tsx` is the mode shell,
-`SceneMode.tsx` is Editor mode and `play/` is Play mode. Shared types are in
-`apps/shared/godot.ts`.
+Code: `src-tauri/src/godot/` (`detect`, `runner`, `addon`, `scene`, `rpc`, `live`, `editor`,
+`plugin`), one entry (`godot::rpc::godot`) routed from `apps/godot_viewer.rs` for the Godot app's
+id, `godot-viewer`, and its `play` alias, and `src-tauri/src/agent_activity.rs` for the editor's
+banner. Frontend: `apps/godot-viewer/ui`, where `App.tsx` is the mode shell, `editor/` is Editor
+mode, `SceneMode.tsx` is the scene viewer Editor falls back to and `play/` is Play mode. Shared
+types are in `apps/shared/godot.ts`.
 
-Godot is never drawn by the webview. It is a native process Veistra starts, watches and stops,
-and Play places the game's window over its pane (owner decision 6 and spec section 11 replace
-`VEISTRA-UX-REWORK.md` section 3.1's "never embedded"; the editor joins it there with C1).
+Godot is never drawn by the webview. It is a native process Veistra starts and watches, and its
+window is placed over the pane: the game's in Play, and the Godot editor's in Editor. Owner
+decision 6 and spec section 11 replace `VEISTRA-UX-REWORK.md` section 3.1's "never embedded"
+(the row "Embedded editors" below). Veistra stops a game; it never ends an editor.
 
 ## Section 9.2, decided: a native run
 
@@ -212,6 +214,23 @@ check it". The same chokepoint reports `godot:note_fixed` and `godot:note_resolv
 | Mark up's place (#318) | Slot 4 in every surface; the lazy 3D view reports how to start drawing (`onTrigger`) and the toolbar draws the button (`MarkupButton`) | It sat on the 3D view's own bar in Editor and the Blender viewer and in slot 4 in Play. A handle into the lazy view was rejected: it would pull three.js into the eager chunk. |
 | The environment chip (#318) | First in slot 2, before the picker: `wt`, `cloud`, `main` or `design` and the branch, with main in the warning tone | Which checkout an edit lands in is the first thing to know before pressing anything; Play's review keeps one state chip and says Record is on in Play again's title. |
 | Blender on main (#318) | `blender-viewer/open` and `files/open-in-blender` are writes, refused on main; the Blender export cache for main moved to app-local data, keyed by the checkout's path | Blender saves into what it opens. The cache under `<project>/.veistra/blender/` was the one thing the viewer still wrote into main. |
+| Embedded editors (#316) | The person works in the Godot editor, and in Blender, inside a pane (owner decision 6, 2026-11-02); this row replaces `VEISTRA-UX-REWORK.md` §3.1's "never embedded". Agents still run both headless in terminal tabs | §3.1 kept the editors out so the pane could not hold a window Veistra does not own. The embedder (#309) answers that: the window is the person's, placed and handed back, never killed. Editing beside the agent, instead of in a second window behind Veistra, is the point of the rework. |
+| How the editor starts (#316) | `godot --editor --single-window --path <the chosen project>`, at the pane's rect, the channel after `--`; only when the person presses Open the editor, never on mount | `--single-window` keeps Project Settings and every dialog inside the one window the embedder places. `--path` is the project folder the picker chose, not the environment root, which may hold several. Opening on mount was rejected: a cluster switch reloads every frame, and an editor is too heavy to start for a glance. |
+| The Veistra plugin's floor (#316) | Godot 4.2 or later; on an older 4.x the editor still opens in the pane, with Mark up, Send selection and Viewport only disabled and saying why | `EditorInterface` became a singleton with its 3D viewports, and `distraction_free_mode` a property, in 4.2. A shim for 4.0 and 4.1 would be the only code in the plugin nobody could test. |
+| The plugin's channel (#316) | The capture addon's: `cmd.json` in, `res-<id>.json` and `cap-<id>.png` out, `hello.json` and `state.json` from the plugin, in a temp folder named by `--veistra-editor-dir=` and by `VEISTRA_EDITOR_DIR` | No socket, as with the addon (DECISIONS X5). The variable is there because Godot's Restart editor drops the arguments and keeps the environment. |
+| Close (#316) | `WM_CLOSE` to the editor's window, what its close button sends; with no window to post to, the plugin's `close`, which propagates `NOTIFICATION_WM_CLOSE_REQUEST`. Never a kill, never `quit()` | Spec §13 test 10: Godot asks to save, and the person may cancel. Closing the pane or Veistra hands the window back as a normal one (`Orphan::Release`), as #309 decided for editors. |
+| Restart editor (#316) | The first state read after the editor exits cleanly (code 0, or no code for an adopted one) adopts a child of the old process that started within 15 s, and hosts it in the same pane | Godot's Restart editor starts the new editor as its child and quits; without this, the pane would say the editor closed while it reopened in its own window. An older child is something the editor ran, such as the game. |
+| Godot's own Play from the editor (#316) | Left alone: under `--single-window` Godot's Run opens the game in its own window, outside the pane | Veistra's Play mode is where a run is placed, recorded and reviewed. Placing the editor's run too would make two owners for one window. |
+| `project.godot` under a running editor (#316) | Enabling or removing the plugin or the capture addon is refused while Veistra's editor holds the project ("Close the Godot editor first") | The editor keeps its own copy of `project.godot` and writes it back on its saves. Routing the change through the plugin (`add_autoload_singleton`) was rejected: it needs the plugin installed to install the plugin, and gives two code paths for one change. |
+| Picking a pin's node (#316) | The plugin's `pick`: `RenderingServer.instances_cull_ray` through the point, each mesh's faces with `segment_intersects_triangle` (its AABB for anything else), the nearest hit, climbed to the node the scene owns | It is what the editor's own click does. A physics ray was rejected: the editor does not step physics, and a mesh with no collider has nothing to hit. |
+| Send selection (#316) | One `godot/editor-selection` answer (state, camera and viewport PNG), two Context items (`godot/<scene>/selection` text and `godot/<scene>/editor-viewport` image), then one `context/insert` with both, never Enter | Spec §13 test 11 asks for one message within 1 s; one plugin round trip is the slow part. The person sends the prompt, as with every Context reference. |
+| Mark up in the editor (#316) | A viewport capture as the still, the editor window hidden while drawing, the markup tools Play uses (`FrameMarkup`, `resolvePins` shared), pins resolved through the plugin's `pick`; sent with `sendMarkup` under `godot/<scene>/markup` | The drawing belongs to one frame, so the window steps aside while the still is up, as it does for an overlay. A second markup surface for the editor would drift from Play's. |
+| The banner (#316) | "An agent is working in this environment" over the box while an agent tab in a cluster on this root is busy, or a terminal there runs an agent CLI; Save all beside it, through the plugin | An agent reads files from disk, so unsaved edits are not what it sees. A terminal cannot say whether its agent is mid-turn, so an idle one counts: the banner is advice, and showing it too often is the cheaper mistake. |
+| Ctrl Shift O in Play (#316) | Turns the pane to Editor mode | It started a second Godot in its own window that nothing tracked, beside the one Editor mode holds. `godot/open-editor` stays for agents and existing callers, and is refused while the pane's editor holds the project. |
+| Open in Godot in the scene viewer (#316) | Always disabled, with the surface's reason | The viewer shows only where the editor cannot open (cloud, main, no Godot), so there is nothing for the button to start. It keeps its place so the bar does not change shape (#318). |
+| The editor's floor size (#316) | The plugin lowers the window's minimum to 480 × 320 after the editor sets its own; without the plugin, nothing checks a pane smaller than 1024 × 600 | The editor holds its window at 1024 × 600, larger than many panes, and the embedder cannot shrink it below that. A size warning without the plugin was left out until a real pane shows how it looks cut off. |
+| What an agent may call on the editor (#316) | `godot/editor-state`, `godot/editor-selection`, `godot/editor-capture`, `godot/editor-pick`, and the plugin's status, install and remove as for the capture addon; `app_call` refuses open, close, save, select, open scene and Viewport only | The editor in the pane is the person's: an agent reading what it shows is the point, an agent closing or steering it under the person is not. Agents edit the project on disk and run Godot headless. |
+| `editor_opened` (#316) | Rust, once per open, `{plugin}` through `telemetry::track` | Whether people use the editor with the plugin is the question the plugin's cost rests on. A4's `features/godot.ts` must declare the event for the shell to forward it. |
 | Embedded editors, Blender (#317) | Editor mode is the person's own Blender, started as `blender <file.blend> --python veistra_boot.py` and placed over the box as kind `blender`; nothing is installed or enabled in Blender, and the script does nothing without `VEISTRA_BLENDER_CHANNEL`. Owner decision 6 replaces `VEISTRA-UX-REWORK.md` §3.1's "never embedded"; agents still run Blender headless | An add-on enabled in the person's Blender would outlive Veistra and load in every Blender they open. `--python` runs once the file has loaded, in this Blender only. Not `--disable-autoexec`: it is the person's file, and their preference decides. |
 | Opening Blender (#317) | Only on a press, never on mount: Open in Blender in Editor mode, or Renders' Open in Blender, which now goes through `blender-viewer/editor-open`. Refused on main, while this cluster's Blender has another file, and while another cluster or another Blender holds the file | A cluster switch reloads every frame, and Blender is too heavy to start for a glance. Renders' button started the detached `blender-viewer/open`, which takes no lock, so the person could have had two Blenders on one file. |
 | Where Blender's window starts (#317) | No `-p`: Blender opens where it would, and the embedder places the window over the box when it appears | `-p` measures from the lower-left corner in Blender's own screen coordinates, which nothing here could check. To revisit if the first frame shows at Blender's default place on a real machine. |
@@ -375,6 +394,30 @@ From #318, unit-tested in Rust and jsdom; no WebView2, Godot or Blender ran:
 - The reason line and the environment chip against the board at 1440 and 1024 px wide.
 - A Blender export on main landing under app-local data, with a real Blender.
 
+From #316, unit-tested in Rust through fakes and in jsdom, the GDScript parsed and linted with
+`gdtoolkit` and its structure pinned in vitest, and type-checked for Windows; no WebView2, Win32
+window or Godot ran:
+
+- Spec test 10: Project Settings, and every other editor dialog, opens inside the box under
+  `--single-window`; Close posts `WM_CLOSE` and Godot's save prompt appears, and Cancel leaves the
+  editor open; with no window to post to, the plugin's close does the same.
+- Spec test 11: Send selection reaches the agent's prompt within 1 s of the press, with the node
+  paths, the camera and the viewport image, on a large 3D scene.
+- The editor placed on the box after a splitter drag, a maximise and a cluster switch; Pop out and
+  Dock; the editor still under a menu or the palette; the editor handed back as a normal window
+  when its pane closes and when Veistra exits.
+- Restart editor (Project, Reload Current Project, and the restart a changed setting asks for)
+  adopted into the same pane, on Windows, where a dead parent's id stays on its child.
+- The plugin on Godot 4.2, 4.3, 4.4 and 4.5: `hello.json`, `state.json`, the viewport and window
+  captures, `pick` on meshes, CSG and an instanced scene, `select`, `open`, Viewport only, Save all,
+  and the `.uid` file 4.4 writes being removed with the plugin. An older 4.x opening with the tools
+  disabled.
+- The minimum size override: a 600 × 400 pane holding the whole editor with the plugin, and how a
+  small pane looks without it.
+- The banner with a real agent tab and with Claude Code, Codex and Gemini in a terminal tab, on
+  this root and on another worktree's.
+- `godot:editor_opened` reaching PostHog, which needs A4's `features/godot.ts` to declare it.
+
 From #317, unit-tested in Rust through fakes (a fake Blender that writes the boot script's files,
 a fake window system) and in jsdom, `export.py` and `veistra_boot.py` run headless in `bpy` 5.0.1
 (`bpy_test.py`; `cargo test` runs it where `VEISTRA_TEST_BPY_PYTHON` names a Python with `bpy`,
@@ -480,6 +523,54 @@ From #311, not yet run in a real Veistra (unit-tested only):
   window-targeted listener only, and `godot:note_fixed` / `godot:note_resolved` reaching
   PostHog in a release build with a project key and consent on.
 
+## The Godot editor in the pane (#316)
+
+`godot/editor.rs`, `godot/plugin.rs` and `veistra_editor.gd`; the pane is
+`apps/godot-viewer/ui/src/editor/`. One editor per cluster, and one per project folder across
+clusters, since two editors on one folder write over each other's saves.
+
+**Opening.** The pane shows the project picker, the scene picker and Open the editor. The press
+sends `godot/editor-open {project}`, which starts
+`godot --editor --single-window --path <project> --windowed --resolution <pane> --position <pane on
+screen> -- --veistra-editor-dir=<channel>` with `VEISTRA_EDITOR_DIR` set to the same folder, and
+hands the window to the embedder as kind `godotEditor` for that pane (`embed/*` with
+`kind: "godotEditor"`). The pane polls `godot/editor-state` every 500 ms: the process, the embed
+report, what the plugin last wrote, and whether an agent works here. Refused on main, for a Godot 3
+project, and while another cluster's editor holds the project.
+
+**The bar.** Mode; the environment chip, the project picker (disabled while the editor runs) and
+the scene picker (which opens the scene in the editor, through the plugin); the state chip:
+Not open, Starting, Editing, Popped out, Own window, Closing; Viewport only, Mark up and Send
+selection; Pop out or Dock; Close. Every tool that needs the plugin is disabled without it and says
+why in its title, in words the backend gives (`plugin.why`).
+
+**The plugin** (`addons/veistra/plugin.cfg`, `addons/veistra/veistra_editor.gd`, one
+`[editor_plugins]` entry), opt-in behind a consent that lists what it adds, what it reports and
+takes, and that it uses no port. It is idle unless Veistra started the editor: no argument and no
+variable, no channel. It writes `hello.json` once and `state.json` whenever the edited scene, the
+open scenes, the selection or the main screen change; it answers `selection`, `capture`, `pick`,
+`select`, `open`, `viewport-only`, `save` and `close`. The Veistra dock, `events.jsonl` and
+`notes.json` are #320's and will sit beside these.
+
+**Mark up** captures the 3D viewport, hides the editor's window for as long as the still is up,
+and opens Play's markup tools over it. On Done each pin is resolved by `godot/editor-pick` at its
+point, so it carries the node path and world point the editor's own click would give; the markup
+JSON records the source with `engine: "godot"`, `view: "editor"` and the scene, and the editor
+camera. It is sent as Play's markup is.
+
+**Send selection** asks the plugin for the selection, the camera and the viewport in one answer
+and files them as two Context items, the text the agent reads and the image, then types both
+references into the agent's prompt in one `context/insert`. With nothing selected it sends
+nothing and says so.
+
+**The banner.** While an agent is working in this environment (`agent_activity.rs`), a line over
+the box says so and offers Save all, which asks the plugin to save every open scene; without the
+plugin its title says to press Ctrl S in Godot.
+
+**Closing.** Close asks Godot to close as its own close button does; the chip says Closing until
+the process ends, and the pane then says the editor closed, with the exit code when it was not 0.
+The pane closing or Veistra exiting hands the window back, still running.
+
 ## The Godot Viewer
 
 `scene.rs`. Refresh runs `godot --headless --path P -s dump_scene.gd -- --out F --scene S`,
@@ -498,7 +589,8 @@ appears briefly. The frame is cached beside the tree and stamped separately.
 ## Read-only main (#163)
 
 Running and viewing read the project, so they work on main. Writing does not:
-`godot/open-editor`, `blender-viewer/open`, `blender-viewer/editor-open`, `files/open-in-blender`,
+`godot/open-editor`, `godot/editor-open`, `godot/editor-save`, `godot/plugin-install`,
+`godot/plugin-remove`, `blender-viewer/open`, `blender-viewer/editor-open`, `files/open-in-blender`,
 `play/addon-install`, `play/addon-remove`, `play/send`, `comments/create` and `comments/verdict` are in
 `WRITE_METHODS` and are refused on main before a handler runs. The Godot viewer's cache and the
 Blender viewer's export cache go under the app-local data folder for main (Blender's keyed by

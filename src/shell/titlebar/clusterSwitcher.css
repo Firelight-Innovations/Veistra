@@ -1,16 +1,18 @@
 /*
  * The cluster switcher: the title bar's middle cell and the dropdown under it.
  *
- * The wrapper is the grid cell. It carries what `.projectpill` used to carry
- * for itself — centred on the window by the bar's equal outer tracks, and no
- * wider than a third of the bar — so the pill inside fills it and ellipsises.
+ * The wrapper is the pill's box in the title bar's middle group, which is the
+ * grid cell now and is what the bar centres (#336), with search beside it. The
+ * pill inside fills the wrapper and ellipsises. It used to be capped at a third
+ * of the bar; the group's own bound keeps it clear of both sides now, and
+ * search gives way first (`search.css`), so a cap would only cut a name short
+ * while there was still room for it.
  */
 
 .clusterswitch {
   position: relative;
-  justify-self: center;
+  flex: 0 1 auto;
   min-width: 0;
-  max-width: 34cqw;
   display: flex;
 }
 
