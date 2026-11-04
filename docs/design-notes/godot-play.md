@@ -92,12 +92,15 @@ frame while one covers the box: the recording's while a take records, else a Gra
 the window itself (`embed/capture.rs`, only where Windows can leave out its yellow border), else
 the capture addon's.
 
-**Takes** (`record.rs`, `takes.rs`, `session.rs`). Record is per project, per computer, off by
-default, and needs addon v2 and Windows. A take is `.veistra/takes/<utc minute>-<4 hex>/` with
-`take.mp4`, `telemetry.jsonl`, `log.jsonl`, `take.json` and `notes.json`; the last ten are kept,
-plus any with drafts, and `.git/info/exclude` keeps them out of git. On read-only main they go
-under the app's data instead. Time zero is the first video frame's wall-clock time; telemetry
-and the log carry wall time, so every lane lines up on one clock.
+**Takes** (`record.rs`, `encode.rs`, `takes.rs`, `session.rs`). Record is per project, per
+computer, off by default, and needs addon v2 and Windows; its settings are `{on, quality,
+keep}`. A take is `.veistra/takes/<utc minute>-<4 hex>/` with `take.mp4`, `telemetry.jsonl`,
+`log.jsonl`, `take.json` and `notes.json`; the last `keep` (ten) are kept, plus any with drafts,
+and `.git/info/exclude` keeps them out of git. On read-only main they go under the app's data
+instead. The video is H.264 with no audio, fitted inside 1280x720 at 30 fps with a keyframe a
+second. Time zero is the first video frame's wall-clock time; telemetry and the log carry wall
+time, so every lane lines up on one clock. Stop writes everything but the video at once, and
+the video follows as `take.mp4` once the encoder has closed it (#310).
 
 **Addon v2** (`veistra_capture.gd`) writes a tick ten times a second (scene, camera, player,
 the longest frame since the tick before, the viewport and the box the window shows it in, the
@@ -131,7 +134,7 @@ on the context server from an agent tab.
 | Tracked nodes | The design's default, with geometry for its "VisualInstance3D" | `veistra_track` when it has members, else bodies, plus the geometry and sprites not inside one, in view by their box's centre, nearest 64. VisualInstance3D also takes in lights, probes and decals; a body's own mesh tracked beside it could take a pin that should name the body; and a character's origin is at its feet, below a frame that shows the rest of it (#312). |
 | Video clip in the packet | Not built | The agent reads the contact sheet; the checkbox is shown disabled with why. |
 | Retention | Ten takes | Open decision 7. |
-| Video size | The window's, not 720p | `windows-capture` crops or pads, it does not scale. The bitrate is fixed at 3.5 Mbit/s, under 60 MB for two minutes. A D3D11 scaling pass is the follow-up. |
+| Video size | The window's, not 720p (replaced by #310's below) | `windows-capture` crops or pads, it does not scale. The bitrate is fixed at 3.5 Mbit/s, under 60 MB for two minutes. A D3D11 scaling pass is the follow-up. |
 | One embedder for the game, the Godot editor and Blender (#309) | `crate::embed`, a registry keyed by pane instance and kind; the game belongs to the Play pane that last sent `visible: true` | Keying by cluster or app id was rejected: a cluster can hold an editor and a game, Play can be open in two panes, and `play` becomes a mode of the Godot app (#313). The embed living inside Play's run gave the editors nothing to call. |
 | Which apps get window rects and overlays (#309) | A `places_window` capability on the registry entry: projects, play, godot-viewer, blender-viewer | The hard-coded `{projects, play}` lists in `ToolWindow.tsx` would have hidden the game once Play moves into `godot-viewer`. A plugin surface never gets it. |
 | Overlay signal (#309) | `veistra/overlays` with the overlays' rects, to frames; the `veistra:overlay-open/close` DOM events kept in the shell document | The spec's DOM events (§4.3.2) cannot reach a cross-origin frame, and a flag cannot tell a menu over the box from one across the window. Modal scrims and tab drop targets count, so a game in a pane the sheet does not reach steps aside too. |
@@ -150,6 +153,17 @@ on the context server from an agent tab.
 | Veistra's keys and the game (#312) | Handled in `_input` by the root's last child, with the key's repeats and release; an InputMap action bound to the key is released | `Window.window_input` was rejected: `push_input` resets the handled flag after it. Two leaks remain: a game polling `Input.is_key_pressed` or `is_action_just_pressed` sees the press in its frame, and a key pressed while the game's own embedded sub-window has focus goes to that window. Staying last means a game that takes the root's last child for its scene finds the addon; `current_scene` is unaffected. The demo's clock counts what reaches the game. |
 | Toolbar marks (#312) | Kept out of `telemetry.jsonl`; `take.json` `marks` merges them with F8's, and `play/state` counts F8's apart as `f8Marks` | The game is the only writer of its telemetry file, so no two writers interleave lines in it. `mark_dropped` (#314) needs F8's told apart. |
 | Demo game (#312) | `examples/godot-demo`: text scenes, no textures, no autoload line | The game the earlier runs used was a folder on one machine. Text scenes need no import, a test holds them to the names the checks use, and Enable capture adds the autoload as it would in any project. |
+| Video size (#310) | Fitted inside 1280x720 at 30 fps (or 1920x1080 at 60, the other quality), keeping the window's shape, never upscaled, even sides; set when the take starts, every frame stretched to it by the D3D11 video processor | Review maps a pin to the game's pixels by proportion, so black bars or a cropped corner, which a fixed size with padding gives a resized pane, would move every pin. Starting a new file on a resize was rejected: one take, one video. |
+| The encoder (#310) | Our own, adapted from `windows-capture` 2.0.1's `VideoEncoder` (MIT); its capture half is still the crate's | The crate's encoder makes the output the input's size and cannot set the keyframe interval. It also hands the capture pool's surface to the transcoder and queues without bound; ours copies into a ring of twelve textures and drops the newest frame past eight queued, counted as `dropped`. Hardware encoding is asked for; the transcoder falls back to software where there is none. |
+| A keyframe a second (#310) | Both keys an H.264 encoder reads (`MF_MT_MAX_KEYFRAME_SPACING`, `CODECAPI_AVEncMPVGOPSize`) on the profile, and `mp4.rs` reads the closed file's sync samples back | The WinRT transcoder has no setting of its own for it, and which key a given hardware encoder honours is only known on the machine. A gap over 1.1 s is logged, not failed: the take is still worth keeping. The reader also corrects `take.json`'s size if the encoder chose another. |
+| The frames' clock (#310) | Each frame's own capture time (QPC), put on the wall clock by how long ago it was | Its arrival time is later by the queue's length, so every mark and tick would sit that much early against the video. |
+| Record's settings (#310) | `{on, quality, keep}` per project (the cluster's project folder), on this computer; retention per environment; an environment switched on before keeps reading as on | Decision X9: all of a project's environments record alike. Keyed by environment, a new worktree started with Record off. |
+| `take.json` at Stop (#310) | Written while the encoder closes the video, which is recorded as `take.mp4.part` and renamed when closed | Closing an MP4 writes its index, a second or more for a long take; the review opens on `take.json`, which the spec wants within 1 s. A take listed without `take.mp4` is one still closing. |
+| A take's telemetry and log (#310) | Telemetry lines within the take, 200 ms either side, streamed; the log from a tap that keeps every line while a take records, up to 100,000 | Copying the run's whole telemetry gave a second take of one run the first's ticks. The run's log keeps a few thousand lines, so a chatty game lost the start of a long take and undercounted its errors. |
+| `godot` in `take.json` (#310) | The version number ("4.5.1"), with the full `--version` line as `godotBuild` | Decision X9; the spec's example has the number alone. |
+| Takes that never finished (#310) | A folder with no `take.json`, untouched for an hour, goes at the next retention pass | Veistra closing mid-take left folders the list never shows. A recording take writes its video continuously, so an hour untouched is never one in progress. |
+| `take_recorded` (#310) | Fired in Rust once `take.json` is written: `durationS`, `marks`, `errors`, `warnings`, `width`, `height`, `dropped` | Decision X1. No file size: the video is still closing at that point. |
+| `recordOnce` (#310) | `play/run` and `play/restart` take it; it records that run and leaves the setting alone | Decision X9, for Play <scene> and Still broken. |
 
 ### Not verified on a real machine
 
@@ -190,6 +204,20 @@ From #312, not yet run in a real Godot (gdparse, gdlint and Rust tests only):
 - Stop's `flush`: the take's telemetry runs to its last 100 ms.
 - With the addon removed, Play runs, Rec says why it is off, and nothing throws; an exported
   build with the addon writes nothing to the folder it is given.
+
+From #310, the take's timing and files tested through a fake capture; the encoder, the scaling
+pass and the frame clock type-checked for Windows only:
+
+- The ignored test `godot::record::sys::tests::record_a_window_to_a_720p_mp4_with_a_keyframe_a_second_and_no_audio`
+  (`cargo test -- --ignored record_a_window`), which records a real window for three seconds.
+- Spec test 3: a two-minute take of the demo at 720p30 is 60 MB or less, keyframes at most 1.1 s
+  apart (the log's `keyframes at most` line), no audio track, and plays in the review.
+- With a pane resized mid-take, the video keeps its size and framing and pins still land.
+- `take.json` within 1 s of Stop (the log's `take.json N ms after stop`), and `take.mp4` after.
+- An F8 mark within 100 ms of the frame it was pressed on, against the demo's clock.
+- A take whose machine has no hardware H.264 encoder (software fallback) keeps up at 30 fps;
+  `dropped` in `take_recorded` says how many it did not.
+- `godot:take_recorded` reaching PostHog.
 
 ## The Godot Viewer
 
