@@ -257,16 +257,43 @@ pub fn tick_stats(lines: &[Line], from: u64, to: u64) -> TickStats {
     }
 }
 
-/// Copy the run's telemetry into a take folder. A run that wrote none leaves
-/// an empty file, so a take always has the five files the design lists.
-pub fn copy_into(channel: &Path, take_dir: &Path) -> std::io::Result<()> {
-    let from = channel.join(FILE);
-    let to = take_dir.join(FILE);
-    if from.is_file() {
-        std::fs::copy(from, to).map(drop)
-    } else {
-        std::fs::write(to, "")
+/// Copy the lines of the run's telemetry stamped `from` to `to` (wall ms) into
+/// a take folder, and answer them parsed. Only the take's own: a run recorded
+/// twice, or switched to Record late, holds ticks from before the take, and a
+/// take that carried them showed a scene it never reached and counted ticks
+/// the take's rate never had. A line kept is copied as the game wrote it,
+/// fields this build does not read included. A run that wrote none leaves an
+/// empty file, so every take has its telemetry file.
+pub fn copy_window(
+    channel: &Path,
+    take_dir: &Path,
+    from: u64,
+    to: u64,
+) -> std::io::Result<Vec<Line>> {
+    use std::io::{BufRead, BufReader, BufWriter, Write};
+    #[derive(Deserialize)]
+    struct Stamp {
+        t: f64,
     }
+    let mut out = BufWriter::new(std::fs::File::create(take_dir.join(FILE))?);
+    let mut kept = Vec::new();
+    if let Ok(file) = std::fs::File::open(channel.join(FILE)) {
+        for line in BufReader::new(file).split(b'\n') {
+            let line = line?;
+            let Ok(stamp) = serde_json::from_slice::<Stamp>(&line) else {
+                continue;
+            };
+            let t = stamp.t.round();
+            if !(t >= from as f64 && t <= to as f64) {
+                continue;
+            }
+            out.write_all(&line)?;
+            out.write_all(b"\n")?;
+            kept.extend(parse_line(&String::from_utf8_lossy(&line)));
+        }
+    }
+    out.flush()?;
+    Ok(kept)
 }
 
 #[cfg(test)]
@@ -447,5 +474,62 @@ mod tests {
         );
         assert_eq!(worst_frame(&lines, 0, 2_000), Some((1_100, 41.0)));
         assert_eq!(worst_frame(&lines, 1_150, 2_000), Some((1_200, 17.0)));
+    }
+
+    #[test]
+    fn a_take_copies_only_its_own_lines_and_keeps_what_it_does_not_read() {
+        let dir = TempDir::new().unwrap();
+        let channel = dir.path().join("chan");
+        std::fs::create_dir_all(&channel).unwrap();
+        std::fs::write(
+            channel.join(FILE),
+            "{\"t\":1000,\"kind\":\"tick\",\"scene\":\"res://a.tscn\"}\n\
+             {\"t\":2000,\"kind\":\"mark\"}\n\
+             not json\n\
+             {\"t\":2500,\"kind\":\"future\",\"x\":1}\n\
+             {\"t\":5000,\"kind\":\"tick\",\"scene\":\"res://b.tscn\"}\n\
+             {\"t\":5100,\"kind\":\"mark\"}\n\
+             {\"t\":59",
+        )
+        .unwrap();
+        let first = dir.path().join("one");
+        let second = dir.path().join("two");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+
+        let kept = copy_window(&channel, &first, 900, 3_000).unwrap();
+        assert_eq!(
+            kept.len(),
+            2,
+            "the tick and the mark; the future kind is copied unread"
+        );
+        let text = std::fs::read_to_string(first.join(FILE)).unwrap();
+        assert_eq!(text.lines().count(), 3);
+        assert!(text.contains("\"future\""));
+        assert!(!text.contains("b.tscn"), "the next take's scene");
+
+        let kept = copy_window(&channel, &second, 4_800, 6_000).unwrap();
+        assert_eq!(
+            kept,
+            vec![
+                parse_line("{\"t\":5000,\"kind\":\"tick\",\"scene\":\"res://b.tscn\"}").unwrap(),
+                Line::Mark { t: 5_100 }
+            ]
+        );
+        assert_eq!(
+            std::fs::read_to_string(second.join(FILE))
+                .unwrap()
+                .lines()
+                .count(),
+            2,
+            "nor the half-written last line"
+        );
+
+        let none = dir.path().join("none");
+        std::fs::create_dir_all(&none).unwrap();
+        assert!(copy_window(&dir.path().join("missing"), &none, 0, 1)
+            .unwrap()
+            .is_empty());
+        assert_eq!(std::fs::read_to_string(none.join(FILE)).unwrap(), "");
     }
 }

@@ -564,6 +564,7 @@ mod tests {
                 commit: Some("8c41e07".into()),
             },
             godot: "4.5.1",
+            godot_build: "4.5.1.stable.official.f62fdbde1",
             started_at: started,
             ended_at: started + 151_400,
             video: VideoInfo::default(),

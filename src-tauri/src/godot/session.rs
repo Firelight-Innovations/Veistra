@@ -7,15 +7,24 @@
 //! comes first: Stop, Record being switched off, or the game exiting by
 //! itself. [`Session::finish_take`] is that once; every path calls it and only
 //! the first does anything.
+//!
+//! Finishing writes `take.json` while the encoder is still closing the video,
+//! and moves the video into place after: the review opens on the summary, and
+//! waiting for the MP4 first put a second or more between Stop and a take.
 
 use super::addon;
-use super::record::{self, Recorder};
-use super::runner::{now_ms, Run};
-use super::takes::{self, EnvInfo, VideoInfo};
+use super::encode::Quality;
+use super::mp4;
+use super::record::{self, Capture};
+use super::rpc::Usage;
+use super::runner::{now_ms, LogLine, Run, Tap};
+use super::takes::{self, EnvInfo, Summary, VideoInfo};
 use super::telemetry::{self, Line, Tail};
 use crate::embed::{Cause, Embed, State as EmbedState};
 use crate::sync::MutexExt;
 use serde::Serialize;
+use serde_json::json;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -28,6 +37,14 @@ const FLUSH_WAIT: Duration = Duration::from_millis(600);
 
 /// `Input.mouse_mode` while the game holds the mouse (`MOUSE_MODE_CAPTURED`).
 const MOUSE_CAPTURED: u8 = 2;
+
+/// Lines a take keeps of its own log, the oldest dropped first: an hour of a
+/// game printing thirty lines a second, where the run keeps a few thousand.
+const TAKE_LOG_CAP: usize = 100_000;
+
+/// The longest keyframe gap a take's video is let off with: a second (the
+/// GOP asked for) and some frames of slack.
+const KEYFRAME_GAP_MS: u64 = 1_100;
 
 /// Where a take is.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -60,15 +77,22 @@ pub enum TakeState {
 }
 
 /// What a take will be, decided when the run starts.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Plan {
     pub takes_dir: PathBuf,
     /// The environment, for `.git/info/exclude`; `None` on read-only main,
     /// whose takes live under the app's own data instead.
     pub env_root: Option<PathBuf>,
     pub project: String,
+    /// The version take.json names ("4.5.1"), and the line it came from.
     pub godot: String,
+    pub godot_build: String,
     pub environment: EnvInfo,
+    pub quality: Quality,
+    /// Takes kept in `takes_dir`.
+    pub keep: usize,
+    /// Where `take_recorded` is reported once take.json is written.
+    pub usage: Usage,
 }
 
 /// A key the addon handled for Veistra (F7, Ctrl Shift M), numbered so the
@@ -81,7 +105,7 @@ pub struct KeyEvent {
 }
 
 struct Active {
-    recorder: Recorder,
+    capture: Box<dyn Capture>,
     id: String,
     number: u32,
 }
@@ -104,6 +128,10 @@ pub struct Session {
     /// The mouse mode the last tick reported, `None` before the first tick
     /// and from an addon that does not report one.
     mouse: Mutex<Option<u8>>,
+    /// How a take starts recording: [`record::start`], or a fake in tests.
+    start_capture: record::Start,
+    /// The take's own log, kept by [`Self::log_tap`] while one records.
+    take_log: Mutex<Option<VecDeque<LogLine>>>,
 }
 
 impl Session {
@@ -138,7 +166,36 @@ impl Session {
             toolbar_marks: Mutex::new(Vec::new()),
             keys: Mutex::new(Vec::new()),
             mouse: Mutex::new(None),
+            start_capture: Arc::new(record::start),
+            take_log: Mutex::new(None),
         }
+    }
+
+    /// The same session recording through `start` instead of the screen.
+    #[cfg(test)]
+    pub fn with_capture(mut self, start: record::Start) -> Self {
+        self.start_capture = start;
+        self
+    }
+
+    /// A tap for the run's log ([`Run::set_tap`]) that keeps every line while
+    /// a take records, so a game that prints more than the run keeps still
+    /// has the whole take in `log.jsonl` and its counts. Weak: the run
+    /// holding it outlives the session's registration.
+    pub fn log_tap(self: &Arc<Self>) -> Tap {
+        let session = Arc::downgrade(self);
+        Box::new(move |line: &LogLine| {
+            let Some(s) = session.upgrade() else {
+                return;
+            };
+            let mut log = s.take_log.lock_or_panic();
+            if let Some(log) = log.as_mut() {
+                if log.len() >= TAKE_LOG_CAP {
+                    log.pop_front();
+                }
+                log.push_back(line.clone());
+            }
+        })
     }
 
     pub fn take_state(&self) -> TakeState {
@@ -186,21 +243,22 @@ impl Session {
         let dir = plan.takes_dir.join(&id);
         let result = std::fs::create_dir_all(&dir)
             .map_err(|e| format!("could not create {}: {e}", dir.display()))
-            .and_then(|()| Recorder::start(hwnd, &dir.join(takes::VIDEO)));
+            .and_then(|()| (self.start_capture)(hwnd, &dir.join(takes::VIDEO_PART), &plan.quality));
         match result {
-            Ok(recorder) => {
+            Ok(capture) => {
                 if let Some(root) = &plan.env_root {
                     if let Err(e) = takes::ensure_excluded(root) {
                         crate::veistra_log!("play: could not keep takes out of git: {e}");
                     }
                 }
+                *self.take_log.lock_or_panic() = Some(VecDeque::new());
                 *self.take.lock_or_panic() = TakeState::Recording {
                     id: id.clone(),
                     number,
                     started_at: None,
                 };
                 *active = Some(Active {
-                    recorder,
+                    capture,
                     id,
                     number,
                 });
@@ -229,61 +287,110 @@ impl Session {
         let Some(plan) = self.plan.lock_or_panic().take() else {
             return;
         };
+        let (id, number) = (active.id.clone(), active.number);
         *self.take.lock_or_panic() = TakeState::Saving {
-            id: active.id.clone(),
-            number: active.number,
+            id: id.clone(),
+            number,
         };
+        let state = self.save(run, &plan, active);
+        *self.take.lock_or_panic() = state;
+    }
+
+    /// Stop `active` and write it as a take: everything but the video first,
+    /// then the video once the encoder has closed it.
+    fn save(&self, run: &Run, plan: &Plan, active: Active) -> TakeState {
         let ended = now_ms();
         let dir = plan.takes_dir.join(&active.id);
-        let stopped = active.recorder.stop();
-        let state = match stopped {
-            Ok(stopped) => match stopped.first_frame_ms {
-                Some(first) => {
-                    self.flush_telemetry(run);
-                    self.poll();
-                    let marks = self.take_marks();
-                    let log = run.log_since(0).lines;
-                    let summary = takes::finish(&takes::Finish {
-                        dir: &dir,
-                        id: &active.id,
-                        number: active.number,
-                        project: &plan.project,
-                        environment: plan.environment.clone(),
-                        godot: &plan.godot,
-                        started_at: first,
-                        ended_at: ended.max(first),
-                        video: VideoInfo {
-                            width: stopped.width,
-                            height: stopped.height,
-                            fps: record::FPS,
-                        },
-                        channel: self.channel.as_deref(),
-                        log: &log,
-                        marks: &marks,
-                    });
-                    match summary {
-                        Ok(_) => {
-                            takes::retain(&plan.takes_dir, takes::KEEP);
-                            TakeState::Saved {
-                                id: active.id,
-                                number: active.number,
-                            }
-                        }
-                        Err(e) => TakeState::Failed {
-                            reason: format!("could not write the take: {e}"),
-                        },
-                    }
-                }
-                None => {
-                    let _ = std::fs::remove_dir_all(&dir);
-                    TakeState::Failed {
-                        reason: "No frames were recorded, so there is no take.".into(),
-                    }
-                }
-            },
-            Err(reason) => TakeState::Failed { reason },
+        let own_log = self.take_log.lock_or_panic().take();
+        let halted = match active.capture.halt() {
+            Ok(halted) => halted,
+            Err(reason) => {
+                let _ = std::fs::remove_dir_all(&dir);
+                return TakeState::Failed { reason };
+            }
         };
-        *self.take.lock_or_panic() = state;
+        let stopped = halted.stopped;
+        let Some(first) = stopped.first_frame_ms else {
+            let _ = (halted.finish)();
+            let _ = std::fs::remove_dir_all(&dir);
+            return TakeState::Failed {
+                reason: "No frames were recorded, so there is no take.".into(),
+            };
+        };
+        let closing = std::thread::spawn(halted.finish);
+        self.flush_telemetry(run);
+        self.poll();
+        let marks = self.take_marks();
+        let log: Vec<LogLine> = match own_log {
+            Some(lines) if !lines.is_empty() => lines.into(),
+            _ => run.log_since(0).lines,
+        };
+        let written = takes::finish(&takes::Finish {
+            dir: &dir,
+            id: &active.id,
+            number: active.number,
+            project: &plan.project,
+            environment: plan.environment.clone(),
+            godot: &plan.godot,
+            godot_build: &plan.godot_build,
+            started_at: first,
+            ended_at: ended.max(first),
+            video: VideoInfo {
+                width: stopped.width,
+                height: stopped.height,
+                fps: plan.quality.fps,
+            },
+            channel: self.channel.as_deref(),
+            log: &log,
+            marks: &marks,
+        });
+        let summary = match written {
+            Ok(summary) => summary,
+            Err(e) => {
+                let _ = closing.join();
+                return TakeState::Failed {
+                    reason: format!("could not write the take: {e}"),
+                };
+            }
+        };
+        let id = &active.id;
+        crate::veistra_log!(
+            "play: take {id}: take.json {} ms after stop",
+            now_ms().saturating_sub(ended)
+        );
+        (plan.usage)(
+            "take_recorded",
+            json!({
+                "durationS": summary.duration_ms.saturating_add(500) / 1000,
+                "marks": summary.marks.len(),
+                "errors": summary.counts.errors,
+                "warnings": summary.counts.warnings,
+                "width": stopped.width,
+                "height": stopped.height,
+                "dropped": stopped.dropped,
+            }),
+        );
+        let video = closing
+            .join()
+            .unwrap_or_else(|_| Err("the encoder thread panicked".into()))
+            .and_then(|()| place_video(&dir));
+        crate::veistra_log!(
+            "play: take {id}: video closed {} ms after stop",
+            now_ms().saturating_sub(ended)
+        );
+        if video.is_ok() {
+            check_video(&dir, &summary);
+        }
+        takes::retain(&plan.takes_dir, plan.keep.max(1));
+        match video {
+            Ok(()) => TakeState::Saved {
+                id: active.id,
+                number: active.number,
+            },
+            Err(e) => TakeState::Failed {
+                reason: format!("The take was saved without its video: {e}"),
+            },
+        }
     }
 
     /// Have the game write out the ticks it holds before the take copies its
@@ -306,7 +413,7 @@ impl Session {
         self.active
             .lock_or_panic()
             .as_ref()
-            .and_then(|a| a.recorder.still_png())
+            .and_then(|a| a.capture.still_png())
     }
 
     /// Wall time zero for the live strip: the take's first frame while
@@ -315,7 +422,7 @@ impl Session {
         let active = self.active.lock_or_panic();
         active
             .as_ref()
-            .and_then(|a| a.recorder.first_frame_ms())
+            .and_then(|a| a.capture.first_frame_ms())
             .unwrap_or(run_started)
     }
 
@@ -325,7 +432,7 @@ impl Session {
             .active
             .lock_or_panic()
             .as_ref()
-            .and_then(|a| a.recorder.first_frame_ms());
+            .and_then(|a| a.capture.first_frame_ms());
         if let TakeState::Recording { started_at, .. } = &mut *self.take.lock_or_panic() {
             *started_at = first;
         }
@@ -397,6 +504,66 @@ impl Session {
                 Line::Tick(tick) => *self.mouse.lock_or_panic() = tick.mouse,
                 Line::Scene { .. } => {}
             }
+        }
+    }
+}
+
+/// Move the closed video to `take.mp4`. A virus scanner or the indexer can
+/// hold a file the moment it is closed, so a refusal is tried a few times.
+fn place_video(dir: &Path) -> Result<(), String> {
+    let (from, to) = (dir.join(takes::VIDEO_PART), dir.join(takes::VIDEO));
+    let mut last = None;
+    for attempt in 0..5 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        match std::fs::rename(&from, &to) {
+            Ok(()) => return Ok(()),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(format!(
+        "could not move {} into place: {}",
+        takes::VIDEO_PART,
+        last.map_or_else(String::new, |e| e.to_string())
+    ))
+}
+
+/// Read the closed video back and say whether it is what was asked for: a
+/// keyframe a second, no sound. The size take.json names is the file's own
+/// from here on, since review maps pins by it.
+fn check_video(dir: &Path, summary: &Summary) {
+    let id = &summary.id;
+    let info = match mp4::read(&dir.join(takes::VIDEO)) {
+        Ok(info) => info,
+        Err(e) => {
+            crate::veistra_log!("play: take {id}: could not read take.mp4 back: {e}");
+            return;
+        }
+    };
+    crate::veistra_log!(
+        "play: take {id}: {}x{}, {} frames in {} ms, keyframes at most {} ms apart{}",
+        info.width,
+        info.height,
+        info.frames,
+        info.duration_ms,
+        info.max_keyframe_gap_ms,
+        if info.has_audio { ", with sound" } else { "" }
+    );
+    if info.max_keyframe_gap_ms > KEYFRAME_GAP_MS {
+        crate::veistra_log!(
+            "play: take {id}: the encoder ignored the keyframe interval; seeking will be slow"
+        );
+    }
+    let size = (info.width, info.height);
+    if size.0 > 0 && size != (summary.video.width, summary.video.height) {
+        let video = VideoInfo {
+            width: size.0,
+            height: size.1,
+            fps: summary.video.fps,
+        };
+        if let Err(e) = takes::set_video(dir, video) {
+            crate::veistra_log!("play: take {id}: {e}");
         }
     }
 }
@@ -523,16 +690,107 @@ pub fn env_info(root: &Path) -> EnvInfo {
 
 #[cfg(test)]
 mod tests {
+    use super::super::record::{Halted, Stopped};
+    use super::super::runner::{Level, RunSpec, Runner};
     use super::*;
+    use crate::embed::{Kind, Owner};
+    use serde_json::Value;
+    use std::time::Instant;
     use tempfile::TempDir;
 
+    type Reported = Arc<Mutex<Vec<(&'static str, Value)>>>;
+
     fn plan(dir: &Path) -> Plan {
-        Plan {
+        plan_reporting(dir).0
+    }
+
+    fn plan_reporting(dir: &Path) -> (Plan, Reported) {
+        let reported: Reported = Arc::default();
+        let sink = reported.clone();
+        let plan = Plan {
             takes_dir: dir.join("takes"),
             env_root: None,
             project: ".".into(),
             godot: "4.5.1".into(),
+            godot_build: "4.5.1.stable.official.f62fdbde1".into(),
             environment: EnvInfo::default(),
+            quality: Quality::DEFAULT,
+            keep: 10,
+            usage: Arc::new(move |event, props| sink.lock_or_panic().push((event, props))),
+        };
+        (plan, reported)
+    }
+
+    /// A recording that writes its partial file at once, says its first
+    /// frame landed at `first`, and takes `closing` to close the video.
+    fn fake_capture(first: Option<u64>, closing: Duration) -> record::Start {
+        struct Fake(Option<u64>, Duration);
+        impl Capture for Fake {
+            fn first_frame_ms(&self) -> Option<u64> {
+                self.0
+            }
+            fn still_png(&self) -> Option<Vec<u8>> {
+                None
+            }
+            fn halt(self: Box<Self>) -> Result<Halted, String> {
+                let closing = self.1;
+                Ok(Halted {
+                    stopped: Stopped {
+                        first_frame_ms: self.0,
+                        frames: 90,
+                        dropped: 2,
+                        width: 1280,
+                        height: 720,
+                    },
+                    finish: Box::new(move || {
+                        std::thread::sleep(closing);
+                        Ok(())
+                    }),
+                })
+            }
+        }
+        Arc::new(move |_hwnd, path: &Path, _quality: &Quality| {
+            std::fs::write(path, b"video").map_err(|e| e.to_string())?;
+            Ok(Box::new(Fake(first, closing)) as Box<dyn Capture>)
+        })
+    }
+
+    /// The game's window, in the pane.
+    fn embedded() -> Arc<Embed> {
+        let win = Arc::new(crate::embed::tests::Fake::finding_after(0));
+        let embed = Arc::new(Embed::with(win, Kind::Game));
+        let owner = Owner {
+            hwnd: 1,
+            origin: (0, 0),
+            scale: 1.0,
+        };
+        embed.attach(None, &Vec::new, &|| Some(owner), &|| true);
+        assert_eq!(embed.state(), EmbedState::Embedded);
+        embed
+    }
+
+    fn exited_run(dir: &Path) -> (Runner, Arc<Run>) {
+        let game = dir.join("game");
+        std::fs::create_dir_all(&game).unwrap();
+        let runner = Runner::default();
+        let spec = RunSpec {
+            program: super::super::testing::fake_godot(dir, false),
+            project: game,
+            scene: None,
+            channel: None,
+            window: None,
+        };
+        let run = runner.start("c1", spec).unwrap();
+        (runner, run)
+    }
+
+    fn log_line(text: &str, level: Level) -> LogLine {
+        LogLine {
+            seq: 0,
+            stream: "stdout",
+            level,
+            text: text.into(),
+            at: now_ms(),
         }
     }
 
@@ -599,6 +857,7 @@ mod tests {
             project: ".",
             environment: EnvInfo::default(),
             godot: "4.5.1",
+            godot_build: "4.5.1.stable.official.f62fdbde1",
             started_at: started,
             ended_at: toolbar + 1_000,
             video: VideoInfo::default(),
@@ -699,24 +958,120 @@ mod tests {
         assert_eq!(descendants(10, &procs), vec![10, 11, 12]);
     }
 
+    /// The review opens on take.json, so it is written while the encoder is
+    /// still closing the video, and the video is moved in once it is closed.
+    #[test]
+    fn a_take_is_written_within_a_second_of_stop_and_its_video_follows() {
+        let dir = TempDir::new().unwrap();
+        let (_runner, run) = exited_run(dir.path());
+        let (plan, reported) = plan_reporting(dir.path());
+        let takes_dir = plan.takes_dir.clone();
+        let session = Session::with_embed(run.id, None, Some(plan), embedded());
+        let s = Arc::new(
+            session.with_capture(fake_capture(Some(now_ms()), Duration::from_millis(1_500))),
+        );
+        let mut tap = s.log_tap();
+        tap(&log_line("before the take", Level::Error));
+        s.begin_take(7);
+        let TakeState::Recording { id, number: 1, .. } = s.take_state() else {
+            panic!("recording: {:?}", s.take_state());
+        };
+        tap(&log_line("ERROR: in the take", Level::Error));
+        tap(&log_line("WARNING: also", Level::Warning));
+        let take = takes_dir.join(&id);
+        let stop = Instant::now();
+        let seen = std::thread::scope(|scope| {
+            let watch = scope.spawn(|| {
+                while stop.elapsed() < Duration::from_secs(5) {
+                    if take.join(takes::SUMMARY).exists() {
+                        return Some((
+                            stop.elapsed(),
+                            s.take_state(),
+                            take.join(takes::VIDEO).exists(),
+                        ));
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                None
+            });
+            s.finish_take(&run);
+            watch.join().unwrap()
+        });
+        let (after, state, had_video) = seen.expect("take.json is written");
+        assert!(
+            after < Duration::from_secs(1),
+            "take.json {after:?} after stop"
+        );
+        assert!(matches!(state, TakeState::Saving { .. }), "{state:?}");
+        assert!(!had_video, "the video is moved in once closed");
+        assert!(stop.elapsed() >= Duration::from_millis(1_500));
+        assert_eq!(s.take_state(), TakeState::Saved { id, number: 1 });
+        assert!(take.join(takes::VIDEO).exists());
+        assert!(!take.join(takes::VIDEO_PART).exists());
+
+        let summary: Value =
+            serde_json::from_str(&std::fs::read_to_string(take.join(takes::SUMMARY)).unwrap())
+                .unwrap();
+        assert_eq!(summary["video"]["width"], 1280);
+        assert_eq!(summary["godotBuild"], "4.5.1.stable.official.f62fdbde1");
+        let log = std::fs::read_to_string(take.join(takes::LOG)).unwrap();
+        assert_eq!(log.lines().count(), 2, "only the take's own lines: {log}");
+
+        s.finish_take(&run);
+        let reported = reported.lock_or_panic().clone();
+        assert_eq!(reported.len(), 1, "reported once: {reported:?}");
+        let (event, props) = &reported[0];
+        assert_eq!(*event, "take_recorded");
+        assert_eq!(props["errors"], 1);
+        assert_eq!(props["warnings"], 1);
+        assert_eq!(props["dropped"], 2);
+        assert_eq!(props["height"], 720);
+        tap(&log_line("after the take", Level::Info));
+        assert!(
+            s.take_log.lock_or_panic().is_none(),
+            "kept only while recording"
+        );
+    }
+
+    #[test]
+    fn a_take_with_no_frames_leaves_nothing_behind_and_is_not_reported() {
+        let dir = TempDir::new().unwrap();
+        let (_runner, run) = exited_run(dir.path());
+        let (plan, reported) = plan_reporting(dir.path());
+        let takes_dir = plan.takes_dir.clone();
+        let s = Session::with_embed(run.id, None, Some(plan), embedded())
+            .with_capture(fake_capture(None, Duration::ZERO));
+        s.begin_take(7);
+        assert!(matches!(s.take_state(), TakeState::Recording { .. }));
+        s.finish_take(&run);
+        let TakeState::Failed { reason } = s.take_state() else {
+            panic!("{:?}", s.take_state());
+        };
+        assert!(reason.contains("No frames"), "{reason}");
+        assert_eq!(std::fs::read_dir(&takes_dir).unwrap().count(), 0);
+        assert!(reported.lock_or_panic().is_empty());
+    }
+
+    #[test]
+    fn a_take_s_log_keeps_its_newest_lines_up_to_the_cap() {
+        let dir = TempDir::new().unwrap();
+        let s = Arc::new(Session::new(1, None, Some(plan(dir.path()))));
+        let mut tap = s.log_tap();
+        *s.take_log.lock_or_panic() = Some(VecDeque::new());
+        for n in 0..TAKE_LOG_CAP + 3 {
+            tap(&log_line(&n.to_string(), Level::Info));
+        }
+        let log = s.take_log.lock_or_panic().take().unwrap();
+        assert_eq!(log.len(), TAKE_LOG_CAP);
+        assert_eq!(log.front().unwrap().text, "3");
+        drop(s);
+        tap(&log_line("the session is gone", Level::Info));
+    }
+
     #[test]
     fn a_take_that_never_began_finishes_as_off_and_drops_its_plan() {
         let dir = TempDir::new().unwrap();
-        let game = dir.path().join("game");
-        std::fs::create_dir_all(&game).unwrap();
-        let runner = super::super::runner::Runner::default();
-        let run = runner
-            .start(
-                "c1",
-                super::super::runner::RunSpec {
-                    program: super::super::testing::fake_godot(dir.path(), false),
-                    project: game,
-                    scene: None,
-                    channel: None,
-                    window: None,
-                },
-            )
-            .unwrap();
+        let (_runner, run) = exited_run(dir.path());
         let s = Session::new(run.id, None, Some(plan(dir.path())));
         s.finish_take(&run);
         assert_eq!(s.take_state(), TakeState::Off);
@@ -731,7 +1086,6 @@ mod tests {
 
     #[test]
     fn finishing_asks_a_live_game_to_flush_and_leaves_an_exited_one_alone() {
-        use super::super::runner::{RunSpec, Runner};
         let dir = TempDir::new().unwrap();
         let channel = dir.path().join("chan");
         let game = dir.path().join("game");
