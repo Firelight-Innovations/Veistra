@@ -222,6 +222,7 @@ mod tests {
             Draft {
                 anchor: Anchor::Node {
                     path: "Hallway".into(),
+                    scene: None,
                 },
                 body: "not a play note".into(),
                 screenshot_png: None,

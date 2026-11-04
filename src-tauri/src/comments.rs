@@ -41,7 +41,13 @@ use veistra_rpc::{RpcError, INTERNAL_ERROR, INVALID_PARAMS};
 pub enum Anchor {
     /// The Godot viewer: a node's path in the scene tree, e.g.
     /// `"Player/Flashlight"`.
-    Node { path: String },
+    Node {
+        path: String,
+        /// The `res://` scene it was written on, so the editor's dock shows
+        /// it there only (#320). Notes from before it existed have none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scene: Option<String>,
+    },
     /// The Blender viewer: a mesh part and the material selected on it.
     /// `blend` (environment-relative) and `version`, the export that was
     /// newest when the note was written, are how Compare finds the notes
@@ -530,6 +536,29 @@ pub fn start(context: &CallContext, id: &str) -> Result<Comment, RpcError> {
     })
 }
 
+/// [`verdict`], refused when the comment is no longer `expect`. The editors'
+/// Veistra tab (#320) answers the note as it last showed it, and an agent may
+/// have opened it again since; a second Still broken, or a Looks good on work
+/// not yet done, would be the person answering something they never saw.
+pub fn verdict_expecting(
+    context: &CallContext,
+    id: &str,
+    answer: Verdict,
+    reply: Option<String>,
+    expect: Option<Status>,
+) -> Result<Comment, RpcError> {
+    if let Some(want) = expect {
+        let now = get(context, id)?.status;
+        if now != want {
+            return Err(RpcError::new(
+                INVALID_PARAMS,
+                format!("comment `{id}` is now {}", now.name()),
+            ));
+        }
+    }
+    verdict(context, id, answer, reply)
+}
+
 /// The person's answer to a fixed comment. Looks good resolves it. Still
 /// broken opens it again: the agent's fix note moves into the thread, so the
 /// next attempt sees what was tried, and the person's reply follows it.
@@ -721,11 +750,20 @@ struct VerdictParams {
     verdict: Verdict,
     #[serde(default)]
     reply: Option<String>,
+    /// The status the caller showed, when it answers a note it read earlier.
+    #[serde(default)]
+    expect: Option<Status>,
 }
 
 fn verdict_from_params(context: &CallContext, params: Option<&Value>) -> Result<Comment, RpcError> {
     let params: VerdictParams = parse_params(params)?;
-    verdict(context, &params.id, params.verdict, params.reply)
+    verdict_expecting(
+        context,
+        &params.id,
+        params.verdict,
+        params.reply,
+        params.expect,
+    )
 }
 
 fn parse_params<T: serde::de::DeserializeOwned>(params: Option<&Value>) -> Result<T, RpcError> {
@@ -864,6 +902,7 @@ mod tests {
         Draft {
             anchor: Anchor::Node {
                 path: "Player/Flashlight".to_string(),
+                scene: None,
             },
             body: body.to_string(),
             screenshot_png: None,
@@ -898,7 +937,8 @@ mod tests {
         assert_eq!(
             comment.anchor,
             Anchor::Node {
-                path: "Player/Flashlight".to_string()
+                path: "Player/Flashlight".to_string(),
+                scene: None,
             }
         );
 
@@ -1423,7 +1463,8 @@ mod tests {
         }
         assert_eq!(
             serde_json::to_value(Anchor::Node {
-                path: "A/B".to_string()
+                path: "A/B".to_string(),
+                scene: None,
             })
             .ok()
             .and_then(|v| v.get("kind").cloned()),
@@ -1593,5 +1634,65 @@ mod tests {
             made.windows(2).all(|w| w[0] < w[1]),
             "ids sort like creation"
         );
+    }
+
+    #[test]
+    fn a_verdict_that_expected_fixed_is_refused_once_the_note_is_open_again() {
+        use serde_json::json;
+
+        let env = TempDir::new().expect("tempdir");
+        let ctx = context(env.path());
+        let id = create(&ctx, node_draft("the door sticks"))
+            .expect("create")
+            .id;
+        resolve_with_commit(&ctx, &id, "eased it".into(), None, Author::Agent).expect("fix");
+        verdict(&ctx, &id, Verdict::Broken, Some("still sticks".into())).expect("broken");
+        let before = get(&ctx, &id).expect("get");
+
+        // A dock that still showed it as fixed answers it again.
+        let params = json!({ "id": id, "verdict": "broken", "reply": "x", "expect": "fixed" });
+        let err = call(&ctx, "comments/verdict", Some(&params))
+            .expect("claimed")
+            .expect_err("stale");
+        assert_eq!(err.code, INVALID_PARAMS);
+        assert!(err.message.contains("is now open"), "{}", err.message);
+        assert_eq!(get(&ctx, &id).expect("get"), before, "nothing changed");
+
+        // Fixed again, the same answer goes through; with no expect, as the
+        // cards send it, the old rules alone apply.
+        resolve_with_commit(&ctx, &id, "eased it more".into(), None, Author::Agent).expect("fix");
+        let good = json!({ "id": id, "verdict": "good", "expect": "fixed" });
+        let done = call(&ctx, "comments/verdict", Some(&good))
+            .expect("claimed")
+            .expect("resolved");
+        assert_eq!(done["status"], "resolved");
+    }
+
+    #[test]
+    fn a_node_note_keeps_its_scene_and_an_old_one_without_it_still_reads() {
+        use serde_json::json;
+
+        let env = TempDir::new().expect("tempdir");
+        let params = json!({
+            "anchor": { "kind": "node", "path": "Hallway/Enemy_02",
+                        "scene": "res://levels/hallway.tscn" },
+            "body": "floats",
+        });
+        let made = call(&context(env.path()), "comments/create", Some(&params))
+            .expect("claimed")
+            .expect("created");
+        assert_eq!(made["anchor"]["scene"], "res://levels/hallway.tscn");
+
+        let old: Anchor = serde_json::from_value(json!({ "kind": "node", "path": "A/B" }))
+            .expect("an old node anchor still reads");
+        assert_eq!(
+            old,
+            Anchor::Node {
+                path: "A/B".into(),
+                scene: None,
+            }
+        );
+        let written = serde_json::to_value(&old).expect("serialize");
+        assert!(written.get("scene").is_none(), "no scene is invented");
     }
 }

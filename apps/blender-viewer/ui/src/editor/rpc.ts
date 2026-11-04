@@ -6,6 +6,7 @@
  * `embed/*` (`apps/shared/nativeWindow.ts`), keyed by this pane and `blender`.
  */
 import { invoke } from "@veistra/bridge";
+import type { EditorEvent } from "../../../../shared/editorEvents";
 import type { EmbedState } from "../../../../shared/nativeWindow";
 
 /** An object selected in Blender, as `bpy` names it: `MESH`, `EMPTY`, `LIGHT`... */
@@ -78,6 +79,8 @@ export interface BlenderEditorInfo {
   /** A file it opened that another Blender holds, so it holds no lock on it. */
   conflict: string | null;
   view: BlenderView | null;
+  /** Presses in Blender's Veistra tab after `eventsSince` not yet answered (#320). */
+  events?: EditorEvent[];
 }
 
 export interface BlenderEditorState {
@@ -109,7 +112,13 @@ export interface ViewportHit {
 export const openEditor = (blend: string) =>
   invoke<BlenderEditorState>("blender-viewer/editor-open", { blend });
 
-export const editorState = () => invoke<BlenderEditorState>("blender-viewer/editor-state", {});
+/** The poll; `eventsSince` is the last tab event the pane has taken. */
+export const editorState = (eventsSince = 0) =>
+  invoke<BlenderEditorState>("blender-viewer/editor-state", { eventsSince });
+
+/** The pane's answer to tab event `n`, which the tab then shows. */
+export const editorAck = (n: number, ok: boolean, message: string) =>
+  invoke<{ acked: number }>("blender-viewer/editor-ack", { n, ok, message });
 
 /** Asks, as the window's close button would: Blender offers to save first. */
 export const closeEditor = () =>

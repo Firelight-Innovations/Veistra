@@ -18,7 +18,9 @@ import shutil
 import struct
 import sys
 import tempfile
+import types
 import unittest
+import zlib
 
 try:
     import bpy
@@ -127,7 +129,9 @@ class ExportScript(unittest.TestCase):
         self.assertNotIn("veistra_wire_paper", bpy.data.worlds)
 
 
-class BootScript(unittest.TestCase):
+class Booted(unittest.TestCase):
+    """The bed file open and the boot script loaded, not yet registered."""
+
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="veistra-boot-")
         blend = os.path.join(self.dir, "bed.blend")
@@ -154,10 +158,12 @@ class BootScript(unittest.TestCase):
         self.boot["tick"]()
         return self.read("res-%d.json" % cmd["id"])
 
+
+class BootScript(Booted):
     def test_register_says_hello_and_installs_nothing(self):
         self.assertTrue(self.boot["register"]())
         hello = self.read("hello.json")
-        self.assertEqual(hello["version"], 1)
+        self.assertEqual(hello["version"], 2)
         self.assertEqual(hello["pid"], os.getpid())
         self.assertTrue(bpy.app.timers.is_registered(self.boot["tick"]))
         self.assertEqual(sorted(bpy.context.preferences.addons.keys()), self.addons)
@@ -201,6 +207,198 @@ class BootScript(unittest.TestCase):
         headless = self.send({"id": 5, "action": "capture"})
         self.assertFalse(headless["ok"])
         self.assertTrue(headless["error"])
+
+
+class Layout:
+    """Enough of a UILayout to record what a panel's draw puts in it."""
+
+    def __init__(self, log):
+        self.log = log
+        self.enabled = True
+
+    def label(self, text="", **_kw):
+        self.log.append(("label", text))
+
+    def prop(self, _data, name, **_kw):
+        self.log.append(("prop", name))
+
+    def operator(self, idname, text="", **_kw):
+        op = types.SimpleNamespace()
+        self.log.append(("op", idname, text, op, self))
+        return op
+
+    def box(self):
+        return self
+
+    def row(self, **_kw):
+        return Layout(self.log)
+
+    def separator(self, **_kw):
+        pass
+
+
+NOTES = {
+    "version": 1, "rev": 3, "problem": None, "acks": [],
+    "notes": [
+        {"kind": "mesh", "part": "Frame", "material": "Oak", "title": "Oak",
+         "id": "0190000000aa-0001", "status": "fixed", "label": "Fixed, check it",
+         "body": "The headboard is too tall", "fix": {"by": "agent", "note": "Lowered it"},
+         "replies": [{"by": "agent", "body": "Taken 10 cm off"}]},
+        {"kind": "mesh", "part": "Pillow", "material": "none", "title": "none",
+         "id": "0190000000aa-0002", "status": "open", "label": "Sent",
+         "body": "Too round", "fix": None, "replies": []},
+    ],
+}
+
+
+class VeistraTab(Booted):
+    """The N-panel tab (#320): registered with the script, drawn from
+    notes.json, and its three buttons each append one line Veistra reads."""
+
+    def setUp(self):
+        super().setUp()
+        self.assertTrue(self.boot["register"]())
+        self.wm = bpy.context.window_manager
+
+    def write_notes(self, notes):
+        tmp = os.path.join(self.dir, "notes.json.tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(notes, fh)
+        os.replace(tmp, os.path.join(self.dir, "notes.json"))
+        self.boot["tick"]()
+
+    def events(self):
+        path = os.path.join(self.dir, "events.jsonl")
+        if not os.path.exists(path):
+            return []
+        with open(path, encoding="utf-8") as fh:
+            return [json.loads(line) for line in fh if line.strip()]
+
+    def draw(self, names):
+        log = []
+        panel = types.SimpleNamespace(layout=Layout(log))
+        objects = [bpy.data.objects[n] for n in names]
+        context = types.SimpleNamespace(
+            window_manager=self.wm, selected_objects=objects,
+            region=types.SimpleNamespace(width=300))
+        self.boot["VEISTRA_PT_notes"].draw(panel, context)
+        return log
+
+    def labels(self, log):
+        return [entry[1] for entry in log if entry[0] == "label"]
+
+    def test_the_tab_is_in_the_3d_views_sidebar_and_goes_with_unregister(self):
+        panel = self.boot["VEISTRA_PT_notes"]
+        self.assertEqual((panel.bl_space_type, panel.bl_region_type, panel.bl_category),
+                         ("VIEW_3D", "UI", "Veistra"))
+        self.assertTrue(panel.is_registered)
+        for op in ("verdict", "ask", "markup"):
+            self.assertTrue(hasattr(bpy.ops.veistra, op))
+            # No undo step: a press is not an edit of the file.
+            self.assertNotIn("UNDO", self.boot["VEISTRA_OT_" + op].bl_options)
+        self.assertTrue(hasattr(bpy.types.WindowManager, "veistra"))
+        self.boot["unregister"]()
+        self.assertFalse(panel.is_registered)
+        self.assertFalse(hasattr(bpy.types.WindowManager, "veistra"))
+
+    def test_without_a_channel_there_is_no_tab(self):
+        self.boot["unregister"]()
+        os.environ.pop("VEISTRA_BLENDER_CHANNEL")
+        quiet = runpy.run_path(BOOT, run_name="veistra_boot")
+        self.assertFalse(quiet["register"]())
+        self.assertFalse(quiet["VEISTRA_PT_notes"].is_registered)
+        self.assertFalse(hasattr(bpy.types.WindowManager, "veistra"))
+
+    def test_the_selected_objects_notes_show_and_a_fixed_one_offers_the_verdicts(self):
+        self.write_notes(NOTES)
+        log = self.draw(["Frame"])
+        labels = self.labels(log)
+        self.assertEqual(labels[0], "1 note on Frame")
+        self.assertIn("Frame: Oak - Fixed, check it", labels)
+        self.assertIn("The headboard is too tall", labels)
+        self.assertIn("agent: Taken 10 cm off", labels)
+        self.assertIn("Fix: Lowered it", labels)
+        verdicts = [e for e in log if e[0] == "op" and e[1] == "veistra.verdict"]
+        self.assertEqual([(e[2], e[3].good) for e in verdicts],
+                         [("Looks good", True), ("Still broken", False)])
+        self.assertEqual(verdicts[0][3].note, "0190000000aa-0001")
+        pillow = self.draw(["Pillow"])
+        self.assertIn("Too round", self.labels(pillow))
+        self.assertNotIn("veistra.verdict", [e[1] for e in pillow if e[0] == "op"])
+        self.assertEqual(self.labels(self.draw([]))[0], "Select an object to see its notes.")
+
+    def test_still_broken_sends_one_line_with_the_reply_and_waits_for_its_ack(self):
+        self.write_notes(NOTES)
+        self.wm.veistra.reply = "still too tall"
+        self.assertEqual(bpy.ops.veistra.verdict(note="0190000000aa-0001", good=False),
+                         {"FINISHED"})
+        [line] = self.events()
+        self.assertEqual((line["kind"], line["id"], line["verdict"], line["reply"]),
+                         ("verdict", "0190000000aa-0001", "broken", "still too tall"))
+        self.assertIsInstance(line["n"], int)
+        self.assertIsInstance(line["t"], int)
+        self.assertEqual(self.wm.veistra.reply, "")
+        row = next(e[4] for e in self.draw(["Frame"]) if e[0] == "op" and e[1] == "veistra.verdict")
+        self.assertFalse(row.enabled, "pressed once; not again until Veistra answers")
+        answered = dict(NOTES, rev=4, acks=[{"n": line["n"], "ok": True, "message": "Reopened."}])
+        self.write_notes(answered)
+        self.assertIn("Reopened.", self.labels(self.draw(["Frame"])))
+        row = next(e[4] for e in self.draw(["Frame"]) if e[0] == "op" and e[1] == "veistra.verdict")
+        self.assertTrue(row.enabled)
+
+    def test_ask_sends_the_question_and_the_selection_in_one_line_and_adds_no_image(self):
+        self.send({"id": 1, "action": "select", "names": ["Frame"]})
+        images = len(bpy.data.images)
+        self.assertFalse(bpy.ops.veistra.ask.poll(), "nothing to ask yet")
+        self.wm.veistra.question = "Why is the frame so dark?"
+        self.assertEqual(bpy.ops.veistra.ask(), {"FINISHED"})
+        [line] = self.events()
+        self.assertEqual((line["kind"], line["text"], line["nodes"]),
+                         ("ask", "Why is the frame so dark?", ["Frame"]))
+        self.assertTrue(line["scene"].endswith("bed.blend"))
+        # The bpy module has a 3D view but no GPU, and its screenshot of the
+        # area fails; a picture, when there is one, is this ask's own.
+        if "png" in line:
+            self.assertEqual(line["png"], "ask-%d.png" % line["n"])
+            self.assertTrue(os.path.exists(os.path.join(self.dir, line["png"])))
+        self.assertEqual(len(bpy.data.images), images)
+        self.assertEqual(self.wm.veistra.question, "")
+
+    def test_mark_up_sends_its_line_and_a_refusal_is_shown(self):
+        bpy.ops.veistra.markup()
+        [line] = self.events()
+        self.assertEqual(line["kind"], "markup")
+        self.write_notes(dict(NOTES, acks=[{"n": line["n"], "ok": False,
+                                            "message": "the Editor mode is not open"}]))
+        # Long lines are wrapped to the sidebar's width.
+        self.assertIn("Mark up did not go through: the Editor mode is not open",
+                      " ".join(self.labels(self.draw([]))))
+
+    def test_numbers_rise_even_within_one_millisecond(self):
+        bpy.ops.veistra.markup()
+        bpy.ops.veistra.markup()
+        first, second = self.events()
+        self.assertGreater(second["n"], first["n"])
+
+    def test_the_png_writer_makes_a_picture_blender_reads(self):
+        rows = [bytes([255, 0, 0, 255, 0, 255, 0, 255]), bytes([0, 0, 255, 255, 0, 0, 0, 0])]
+        path = os.path.join(self.dir, "two.png")
+        with open(path, "wb") as fh:
+            fh.write(self.boot["png_bytes"](2, 2, rows))
+        img = bpy.data.images.load(path)
+        try:
+            self.assertEqual(tuple(img.size), (2, 2))
+            px = img.pixels[:]
+            # Blender's rows run bottom up: the top-left red pixel is row 1.
+            self.assertAlmostEqual(px[8], 1.0, places=2)
+            self.assertAlmostEqual(px[9], 0.0, places=2)
+        finally:
+            bpy.data.images.remove(img)
+        with open(path, "rb") as fh:
+            data = fh.read()
+        self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
+        self.assertEqual(zlib.decompress(data[41:41 + struct.unpack_from(">I", data, 33)[0]])[:1],
+                         b"\x00")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-# veistra-editor v1
+# veistra-editor v2
 #
 # The Veistra editor plugin. Installed by Veistra (Godot > Editor > Enable the
 # Veistra plugin) beside the capture addon in addons/veistra/, and removable
@@ -20,8 +20,8 @@
 #
 # Written to state.json whenever it changes: the edited scene, the open
 # scenes, the selected nodes, the main screen and whether only the viewport
-# shows. The Veistra dock, events.jsonl and notes.json (DECISIONS X5) are
-# #320's and will sit beside these.
+# shows. The Veistra dock (veistra_dock.gd, #320) reads notes.json and
+# appends to events.jsonl in the same folder (DECISIONS X5).
 #
 # Needs Godot 4.2 or later: EditorInterface as a singleton, its 3D viewports
 # and distraction_free_mode as a property all arrived in 4.2.
@@ -35,6 +35,7 @@ const DIR_ENV := "VEISTRA_EDITOR_DIR"
 # The editor holds its window at 1024x600 or more, which would spill out of a
 # smaller pane; Veistra sizes the window, so the floor comes down to this.
 const MIN_SIZE := Vector2i(480, 320)
+const Dock := preload("veistra_dock.gd")
 
 var _dir := ""
 var _poll_accum := 0.0
@@ -42,6 +43,7 @@ var _state_accum := 0.0
 var _screen := ""
 var _last_state := ""
 var _capture_size := Vector2.ZERO
+var _dock: Control = null
 
 
 func _enter_tree() -> void:
@@ -59,13 +61,21 @@ func _enter_tree() -> void:
 	main_screen_changed.connect(_on_main_screen_changed)
 	_lower_min_size.call_deferred()
 	var godot: String = Engine.get_version_info().get("string", "")
-	_write("hello.json", {"pid": OS.get_process_id(), "godot": godot, "version": 1})
+	_write("hello.json", {"pid": OS.get_process_id(), "godot": godot, "version": 2})
+	var dock := Dock.new()
+	dock.setup(_dir, _node_path, _camera, func() -> String: return _screen)
+	add_control_to_dock(DOCK_SLOT_RIGHT_UL, dock)
+	_dock = dock
 	set_process(true)
 
 
 func _exit_tree() -> void:
 	if _dir != "" and main_screen_changed.is_connected(_on_main_screen_changed):
 		main_screen_changed.disconnect(_on_main_screen_changed)
+	if _dock != null:
+		remove_control_from_docks(_dock)
+		_dock.queue_free()
+		_dock = null
 
 
 # Deferred: the editor sets its own floor when it is ready, after plugins load.

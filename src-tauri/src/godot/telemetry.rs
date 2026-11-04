@@ -109,6 +109,18 @@ impl Tail {
     /// New whole lines since the last call. A file that does not exist yet is
     /// no lines; a file that shrank (a new game reusing the folder) starts over.
     pub fn read(&mut self) -> Vec<Line> {
+        let lines: Vec<Line> = self
+            .read_lines()
+            .iter()
+            .filter_map(|l| parse_line(l))
+            .collect();
+        self.ticks += lines.iter().filter(|l| matches!(l, Line::Tick(_))).count() as u64;
+        lines
+    }
+
+    /// As [`Tail::read`], the lines' text unparsed, for a file of another
+    /// shape (the editors' `events.jsonl`, #320).
+    pub fn read_lines(&mut self) -> Vec<String> {
         let Ok(mut file) = std::fs::File::open(&self.path) else {
             return Vec::new();
         };
@@ -127,9 +139,10 @@ impl Tail {
             return Vec::new();
         };
         self.offset += end as u64 + 1;
-        let lines = parse_all(&String::from_utf8_lossy(&bytes[..=end]));
-        self.ticks += lines.iter().filter(|l| matches!(l, Line::Tick(_))).count() as u64;
-        lines
+        String::from_utf8_lossy(&bytes[..=end])
+            .lines()
+            .map(str::to_string)
+            .collect()
     }
 }
 

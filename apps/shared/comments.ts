@@ -123,8 +123,17 @@ export interface Comment {
 
 // --- the calls --------------------------------------------------------------
 
+/** A node note that names the scene it was written on, so the Godot editor's
+ *  Veistra dock shows it on that scene only (#320). The backend keeps
+ *  `scene` on the stored anchor; notes from before it have none. */
+export interface NodeInScene {
+  kind: "node";
+  path: string;
+  scene: string;
+}
+
 export interface CreateCommentInput {
-  anchor: AnchorInput;
+  anchor: AnchorInput | NodeInScene;
   body: string;
   /** Standard base64, no data-URI prefix — see `viewer/ui/src/rpc.ts`'s
    *  `toBytes` for the decoding half of this convention. Only meaningful when
@@ -145,9 +154,13 @@ export const resolveComment = (id: string, note: string) =>
 
 export type Verdict = "good" | "broken";
 
-/** The person's answer to a fixed comment: Looks good, or Still broken with a reply. */
-export const verdictComment = (id: string, verdict: Verdict, reply?: string) =>
-  invoke<Comment>("comments/verdict", { id, verdict, reply });
+/**
+ * The person's answer to a fixed comment: Looks good, or Still broken with a
+ * reply. With `expect`, the backend refuses it unless the comment is in that
+ * status still, for an answer given somewhere that may be out of date.
+ */
+export const verdictComment = (id: string, verdict: Verdict, reply?: string, expect?: Status) =>
+  invoke<Comment>("comments/verdict", { id, verdict, reply, expect });
 
 /**
  * A take note's takes, oldest first: the one it was sent from, then each

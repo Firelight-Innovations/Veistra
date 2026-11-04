@@ -24,6 +24,7 @@ import type { CameraPose } from "@veistra/markup";
 import type { MarkupExport } from "@veistra/markup/layer";
 import { Maximize2, PenLine, PictureInPicture2, Scan, Send, X } from "lucide-react";
 import { EditorReason } from "../../../../shared/EditorReason";
+import { useEditorEvents } from "../../../../shared/editorEvents";
 import { errorText } from "../../../../shared/godot";
 import { base64Blob, GODOT_TARGET, sendMarkup } from "../../../../shared/markupFlow";
 import type { WindowRect } from "../../../../shared/nativeBox";
@@ -40,6 +41,7 @@ import { resolvePins } from "../play/pins";
 import { getState as readScenes } from "../rpc";
 import {
   closeEditor,
+  editorAck,
   editorCapture,
   editorOpenScene,
   editorPick,
@@ -153,6 +155,28 @@ export default function EditorMode(props: EditorModeProps) {
     }
   }, []);
 
+  // Mark up, for the dock's own button as well as the bar's.
+  const beginMarkup = async (): Promise<string> => {
+    if (marking) return "Mark up is already open in Veistra.";
+    if (!pluginReady) throw new Error(why ?? "The Veistra plugin is not running.");
+    const cap = await editorCapture("viewport");
+    setMarking({
+      url: URL.createObjectURL(base64Blob(cap.pngBase64)),
+      natural: { width: cap.width, height: cap.height },
+      camera: cap.camera,
+      scene: view?.scene ?? "",
+    });
+    return "Mark up is open in Veistra.";
+  };
+
+  // The presses in the editor's own Veistra dock (#320): the poll hands them
+  // on, and this mode carries each out and answers it (`editorEvents.ts`).
+  const tab = useEditorEvents(
+    { tool: "godot", where: () => view?.scene || null, markup: beginMarkup },
+    editorAck,
+  );
+  const takeEvents = tab.take;
+
   // The poll. One call at a time: the next is asked for only once this one
   // has answered, so a slow answer never piles up behind itself.
   useEffect(() => {
@@ -160,7 +184,7 @@ export default function EditorMode(props: EditorModeProps) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const tick = async () => {
       try {
-        const next = await editorState();
+        const next = await editorState(tab.since.current);
         if (!live) return;
         setEd(next);
         if (next.ended) setEnded(next.ended);
@@ -174,7 +198,14 @@ export default function EditorMode(props: EditorModeProps) {
       live = false;
       clearTimeout(timer);
     };
-  }, [epoch]);
+  }, [epoch, tab.since]);
+
+  // The presses the poll handed on, taken once the render that shows that
+  // poll's state is in, so a press is acted on against what it saw.
+  const events = ed?.editor?.events;
+  useEffect(() => {
+    takeEvents(events);
+  }, [events, takeEvents]);
 
   const open = editor !== null;
   // The editor going away ends Closing, and a Closing nobody answered lapses.
@@ -268,13 +299,7 @@ export default function EditorMode(props: EditorModeProps) {
   const startMarkup = () =>
     void guarded(async () => {
       if (marking || !pluginReady) return;
-      const cap = await editorCapture("viewport");
-      setMarking({
-        url: URL.createObjectURL(base64Blob(cap.pngBase64)),
-        natural: { width: cap.width, height: cap.height },
-        camera: cap.camera,
-        scene: view?.scene ?? "",
-      });
+      await beginMarkup();
     });
 
   const endMarkup = () => {
@@ -578,8 +603,9 @@ export default function EditorMode(props: EditorModeProps) {
           <strong>Add the Veistra plugin to {chosen.name}?</strong>
           <ul>
             <li>
-              Two files, <code>addons/veistra/plugin.cfg</code> and{" "}
-              <code>addons/veistra/veistra_editor.gd</code>, and one <code>[editor_plugins]</code>{" "}
+              Three files, <code>addons/veistra/plugin.cfg</code>,{" "}
+              <code>addons/veistra/veistra_editor.gd</code> and{" "}
+              <code>addons/veistra/veistra_dock.gd</code>, and one <code>[editor_plugins]</code>{" "}
               line in <code>{chosen.rel === "." ? "" : `${chosen.rel}/`}project.godot</code>.
             </li>
             <li>
@@ -587,6 +613,10 @@ export default function EditorMode(props: EditorModeProps) {
               the 3D camera and a picture of the viewport. It takes three commands, select a node,
               open a scene and Viewport only, and saves or closes the editor when you press Save all
               or Close here.
+            </li>
+            <li>
+              It adds a Veistra dock to the editor with the notes on the selected node. Its buttons
+              ask Veistra to act; the dock never writes the notes itself.
             </li>
             <li>It talks to Veistra through a temporary folder. No network port.</li>
             <li>

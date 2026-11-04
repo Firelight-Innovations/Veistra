@@ -112,6 +112,8 @@ interface World {
   agent: boolean;
   ended: { project: string; code: number | null } | null;
   selection: object;
+  /** Presses in the editor's Veistra dock, handed on until answered (#320). */
+  events: { seq: number; n: number; [k: string]: unknown }[];
 }
 
 function backend(over: Partial<World> = {}): World {
@@ -120,6 +122,7 @@ function backend(over: Partial<World> = {}): World {
     agent: false,
     ended: null,
     selection: { pngBase64: "AAAA", width: 1280, height: 720, camera: CAMERA, ...VIEW },
+    events: [],
     ...over,
   };
   let item = 0;
@@ -128,12 +131,17 @@ function backend(over: Partial<World> = {}): World {
       case "godot/editor-state": {
         const ended = world.ended;
         world.ended = null;
+        const since = Number(params?.eventsSince ?? 0);
+        const events = world.events.filter((e) => e.seq > since);
         return Promise.resolve({
-          editor: world.editor,
+          editor: world.editor && { ...world.editor, events },
           agent: world.agent,
           ...(ended ? { ended } : {}),
         });
       }
+      case "godot/editor-ack":
+        world.events = world.events.filter((e) => e.n !== params?.n);
+        return Promise.resolve({ acked: params?.n });
       case "godot/editor-open":
         world.editor = editorInfo({ embed: { kind: "waiting" } });
         return Promise.resolve({ editor: world.editor, agent: world.agent });
@@ -293,6 +301,8 @@ describe("Editor mode before the editor opens", () => {
     const dialog = screen.getByRole("dialog", { name: "Enable the Veistra plugin" });
     expect(dialog.textContent).toContain("addons/veistra/plugin.cfg");
     expect(dialog.textContent).toContain("addons/veistra/veistra_editor.gd");
+    expect(dialog.textContent).toContain("addons/veistra/veistra_dock.gd");
+    expect(dialog.textContent).toContain("Veistra dock");
     expect(dialog.textContent).toContain("[editor_plugins]");
     expect(dialog.textContent).toContain("the selected nodes, the edited scene");
     expect(dialog.textContent).toContain("saves or closes the editor when you press");
@@ -518,5 +528,79 @@ describe("the agent banner", () => {
     await waitFor(() => expect(calls("godot/editor-state").length).toBeGreaterThan(0));
     await screen.findByRole("button", { name: "Open the editor" });
     expect(screen.queryByRole("note")).toBeNull();
+  });
+});
+
+describe("the editor's Veistra dock (#320)", () => {
+  const ASK = {
+    seq: 1,
+    n: 1730000000001,
+    t: 1730000000001,
+    kind: "ask",
+    text: "Why does it float?",
+    scene: "res://main.tscn",
+    nodes: ["Main/Enemy_02"],
+    camera: CAMERA,
+    pngBase64: "BBBB",
+    pngProblem: null,
+  };
+
+  // Done when: Ask sends the text, the node path and a viewport image in one message.
+  it("sends the dock's question with its nodes and picture in one message, then answers it", async () => {
+    backend({ editor: editorInfo(), events: [ASK] });
+    render(<EditorMode {...props()} />);
+    await waitFor(() => expect(calls("godot/editor-ack")).toHaveLength(1));
+    expect(lastParams("godot/editor-ack")).toEqual({
+      n: ASK.n,
+      ok: true,
+      message: "Sent to the agent.",
+    });
+    const puts = calls("context/put").map((c) => c[1] as Record<string, string>);
+    expect(puts.map((p) => p.kind)).toEqual(["text", "image"]);
+    expect(puts[0]!.text).toContain("Why does it float?");
+    expect(puts[0]!.text).toContain("Main/Enemy_02");
+    expect(puts[1]!.bytesBase64).toBe("BBBB");
+    expect(calls("context/insert")).toEqual([["context/insert", { itemIds: ["item1", "item2"] }]]);
+    // The next poll asks only for what came after it.
+    await waitFor(() => expect(lastParams("godot/editor-state")).toEqual({ eventsSince: 1 }));
+    expect(calls("context/insert")).toHaveLength(1);
+  });
+
+  it("opens Mark up for the dock's button, and refuses it while the plugin is not running", async () => {
+    backend({ editor: editorInfo(), events: [{ seq: 1, n: 7, t: 7, kind: "markup" }] });
+    render(<EditorMode {...props()} />);
+    expect(await screen.findByRole("dialog", { name: "Mark up" })).toBeTruthy();
+    await waitFor(() =>
+      expect(lastParams("godot/editor-ack")).toEqual({
+        n: 7,
+        ok: true,
+        message: "Mark up is open in Veistra.",
+      }),
+    );
+    cleanup();
+    bridge.invoke.mockReset();
+    backend({
+      editor: editorInfo({ running: false }),
+      events: [{ seq: 1, n: 8, t: 8, kind: "markup" }],
+    });
+    render(<EditorMode {...props()} />);
+    await waitFor(() =>
+      expect(lastParams("godot/editor-ack")).toEqual({ n: 8, ok: false, message: WHY }),
+    );
+    expect(screen.queryByRole("dialog", { name: "Mark up" })).toBeNull();
+  });
+
+  it("carries a verdict from the dock to the note, expecting it fixed", async () => {
+    const verdict = { seq: 1, n: 9, t: 9, kind: "verdict", id: "c1", verdict: "good", reply: null };
+    backend({ editor: editorInfo(), events: [verdict] });
+    render(<EditorMode {...props()} />);
+    await waitFor(() => expect(calls("godot/editor-ack")).toHaveLength(1));
+    expect(lastParams("comments/verdict")).toEqual({
+      id: "c1",
+      verdict: "good",
+      reply: undefined,
+      expect: "fixed",
+    });
+    expect(lastParams("godot/editor-ack")).toEqual({ n: 9, ok: true, message: "Marked resolved." });
   });
 });

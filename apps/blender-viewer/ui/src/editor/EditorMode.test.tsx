@@ -452,3 +452,76 @@ describe("footerText", () => {
     expect(footerText({ editor: OPEN }, null)).toBe("Blender 4.2.1 · Veistra add-on v1");
   });
 });
+
+describe("Blender's own Veistra tab (#320)", () => {
+  const ASK = {
+    seq: 4,
+    n: 1730000000004,
+    t: 1730000000004,
+    kind: "ask" as const,
+    text: "Is the frame too thin?",
+    scene: "C:/p/bed.blend",
+    nodes: ["Frame"],
+    camera: null,
+    pngBase64: "WFla",
+    pngProblem: null,
+  };
+  const params = (method: string) => calls(method).map((c) => c[1] as Record<string, unknown>);
+
+  // Done when: Ask sends the text, the object and a 3D view image in one message.
+  it("sends the tab's question with the selection and the 3D view in one message, once", async () => {
+    editor = { editor: { ...OPEN, events: [ASK] } };
+    show();
+    await waitFor(() => expect(calls("blender-viewer/editor-ack")).toHaveLength(1));
+    expect(params("blender-viewer/editor-ack")[0]).toEqual({
+      n: ASK.n,
+      ok: true,
+      message: "Sent to the agent.",
+    });
+    const puts = params("context/put");
+    expect(puts.map((p) => p.kind)).toEqual(["text", "image"]);
+    expect(puts[0]!.text).toContain("Is the frame too thin?");
+    expect(puts[0]!.text).toContain("Selected objects: Frame");
+    expect(puts[0]!.text).toContain("File: bed.blend");
+    expect(puts[1]!.bytesBase64).toBe("WFla");
+    expect(params("context/insert")).toEqual([{ itemIds: ["ctx1", "ctx2"] }]);
+    // The poll goes on handing the same press on until the backend drops it;
+    // the pane takes it once, and asks only for what came after it.
+    await waitFor(() =>
+      expect(params("blender-viewer/editor-state").slice(-1)[0]).toEqual({ eventsSince: 4 }),
+    );
+    expect(calls("context/insert")).toHaveLength(1);
+  });
+
+  it("refuses the tab's Mark up while the boot script starts, with the reason", async () => {
+    const starting = { ...OPEN, booted: false, script: null, why: "Blender is still starting." };
+    editor = { editor: { ...starting, events: [{ seq: 1, n: 2, t: 2, kind: "markup" }] } };
+    show();
+    await waitFor(() => expect(calls("blender-viewer/editor-ack")).toHaveLength(1));
+    expect(params("blender-viewer/editor-ack")[0]).toEqual({
+      n: 2,
+      ok: false,
+      message: "Blender is still starting.",
+    });
+    expect(calls("blender-viewer/editor-capture")).toHaveLength(0);
+  });
+
+  it("carries Still broken and its reply to the note, expecting it fixed", async () => {
+    const verdict = {
+      seq: 1,
+      n: 3,
+      t: 3,
+      kind: "verdict" as const,
+      id: "c9",
+      verdict: "broken" as const,
+      reply: "the leg still clips",
+    };
+    editor = { editor: { ...OPEN, events: [verdict] } };
+    show();
+    await waitFor(() => expect(calls("blender-viewer/editor-ack")).toHaveLength(1));
+    expect(params("comments/verdict")).toEqual([
+      { id: "c9", verdict: "broken", reply: "the leg still clips", expect: "fixed" },
+    ]);
+    expect(params("blender-viewer/editor-ack")[0]).toMatchObject({ ok: true });
+  });
+});

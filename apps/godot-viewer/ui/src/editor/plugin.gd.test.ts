@@ -28,7 +28,7 @@ const code = (text: string) =>
 
 describe("the Veistra editor plugin", () => {
   it("is an editor plugin, and says its version on the first line for the installer", () => {
-    expect(script.split("\n")[0]).toBe("# veistra-editor v1");
+    expect(script.split("\n")[0]).toBe("# veistra-editor v2");
     expect(code(script)).toMatch(/^@tool\nextends EditorPlugin$/m);
   });
 

@@ -57,14 +57,27 @@ from that run joins the same comment rather than making a new one
 `Comment::takes` lists the note's takes, oldest first. It goes to the agent in
 the comment's `sentTo`, the one the note was sent to before (#321).
 
+`comments/verdict` takes an optional `expect`, the status the caller showed:
+the Veistra tab inside Godot and Blender (#320) answers a note as its last
+`notes.json` had it, and sends `expect: "fixed"`, so a press on a note an agent
+has since opened again is refused instead of answering work the person never
+saw. The tab reads notes only through that snapshot, which Veistra writes into
+the editor's channel folder; nothing in an editor reads or writes
+`.veistra/comments/`.
+
 The rejected alternative was letting an agent's resolve close the comment, as
 it did before. The person who saw the problem is the one who can say it is
 gone, and a closed comment drops out of every list where that check would
 happen.
 
+A `node` anchor records the `res://` scene it was written on, so the Godot
+editor's dock shows it in that scene only; a note from before has no scene and
+shows wherever the path matches.
+
 Play's notes are comments with a `take` anchor: the take and its number, the
-note's number, its time or range, the feedback packet's folder, and the scene and node when
-known, so the Scene and Blender views can show a note on its node or part.
+note's number, its time or range, the feedback packet's folder, and the scene
+and node when known, so the Scene and Blender views can show a note on its node
+or part.
 
 The rules are the store's, not its callers': `resolve_with_commit` refuses an
 agent's resolve of a comment that is not open or working, and anyone's resolve

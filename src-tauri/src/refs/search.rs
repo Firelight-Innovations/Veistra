@@ -289,7 +289,7 @@ fn viewer_comments(ctx: &CallContext, q: &Query) -> Vec<Hit> {
 pub(super) fn anchor_label(anchor: &crate::comments::Anchor) -> String {
     use crate::comments::Anchor;
     match anchor {
-        Anchor::Node { path } => format!("node {path}"),
+        Anchor::Node { path, .. } => format!("node {path}"),
         Anchor::Mesh { part, material, .. } => format!("mesh {part} ({material})"),
         Anchor::Scene { scene, time, .. } => format!("{scene} at {time:.1}s"),
         Anchor::Take { take, n, .. } => format!("take {take} note {n}"),

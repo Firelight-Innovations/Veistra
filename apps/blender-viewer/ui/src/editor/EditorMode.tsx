@@ -23,6 +23,7 @@ import { reportPainted } from "@veistra/bridge";
 import type { MarkupExport } from "@veistra/markup/layer";
 import { Maximize2, PenLine, PictureInPicture2, Scan, Send, X } from "lucide-react";
 import { EditorReason } from "../../../../shared/EditorReason";
+import { useEditorEvents } from "../../../../shared/editorEvents";
 import { base64Blob, BLENDER_TARGET, sendMarkup } from "../../../../shared/markupFlow";
 import type { WindowRect } from "../../../../shared/nativeBox";
 import { dock, embedRect, embedStill, popOut } from "../../../../shared/nativeWindow";
@@ -39,6 +40,7 @@ import type { BlenderViewerState } from "../rpc";
 import { resolvePins } from "./pins";
 import {
   closeEditor,
+  editorAck,
   editorCapture,
   editorPick,
   editorState,
@@ -161,6 +163,28 @@ export default function EditorMode(props: EditorModeProps) {
     }
   }, []);
 
+  // Mark up, for the tab's own button as well as the bar's.
+  const beginMarkup = async (): Promise<string> => {
+    if (marking) return "Mark up is already open in Veistra.";
+    if (!booted) throw new Error(why ?? "The Veistra script has not started in this Blender yet.");
+    const cap = await editorCapture();
+    setMarking({
+      url: URL.createObjectURL(base64Blob(cap.pngBase64)),
+      natural: { width: cap.width, height: cap.height },
+      view: cap.view,
+      file: cap.file,
+    });
+    return "Mark up is open in Veistra.";
+  };
+
+  // The presses in the editor's own Veistra tab (#320): the poll hands them
+  // on, and this mode carries each out and answers it (`editorEvents.ts`).
+  const tab = useEditorEvents(
+    { tool: "blender", where: () => editor?.file ?? null, markup: beginMarkup },
+    editorAck,
+  );
+  const takeEvents = tab.take;
+
   // The poll. One call at a time: the next is asked for only once this one
   // has answered, so a slow answer never piles up behind itself.
   useEffect(() => {
@@ -168,7 +192,7 @@ export default function EditorMode(props: EditorModeProps) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const tick = async () => {
       try {
-        const next = await editorState();
+        const next = await editorState(tab.since.current);
         if (!live) return;
         setEd(next);
         if (next.ended) setEnded(next.ended);
@@ -182,7 +206,14 @@ export default function EditorMode(props: EditorModeProps) {
       live = false;
       clearTimeout(timer);
     };
-  }, []);
+  }, [tab.since]);
+
+  // The presses the poll handed on, taken once the render that shows that
+  // poll's state is in, so a press is acted on against what it saw.
+  const events = ed?.editor?.events;
+  useEffect(() => {
+    takeEvents(events);
+  }, [events, takeEvents]);
 
   // Blender going away ends Closing, and a Closing nobody answered lapses.
   useEffect(() => {
@@ -272,13 +303,7 @@ export default function EditorMode(props: EditorModeProps) {
   const startMarkup = () =>
     void guarded(async () => {
       if (marking || !booted) return;
-      const cap = await editorCapture();
-      setMarking({
-        url: URL.createObjectURL(base64Blob(cap.pngBase64)),
-        natural: { width: cap.width, height: cap.height },
-        view: cap.view,
-        file: cap.file,
-      });
+      await beginMarkup();
     });
 
   const endMarkup = () => {

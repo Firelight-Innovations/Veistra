@@ -457,6 +457,12 @@ three tools need the opt-in Veistra plugin (`addons/veistra/veistra_editor.gd`,
 Godot 4.2 or later), whose consent reads like the capture addon's; each says
 why while it cannot act. A banner under the bar asks the person to save while
 an agent works in the same environment. The pane polls `godot/editor-state`.
+The plugin also adds a Veistra dock to the editor (`veistra_dock.gd`, #320):
+the notes on the selected node, Looks good and Still broken on a fixed one, Ask
+the agent and Mark up the viewport. A press is a line in the channel's
+`events.jsonl`; the poll hands it on as `editor.events` after `eventsSince`,
+the pane does it through its own calls (`apps/shared/editorEvents.ts`) and
+answers with `godot/editor-ack`, which an agent may not call.
 
 On the first three it is the read-only scene view: the node tree beside a 3D
 view or a rendered frame, read from the scene file or by a headless Godot.
@@ -481,7 +487,9 @@ the file it holds `.veistra/locks/<file>.lock`; a banner says the agent's next
 export goes to the next version beside it and never overwrites the file, and a
 second open of the file (another pane, `blender-viewer/open`,
 `files/open-in-blender`) is refused while the lock is live. The pane polls
-`blender-viewer/editor-state`. On main, a cloud session or no Blender, Editor is
+`blender-viewer/editor-state`, which also hands on the presses in Blender's own
+Veistra tab in the 3D view's sidebar (#320), answered with
+`blender-viewer/editor-ack` as Godot's dock is. On main, a cloud session or no Blender, Editor is
 the read-only viewer of the last export instead: the `.glb` in 3D and the
 wireframe pass.
 

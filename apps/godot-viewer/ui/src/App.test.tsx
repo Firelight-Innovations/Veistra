@@ -433,6 +433,23 @@ describe("Godot Editor surface (the backend's `editor`)", () => {
     expect(await screen.findByText(/the store is locked/)).toBeTruthy();
   });
 
+  // The editor's Veistra dock shows a node note on the scene it was written
+  // on only (#320), so the scene goes with the path.
+  it("writes a node note with the scene it is on", async () => {
+    backend(undefined, { createComment: () => ({ id: "c1" }) });
+    render(<App />);
+    fireEvent.click(await screen.findByText("Node3D"));
+    fireEvent.change(screen.getByPlaceholderText("What should change about this node?"), {
+      target: { value: "brighter" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+    await waitFor(() => expect(calls("comments/create")).toHaveLength(1));
+    expect(calls("comments/create")[0]![1]).toEqual({
+      anchor: { kind: "node", path: "Main", scene: "res://main.tscn" },
+      body: "brighter",
+    });
+  });
+
   it("names a missing Godot once, with Open Settings on its section", async () => {
     backend();
     render(<App />);

@@ -259,6 +259,7 @@ mod tests {
         let mut node = note(Status::Fixed);
         node.anchor = Anchor::Node {
             path: "Hallway".into(),
+            scene: None,
         };
         node.resolution = fix(Author::Agent, None);
         assert_eq!(heard(Some(Status::Open), &node), None, "not a play note");
