@@ -19,7 +19,8 @@
 # events.jsonl from here to Veistra, notes.json from Veistra to here.
 #
 # Commands: select (objects by name), viewport-only (maximise the 3D view, as
-# Ctrl Space does), capture (a picture of the 3D view and the view it shows),
+# Ctrl Space does), capture (a picture of the 3D view, the view it shows and
+# the selection),
 # pick (the object under a point of that picture) and quit (Blender's own
 # quit, which asks to save first). The last three read or ask; none edits the
 # scene. A command is a function in COMMANDS taking the command and returning
@@ -202,7 +203,11 @@ def cmd_capture(cmd):
     with _override(found):
         bpy.ops.screen.screenshot_area(filepath=_path(name))
     _win, area, _region, _r3d = found
-    return {"png": name, "width": area.width, "height": area.height, "view": view_of(found)}
+    reply = {"png": name, "width": area.width, "height": area.height, "view": view_of(found)}
+    # Read at the same moment as the picture, so Send selection never pairs
+    # one selection with another moment's view.
+    reply.update(selection())
+    return reply
 
 
 def cmd_pick(cmd):

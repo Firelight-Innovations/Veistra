@@ -376,6 +376,13 @@ fn commands_wait_for_the_boot_script_and_carry_its_answer() {
     );
 
     boot(&editor);
+    let booted = w.call("blender-viewer/editor-state", json!({})).unwrap();
+    assert_eq!(booted["editor"]["booted"], true);
+    assert_eq!(
+        booted["editor"]["script"], 1,
+        "the footer names the script's version"
+    );
+    assert_eq!(booted["editor"]["why"], Value::Null);
     let stop = responder(editor.channel.clone(), |_, cmd| {
         match cmd["action"].as_str() {
             Some("select") => {

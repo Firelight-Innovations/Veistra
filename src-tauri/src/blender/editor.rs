@@ -502,7 +502,8 @@ pub fn state(ctx: &Ctx) -> Value {
         });
     }
     editor.follow();
-    let booted = editor.booted();
+    let hello = editor.hello();
+    let booted = hello.is_some();
     let view = editor.view();
     json!({
         "editor": {
@@ -512,6 +513,7 @@ pub fn state(ctx: &Ctx) -> Value {
             "blender": editor.blender,
             "embed": editor.embed.report(),
             "booted": booted,
+            "script": hello.as_ref().and_then(|h| h["version"].as_u64()),
             "why": (!booted).then_some(NOT_BOOTED),
             "dirty": view["dirty"].as_bool(),
             "lock": lock_json(editor.lock().as_ref()),
