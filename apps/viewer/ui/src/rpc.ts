@@ -70,6 +70,12 @@ export interface FileBytes {
   mtime: number | null;
 }
 
+/** `files/read-head`: a file's first bytes, with the whole file's size beside them. */
+export interface FileHead extends FileBytes {
+  /** The file is longer than what came back. `size` is the whole file. */
+  truncated: boolean;
+}
+
 export interface WriteResult {
   path: string;
   /** The mtime the file now has. Becomes the next write's `baseMtime`. */
@@ -102,6 +108,10 @@ export const openUrl = (url: string) => invoke<null>("files/open-url", { url });
 
 /** One file's raw bytes, base64'd. Rejects rather than truncating. */
 export const readBytes = (path: string) => invoke<FileBytes>("files/read-bytes", { path });
+
+/** A file's first `bytes` (capped at 4 MiB) — for a `.blend` thumbnail, say. */
+export const readHead = (path: string, bytes: number) =>
+  invoke<FileHead>("files/read-head", { path, bytes });
 
 /**
  * Overwrite a file, refusing if it changed since `baseMtime` — the mtime from

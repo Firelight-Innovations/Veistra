@@ -59,7 +59,7 @@ import "monaco-editor/languages/definitions/ini/register";
  */
 import { jsonDefaults } from "monaco-editor/languages/features/json/register";
 
-import { registerToml } from "@veistra/monaco-languages";
+import { registerLanguages } from "@veistra/monaco-languages";
 import { monacoThemeData, onThemeChanged } from "@veistra/bridge/theme";
 
 import EditorWorker from "monaco-editor/editor/editor.worker?worker";
@@ -96,17 +96,15 @@ jsonDefaults.setDiagnosticsOptions({
 });
 
 /**
- * TOML, which Monaco does not ship and this app cannot do without.
+ * TOML, GDScript and Godot's scene/resource format, none of which Monaco ships.
  *
- * The grammar has moved from `./toml.ts` to `@veistra/monaco-languages`,
- * unchanged, because three editors in Veistra now need it and `src/` and
- * `apps/files/` may not import each other — a package is the only ground all
- * three can stand on. That file still argues for its own existence and still
- * lists what the `ini` stand-in it replaced got wrong. Called here rather than
- * at import time inside the package, so the rule at the top of this file holds:
+ * The grammars live in `@veistra/monaco-languages` because three editors in
+ * Veistra need them and `src/` and `apps/files/` may not import each other — a
+ * package is the only ground all three can stand on. Called here rather than at
+ * import time inside the package, so the rule at the top of this file holds:
  * the package touches `monaco-editor` only as a type.
  */
-registerToml(monaco);
+registerLanguages(monaco);
 
 /**
  * The editor theme. Every colour comes from the live `src/tokens.css` values
@@ -199,6 +197,16 @@ const LANGUAGE_BY_EXTENSION: Record<string, string> = {
    */
   toml: "toml",
   veistra: "toml",
+
+  /**
+   * Godot: scripts, and the one text format scenes, resources, `project.godot`
+   * and `.import` sidecars share. Grammars from `@veistra/monaco-languages`.
+   */
+  gd: "gdscript",
+  tscn: "godot-resource",
+  tres: "godot-resource",
+  godot: "godot-resource",
+  import: "godot-resource",
 };
 
 /** The Monaco language id for a file, or `undefined` for plain text. */

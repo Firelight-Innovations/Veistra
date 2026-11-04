@@ -9,6 +9,12 @@
  */
 import type { ComponentType } from "react";
 import type { Stat } from "../rpc";
+import {
+  AUDIO_EXTENSIONS,
+  FONT_EXTENSIONS,
+  MODEL_EXTENSIONS,
+  VIDEO_EXTENSIONS,
+} from "./assetFormats";
 
 /** A file, as a viewer receives it. A `Stat` that is known to be a file. */
 export interface OpenFile {
@@ -96,7 +102,17 @@ export interface ViewerDescriptor {
 }
 
 /** Set membership reads better than a chain of `||` and is the same cost. */
-const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif"]);
+const IMAGE_EXTENSIONS = new Set([
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "bmp",
+  "ico",
+  "avif",
+  "tga",
+]);
 
 export const VIEWERS: ViewerDescriptor[] = [
   {
@@ -123,6 +139,35 @@ export const VIEWERS: ViewerDescriptor[] = [
     editable: false,
     match: (file) => file.ext === "pdf",
     load: () => import("./PdfViewer"),
+  },
+  {
+    // Previews only (issue #342). Editing a model is its application's app.
+    id: "model",
+    label: "3D model",
+    editable: false,
+    match: (file) => MODEL_EXTENSIONS.has(file.ext),
+    load: () => import("./ModelViewer"),
+  },
+  {
+    id: "blend",
+    label: "Blender file",
+    editable: false,
+    match: (file) => file.ext === "blend",
+    load: () => import("./BlendViewer"),
+  },
+  {
+    id: "media",
+    label: "Audio and video",
+    editable: false,
+    match: (file) => AUDIO_EXTENSIONS.has(file.ext) || VIDEO_EXTENSIONS.has(file.ext),
+    load: () => import("./MediaViewer"),
+  },
+  {
+    id: "font",
+    label: "Font",
+    editable: false,
+    match: (file) => FONT_EXTENSIONS.has(file.ext),
+    load: () => import("./FontViewer"),
   },
   {
     id: "mermaid",

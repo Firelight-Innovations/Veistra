@@ -178,7 +178,7 @@ check it". The same chokepoint reports `godot:note_fixed` and `godot:note_resolv
 
 | Decision | Chosen | Why, and what was rejected |
 |---|---|---|
-| R1 child window or R2 owned popup | R2, pending the Day 1 spike | Graphics Capture records the game window alone, never Veistra's UI. R1 (`SetParent`) is not built; the spike is where `CreateForWindow` on a child window gets tried. |
+| R1 child window or R2 owned popup | R2, provisional: the owner chooses from the embed spike's Windows 11 run (#308, below) | Graphics Capture records the game window alone, never Veistra's UI, and R2 is what `crate::embed` builds. R1 (`SetParent`) exists only in the spike, which also tries `CreateForWindow` on a child window. |
 | One Godot app or two (#313) | One app, two modes: Editor · Play (owner decision 1) | Play's UI moved into `apps/godot-viewer/ui/src/play/`, and one Rust entry answers both modes. The two apps that switched with `veistra/open` were rejected by the owner: a pane is the Godot app, and the mode is what it shows. |
 | Record default | Off | Takes cost disk (open decision 2's recommendation). |
 | Tracked nodes | The design's default, with geometry for its "VisualInstance3D" | `veistra_track` when it has members, else bodies, plus the geometry and sprites not inside one, in view by their box's centre, nearest 64. VisualInstance3D also takes in lights, probes and decals; a body's own mesh tracked beside it could take a pin that should name the body; and a character's origin is at its feet, below a frame that shows the rest of it (#312). |
@@ -256,6 +256,19 @@ check it". The same chokepoint reports `godot:note_fixed` and `godot:note_resolv
 | Which notes Blender's tab shows (#320) | Notes on a part (`Anchor::Mesh`) whose name is a selected object's, in the open file when the note records one; no Play notes | X12: a Godot node path is not a Blender object name, and no mapping is decided. `blend` on a mesh note is #319's; until it lands, Blender notes carry none and show for any file with that object name. |
 | The tab's picture (#320) | Godot: the main screen's viewport (2D when the 2D screen is up, else the first 3D viewport), scaled to 1600 px on its long side. Blender: the 3D view drawn off screen (`GPUOffScreen.draw_view3d`) at no more than 1600 px, else Blender's screenshot of the area | What the person is looking at when they ask, small enough for one Context image. The off-screen draw leaves out the sidebar the tab itself is in. |
 | Notes reaching the tab (#320) | `notes.json` is rewritten in the Editor pane's poll (every 500 ms) when the comment files' count, size or newest time, the scope or the acks changed; the dock reads it every 250 ms by its text, Blender's tab in its 250 ms timer, and selecting a node redraws at once | The done-when: a selected node's notes within 1 s. Watching `.veistra/comments/` with a file watcher was rejected for now: the pane's poll already runs while the editor is in it. |
+| Compare's δ rule (#319) | Spec §12.1 with both δ searches limited to what the ε pass left on the other side: a B triangle is Changed only when the centroid of an A triangle with no Unchanged match is within δ, and an A triangle is Removed only when no left-over B centroid is within δ. The ε match ignores corner order and is one to one. ε = 1 mm, δ = 5 cm (`packages/scene-view/src/compare/types.ts`) | As written, the spec searches all of A and all of B, so a knob on an untouched face reads as Changed and the faces around a hole hide what was cut from it. The refined rule keeps test 13 at 8 added, 2 changed, 0 removed and 10 unchanged (`compare.fixture.test.ts`) and makes the knob Added and the hole Removed (`diff.test.ts`). A normal-angle test was rejected: it fixes a dense extrude but splits a steep deformation into Added and Removed. |
+| Test 13's pair (#319) | `packages/scene-view/fixtures/cube-a.glb` and `cube-b.glb`, made by Blender 5.0.1 with the export's own settings (`scripts/make-compare-fixtures.py`) | The test is about what a real export holds: which diagonal each quad splits on and where the extruded strip's corners land. A pair written by hand would pin the triangulation guessed, not Blender's. |
+| The diff's grids (#319) | Centroids sorted by cell key in two typed arrays and found by binary search; cells of 2ε for the ε pass and δ for the δ passes, counted from the part's box and grown when the box is over 100,000 cells across, so a key stays exact in a float64; every search covers one cell each way | The spec's single 5 cm grid tests thousands of candidates a triangle in a dense mesh during the ε pass, and a Map of arrays took 1.3 to 1.5 s at the budget's size. This takes about 0.3 s for 200,000 triangles a side here (`budget.test.ts`, median of five under 2 s). Parsing is not in that number; the footer shows both. |
+| Where the diff runs (#319) | A module worker per diff (`diff.worker.ts`, started with `new URL(…, import.meta.url)` so Vite bundles it), handed both `.glb`s and answering with the classes as transferable buffers; a newer pick ends the running worker. It parses with three's GLTFLoader and a plugin that drops every material first, in world space, with parts by glTF node name. Where there is no `Worker` (jsdom, Node) the same handler runs on the calling thread and the footer says so | Spec §12.1 item 1. Textures are the expensive part of a parse, and a worker has no DOM to decode them with. `export_apply` was already on in #317's export, so a part's modifiers are in its triangles. |
+| Parts in Compare (#319) | Matched by name; a part only in B is all Added and a part only in A all Removed, which is also how a rename reads | Blender keeps no record of an object's old name, and guessing one from the geometry is wrong exactly when it matters, for a part renamed and edited. |
+| The four classes (#319) | Added solid blue; Changed amber with a screen-space hatch, so it reads the same at any zoom; Removed A's triangles as a faint coral fill with a dashed outline of their sharp edges, drawn through B; Unchanged grey. Each has a toggle with its count. One camera and one set of controls for Changes and Split; Split draws A and B either side of a divider in one frame, by scissor | Spec §12 item 3 asks for a pattern as well as a colour, so a class never depends on telling blue from coral. A second camera for Split would have to be kept in step. |
+| Next change (#319) | N and Shift N, on the mode's root, step through places: the changed triangles' corner and centroid cells joined by union-find across touching δ cells, biggest first, each framed by its box. The side list frames a part's box on a click | A face and the strip around it share corners, so they are one stop however large the triangles; a change on the far side of the model is another. |
+| What a version holds (#319) | #317's `export.json` (`commit`, `time`, `author`, `triangles`, the parts and each material's colour, metallic, roughness and alpha) and `model.glb`; `blender-viewer/export-versions` adds `kept` and each version's `blendCopy`, the path of `v<n>/source.blend` when it has one | Spec §12.1 item 6: material changes come from that metadata, not from the `.glb`, and are named per part in the side list (tolerance 1e-3). |
+| Keep B and Go back to A (#319) | DECISIONS X12's minimum, flagged to the owner. Keep vB pins B in `asset.json` (`kept`) so pruning to ten never removes it, and changes no other file; only the person keeps a version (`blender-viewer/version-keep` refuses an agent and `system`, and is a write, refused on main). Go back to vA opens A's `source.blend` in Editor mode through `editor-open` when the version has one, and is otherwise disabled with the reason. Versions are append-only | Writing A over the person's file, or exporting A again as a new version, are decisions about the person's work that X12 leaves to the owner. Nothing writes `source.blend` yet: agents never save a `.blend` (#317's row), so Go back is disabled everywhere today. |
+| The version a Blender note was made on (#319) | A mesh anchor also carries the file (`blend`, environment-relative) and the version shown when it was written (`version`); both optional, so a note from before reads and writes back unchanged | Notes from A needs both, and #320's N-panel should reuse them, not add its own. |
+| Notes from A (#319) | The file's mesh notes, not resolved, made on A or an earlier version; a note with no version counts when its part is in A and it was written before B was exported. Looks good and Still broken are `comments/verdict`, as everywhere else | Spec §12 item 5. Still broken here is a reply and a reopen, not Play's new-take loop. |
+| Compare and the embedded Blender (#319) | Compare draws in the page; the Editor mode unmounts while it shows, which hides Blender's window as Renders does, and it is not closed | A native window paints over the page, and Blender in the pane is the person's: leaving Compare finds it as it was. |
+| Compare with one version (#319) | Still drawn in the mode switch and not chosen (`aria-disabled`, as #317 drew it), its tooltip saying Compare needs two exports; the banner's Compare with v<n> is disabled with the same reason, and with two it opens Compare with that version as B | A file's first export has nothing to compare it with, and the switch keeps its place either way. |
 | Where pick's physics query runs (#312) | `_physics_process`; the command poll only queues the pick | Godot makes the direct space state safe there alone: from `_process` it refuses with physics on its own thread, and Jolt refuses while it steps, so the pick fell back to boxes without saying why. The node runs while paused, so a pick still answers during Mark up. |
 | Exported builds (#312) | Inert whenever `OS.has_feature("template")` | Relying on a missing `--veistra-dir` alone was rejected: a shipped game started with the argument by hand would write telemetry and answer commands, against §5.5 rule 6 and the consent text. |
 | When Update capture is offered (#312) | Whenever the installed script's text is not this build's, CRLF read as LF; an earlier v2 goes out as `partial` but keeps its channel | The marker alone called every earlier v2 current, so no fix to the script ever reached a project that had one. Treating an earlier v2 as a broken install was rejected: its game would lose capture and Rec until updated. |
@@ -306,6 +319,63 @@ check it". The same chokepoint reports `godot:note_fixed` and `godot:note_resolv
 | `list_play_notes` for a follow-up (#321) | `packet` and `packetMd` are the newest take's; `takes` lists each `{take, number, n, when, packet}`, oldest first | An agent given the first packet would work from the take that no longer shows the problem. |
 | Play <scene> from review (#321) | Runs the scene with `recordOnce` | Decision X9: Play <scene> records that run, so its take can be reviewed against this one. |
 | `followUp` on `notes_sent` (#321) | `followUp: true`, only on a Send with a Still broken note in it | Decision X1. Absent otherwise, so earlier Sends read as they did. |
+| What the spike measures as R2 (#308) | `crate::embed` itself, an `Embed` of the target's kind on `embed::native()`, unchanged, with the game launched at the box as `embed::launch_rect` says; `--wid` through the same `Embed` with a window system that finds the window Godot made owned and places it with the native one | A copy of the R2 code inside the spike could pass while Play's own code fails. |
+| R2 with `--wid` as a third way (#308) | Measured on the demo game with Godot 4.4 or later; if it wins, the editor and Blender run plain R2 | It is how Godot's own editor embeds a game: Godot makes the owned popup itself, detaches its input from the owner's thread and skips its off-screen clamp. Only Godot takes the argument. |
+| How the spike sees a menu over the game (#308) | Screen pixels: a stand-in menu the page paints, read over the game reporter's green patch and beside the box | veistra-ui's screenshot is WebView2's own frame, which never shows another program's window, so it cannot see airspace. A real Veistra menu over a real game stays a by-eye check, listed in the report. The menu ranks no way: §4.3's still swap shows menus whichever wins. |
+| A hung game and Veistra's input (#308) | Measured: the report times Veistra's click while the game busy-waits for five seconds, then again after `AttachThreadInput(.., FALSE)`. R2 already detaches once it owns the window (#309, above), so its first pass is the shipped detach; R1's is the joined queue | Windows joins the input queues of a child and its parent, and of an owned window and its owner, across threads. #309 settled R2 with the detach `--wid` does; the run says whether it holds, and whether R1 would need it too. |
+| Where the spike lives (#308) | `src-tauri/src/godot/spike.rs` and `spike/`, an ignored test compiled only with the `embed-spike` feature | Nothing ships it: no build without the feature has it, and the feature only adds two `windows-sys` modules to test builds. |
+
+### The embed spike (#308)
+
+`pnpm spike:embed`, on a Windows 11 desktop, fills in the R1/R2 row's evidence. It opens a
+stand-in Veistra window (a top-level window with a child "page" where WebView2 would be),
+starts the demo game from a temporary copy of `examples/godot-demo` with the reporters in
+`src-tauri/src/godot/spike/` added, and puts its window over a fixed box three ways: R1
+(`SetParent`, written in the spike), R2 (`crate::embed` as Play ships it) and R2 with
+`--wid`. Each way gets the four checks below; the way it suggests then runs the Godot editor
+(`--editor --single-window`) and Blender (`--factory-startup`).
+
+It takes a few minutes and drives the real mouse and keyboard (clicks, F13, screen reads), so
+leave both alone until the report prints. The report goes to
+`%TEMP%\veistra-embed-spike\report.md` (or `VEISTRA_SPIKE_REPORT`): the suggested way, the two
+tables below filled in, rows of what else it saw (how long the window took and where it first
+showed, frames recorded while hidden, a native popup over the game, the foreground window,
+whether the frame and parent held, DPI awareness, Veistra's click while the game hangs), and
+what is left to check by eye. `VEISTRA_SPIKE_GODOT` names the executable, as the Godot setting
+does; `VEISTRA_SPIKE_WAYS` (`r1,r2,r2wid`) and `VEISTRA_SPIKE_TARGETS` (`game,editor,blender`)
+narrow the run; `VEISTRA_SPIKE_CHOSEN` runs the editor and Blender with another way. The editor
+opens the copy with your own Godot editor settings; Blender saves nothing.
+
+A check passes when:
+
+- **Follows**: after twelve 15 px steps and after a resize, the window sits exactly on the box
+  within 100 ms, the program reports the new size within a second, and it is back on the box
+  after Veistra is minimised and restored.
+- **Graphics Capture**: `CreateForWindow` accepts the window, and two seconds through Play's
+  recorder hold 30 frames (one for the editor and Blender, which redraw only on change) at the
+  box's size, which the default 720p quality leaves as it is.
+- **Input**: a real click at the box's centre lands there (within 2 px, the game) and F13
+  arrives, and none of it reaches Veistra's window.
+- **Menu**: the menu shows over the window as it is, or, with the window hidden while the menu
+  is open, the menu shows within 100 ms and the window is back within 100 ms of it closing.
+
+It suggests R2, then R2 with `--wid`, then R1: the first to pass the first three on the demo
+game, and R2 when none does. The choice is the owner's. Paste the report's tables over these
+and record it in the R1/R2 row.
+
+| Check | R1 child window | R2 owned popup | R2 with --wid |
+|---|---|---|---|
+| Follows a Veistra move and resize | pending | pending | pending |
+| Graphics Capture accepts the window | pending | pending | pending |
+| Keyboard and mouse reach the game | pending | pending | pending |
+| A Veistra menu draws over it | pending | pending | pending |
+
+| Check | Demo game | Godot editor | Blender |
+|---|---|---|---|
+| Follows a Veistra move and resize | pending | pending | pending |
+| Graphics Capture accepts the window | pending | pending | pending |
+| Keyboard and mouse reach the game | pending | pending | pending |
+| A Veistra menu draws over it | pending | pending | pending |
 
 ### Not verified on a real machine
 
@@ -346,6 +416,15 @@ From #312, not yet run in a real Godot (gdparse, gdlint and Rust tests only):
 - Stop's `flush`: the take's telemetry runs to its last 100 ms.
 - With the addon removed, Play runs, Rec says why it is off, and nothing throws; an exported
   build with the addon writes nothing to the folder it is given.
+
+From #308, not yet run (unit tests, a Windows type-check and clippy only):
+
+- `pnpm spike:embed` as a whole: nothing in `spike.rs`'s Win32 half has run, so the R1/R2 row
+  waits on its first run. A failure of the harness itself shows as a "Harness error" row, not as
+  a failed check; fix the harness and run it again before reading the tables.
+- The reporters: `reporter.gd` and `editor_reporter.gd` in a real Godot 4.3 or later (gdparse
+  and gdlint only), and `blender_reporter.py`'s listener in a Blender with a window (its tests
+  run in background `bpy`, which has no window and no events).
 
 From #310, the take's timing and files tested through a fake capture; the encoder, the scaling
 pass and the frame clock type-checked for Windows only:
@@ -463,6 +542,23 @@ window, no GPU and no WebView2 ran:
 - `events.jsonl` appended by Godot's `FileAccess` and Python while Rust reads it, and
   `notes.json` replaced on Windows while the dock or the tab has it open: the rename is tried
   again on the next poll when it is refused.
+
+From #319, the diff is unit-tested in Node on Blender 5.0.1's own export of test 13's pair and on
+generated meshes, the worker's handler and its fallback run in Node, Compare mode runs in jsdom
+with the real diff and a stand-in view, and the Rust half runs here and is type-checked and linted
+for Windows; no WebView2, WebGL or Blender with a window ran:
+
+- The worker bundled by `vite build` starting in WebView2 (`type: "module"`), and the footer
+  saying "in a worker" rather than "on this thread".
+- The budget on the owner's laptop: 200,000 triangles a side in 2 s or less, with the parse on top.
+- The change view drawn: the amber hatch's width at 100, 150 and 200 % scaling, the removed ghost's
+  dashes under ANGLE, Split's divider and its one camera, N framing each place, and a part framed
+  from the side list.
+- The embedded Blender hidden while Compare shows and back, unmoved, when Editor mode returns.
+- Go back to A opening a version's `source.blend` in Blender in the pane. Nothing writes one yet,
+  so this has only run against a fake editor.
+- Compare's pickers, legend, side list and footer against the BlenderModel board at 1440 and
+  1024 px wide.
 
 From #314, tested in jsdom and type-checked only; no WebView2, video decoder or Godot ran:
 
@@ -678,7 +774,7 @@ adds to the 3D view's sidebar (#320, below) adds no command: it reads `notes.jso
 **One writer.** While Blender has the file open, `.veistra/locks/<file>.lock` holds Blender's pid
 and start time, the cluster and the channel. A banner under the bar says "You have bed.blend open.
 The agent's next export goes to v6 beside it and never overwrites your file.", with Compare with
-v5 waiting for #319. Opening the same file again, from another pane, `blender-viewer/open` or
+v5, which opens Compare on that version (#319). Opening the same file again, from another pane, `blender-viewer/open` or
 Files' Open in Blender, is refused with the holding process; a file Blender reaches through
 File > Open that another Blender holds gets the conflict banner and no lock, until that one
 closes.
@@ -727,3 +823,25 @@ like the selected objects, with the same buttons. It is registered only when the
 its channel, so a Blender opened by hand has no Veistra tab, and its operators do not touch the
 scene or the undo history.
 
+## Blender Compare (#319)
+
+`packages/scene-view/src/compare/` is the diff and the change view; `apps/blender-viewer/ui/src/compare/`
+is the mode; `blender/versions.rs` and `blender-viewer/version-keep` are the backend's part. It
+compares any two of a `.blend`'s kept versions, and only reads them, so it is there on main and
+wherever the editor cannot open, with Keep and the note buttons disabled on main.
+
+**Choosing.** The mode switch offers Compare once a file has two versions, and its tooltip says why
+before then; the Editor banner's Compare with v<n> opens it on that version. B defaults to the
+newest, A to the kept version when it is older, otherwise the one before B. The pickers name each
+version's number, who exported it, its commit, its age and its triangles, and Swap trades them.
+
+**The change view.** The two `.glb`s are fetched once each and diffed in a worker (spec §12.1, with
+the refined δ rule in the Decisions table). Changes is the default; Split shows A and B either side
+of a divider under the same camera. The legend over the view is the four classes, each a toggle
+with its count, and Next change (N, Shift N) steps through the places that changed. The side list is
+each part with its counts and its material changes, then the notes made on A with Looks good and
+Still broken.
+
+**Keeping.** Keep vB pins B so it outlives the ten-version window; Go back to vA opens A's own copy
+of the `.blend` in Editor mode where the version kept one. Both are X12's minimum and flagged to the
+owner; neither writes a version or the person's file.

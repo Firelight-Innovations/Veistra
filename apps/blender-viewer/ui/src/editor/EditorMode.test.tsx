@@ -68,7 +68,7 @@ vi.mock("./ViewportMarkup", () => ({
 }));
 
 import EditorMode, { editorChip, footerText } from "./EditorMode";
-import { COMPARE_LATER, MODES } from "../modes";
+import { COMPARE_NEEDS_TWO, modesFor } from "../modes";
 import type { BlenderViewerState } from "../rpc";
 import type { BlenderEditorInfo, BlenderEditorState } from "./rpc";
 
@@ -203,8 +203,8 @@ function backend() {
 
 const calls = (method: string) => bridge.invoke.mock.calls.filter((c) => c[0] === method);
 
-function show(viewer: Partial<BlenderViewerState> = {}, onPick = vi.fn()) {
-  const modeSwitch = { value: "editor" as const, options: MODES, onChange: vi.fn() };
+function show(viewer: Partial<BlenderViewerState> = {}, onPick = vi.fn(), onCompare = vi.fn()) {
+  const modeSwitch = { value: "editor" as const, options: modesFor(3), onChange: vi.fn() };
   const utils = render(
     <EditorMode
       modeSwitch={modeSwitch}
@@ -212,9 +212,10 @@ function show(viewer: Partial<BlenderViewerState> = {}, onPick = vi.fn()) {
       onPick={onPick}
       frameRect={null}
       overlays={[]}
+      onCompare={onCompare}
     />,
   );
-  return { ...utils, onPick };
+  return { ...utils, onPick, onCompare };
 }
 
 const bar = () => screen.getByRole("toolbar", { name: "Blender" });
@@ -296,15 +297,24 @@ describe("Blender's Editor mode, with Blender open in the pane", () => {
     expect(screen.queryByRole("combobox", { name: ".blend file" })).toBeNull();
   });
 
-  it("says who writes the file: the agent's next export is v6, and Compare waits for #319", async () => {
-    show();
+  it("says who writes the file: the agent's next export is v6, and Compare opens on v5", async () => {
+    const { onCompare } = show();
     const banner = await screen.findByRole("note", { name: "Who writes this file" });
     expect(banner.textContent).toContain(
       "You have bed.blend open. The agent's next export goes to v6 beside it and never overwrites your file.",
     );
-    const compare = within(banner).getByRole("button", { name: "Compare with v5" });
-    expect(compare.getAttribute("aria-disabled")).toBe("true");
-    expect(compare.getAttribute("title")).toBe(COMPARE_LATER);
+    fireEvent.click(within(banner).getByRole("button", { name: "Compare with v5" }));
+    expect(onCompare).toHaveBeenCalledWith(5);
+  });
+
+  it("draws Compare with v1 disabled while v1 is the only version, and says why", async () => {
+    const { onCompare } = show({ versions: [1] });
+    const banner = await screen.findByRole("note", { name: "Who writes this file" });
+    const compare = within(banner).getByRole("button", { name: "Compare with v1" });
+    expect((compare as HTMLButtonElement).disabled).toBe(true);
+    expect(compare.getAttribute("title")).toBe(COMPARE_NEEDS_TWO);
+    fireEvent.click(compare);
+    expect(onCompare).not.toHaveBeenCalled();
   });
 
   it("marks unsaved changes in the subject and the chip", async () => {

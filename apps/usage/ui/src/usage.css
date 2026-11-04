@@ -1,0 +1,390 @@
+/*
+ * The Usage app, from `AppUsage.dc.html` on the design canvas. Kaava tokens
+ * only, so both themes follow the app's theme setting. Chart colours are the
+ * chart ramp: agent tokens `--chart-1`, cloud worker `--chart-3`, GPU `--chart-4`.
+ */
+
+.usage {
+  height: 100%;
+  display: flex;
+  min-height: 0;
+  background: var(--bg-surface-1);
+  color: var(--txt-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.usage__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.usage__bar {
+  flex: none;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px 0 16px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.usage__title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--txt-primary);
+}
+
+.usage__select {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  background: var(--bg-layer-1);
+  border: 1px solid var(--border-subtle-1);
+  color: var(--txt-primary);
+  font: inherit;
+}
+
+.usage__spacer {
+  flex: 1;
+}
+
+.usage__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.usage__cap {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--txt-tertiary);
+}
+
+.usage__error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--txt-danger);
+}
+
+.usage__label {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--txt-placeholder);
+}
+
+.usage__big {
+  margin: 4px 0 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--txt-primary);
+}
+
+.usage__mono {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.usage__dim {
+  color: var(--txt-placeholder);
+}
+
+.usage__strong {
+  color: var(--txt-primary);
+}
+
+.usage__icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* --- stat cards ----------------------------------------------------------- */
+
+.usage__stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.usage__card {
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--bg-layer-1);
+}
+
+.usage__swatch {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 2px;
+}
+
+/* --- the daily chart ------------------------------------------------------- */
+
+.usage__chart {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 6px;
+}
+
+.usage__axis {
+  height: 140px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  text-align: right;
+  font: 11px var(--mono);
+  color: var(--txt-placeholder);
+  transform: translateY(-6px);
+}
+
+.usage__plot {
+  position: relative;
+  height: 140px;
+}
+
+.usage__grid,
+.usage__bars {
+  position: absolute;
+  inset: 0;
+  display: flex;
+}
+
+.usage__grid {
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.usage__grid > span {
+  height: 1px;
+  background: var(--chart-grid);
+}
+
+.usage__grid > .usage__grid-base {
+  background: var(--border-strong);
+}
+
+.usage__bars {
+  align-items: flex-end;
+  gap: 24px;
+}
+
+.usage__bars--dense {
+  gap: 3px;
+}
+
+.usage__day {
+  flex: 1;
+  min-width: 3px;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 1px;
+  border-radius: 2px 2px 0 0;
+  overflow: hidden;
+}
+
+.usage__day > span {
+  flex-shrink: 1;
+  flex-basis: 0;
+}
+
+.usage__ticks {
+  display: flex;
+  justify-content: space-between;
+  font: 11px var(--mono);
+  color: var(--txt-placeholder);
+}
+
+/* --- runs ---------------------------------------------------------------- */
+
+.usage__runs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.usage__table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.usage__table th {
+  height: 28px;
+  padding: 0 10px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--txt-placeholder);
+  position: sticky;
+  top: 0;
+  background: var(--bg-surface-1);
+}
+
+.usage__table td {
+  height: 32px;
+  padding: 0 10px;
+  border-top: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+
+.usage__table tr:hover td {
+  background: var(--bg-layer-1-hover);
+}
+
+.usage__num {
+  text-align: right !important;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage__run-name {
+  font-weight: 500;
+  color: var(--txt-primary);
+}
+
+/* --- the limit panel -------------------------------------------------------- */
+
+.usage__aside {
+  flex: 0 0 320px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border-subtle);
+}
+
+.usage__aside-head {
+  flex: none;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-weight: 500;
+  color: var(--txt-primary);
+}
+
+.usage__aside-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.usage__group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.usage__group--ruled {
+  padding-top: 16px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.usage__amount {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.usage__amount .usage__big {
+  margin: 0;
+}
+
+.usage__meter {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-layer-3);
+  overflow: hidden;
+}
+
+.usage__meter > div {
+  height: 100%;
+  background: var(--accent);
+}
+
+.usage__badge {
+  margin: 0;
+  align-self: flex-start;
+}
+
+.usage__line {
+  margin: 0;
+  display: flex;
+  justify-content: space-between;
+}
+
+.usage__setting {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.usage__wide {
+  width: 100%;
+}
+
+/* --- signed out or not set up ------------------------------------------------ */
+
+.usage--blocked {
+  align-items: center;
+  justify-content: center;
+}
+
+.usage__blocked {
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+
+@media (max-width: 900px) {
+  .usage {
+    flex-direction: column;
+    overflow: auto;
+  }
+
+  .usage__main {
+    overflow: visible;
+  }
+
+  .usage__body {
+    overflow: visible;
+  }
+
+  .usage__stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .usage__aside {
+    flex: none;
+    border-left: 0;
+    border-top: 1px solid var(--border-subtle);
+  }
+}

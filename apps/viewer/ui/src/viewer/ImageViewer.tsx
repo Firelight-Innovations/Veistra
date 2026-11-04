@@ -19,9 +19,14 @@
  */
 import { useState } from "react";
 import { formatSize } from "../rpc";
-import { mimeFor, useBlobUrl } from "./blobUrl";
+import { mimeFor, useBlobUrl, type Decode } from "./blobUrl";
+import { rgbaToPng } from "./raster";
+import { decodeTga } from "./tga";
 import type { ViewerProps } from "./registry";
 import "./media.css";
+
+/** TGA is the one raster here `<img>` cannot decode; it is decoded to PNG first. */
+const decodeTgaToPng: Decode = (bytes) => rgbaToPng(decodeTga(bytes));
 
 interface Natural {
   width: number;
@@ -37,7 +42,11 @@ export default function ImageViewer({ file }: ViewerProps) {
   const [actual, setActual] = useState(false);
   const [natural, setNatural] = useState<Natural | null>(null);
 
-  const state = useBlobUrl(file.path, mimeFor(file.ext));
+  const state = useBlobUrl(
+    file.path,
+    mimeFor(file.ext),
+    file.ext === "tga" ? decodeTgaToPng : undefined,
+  );
 
   if (state.status === "loading") {
     return <p className="app__note media__note">Reading {file.name}…</p>;

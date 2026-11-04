@@ -23,8 +23,9 @@ infrastructure behind them, as a side effect of import. None of that is
 needed to show a read-only diff.
 
 The cost of that choice is that Monaco arrives here knowing no *bundled*
-language, so `language` below is honoured for exactly one value: `"toml"`,
-registered by the `registerToml` call further down. Every other id resolves
+language, so `language` below is honoured only for the hand-written grammars —
+`"toml"`, `"gdscript"` and `"godot-resource"` — registered by the
+`registerLanguages` call further down. Every other id resolves
 to nothing and renders as plain text — which is the same answer the prop gave
 for every id before, so no caller regresses.
 

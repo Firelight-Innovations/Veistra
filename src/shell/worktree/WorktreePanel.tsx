@@ -18,7 +18,7 @@
  * sections rather than one scrolling list.
  */
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { isTomlPath, TOML_LANGUAGE_ID } from "@veistra/monaco-languages";
+import { languageIdForPath } from "@veistra/monaco-languages";
 import type {
   GitBranch,
   GitCommit,
@@ -675,7 +675,7 @@ function DivergenceView({
               <AnnotatedDiff
                 original={diff.original}
                 modified={diff.modified}
-                language={isTomlPath(selected.path) ? TOML_LANGUAGE_ID : undefined}
+                language={languageIdForPath(selected.path)}
                 renderSideBySide={false}
                 path={selected.path}
                 scope="branch"

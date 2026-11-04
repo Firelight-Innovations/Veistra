@@ -7,21 +7,25 @@
  *   Blender), the read-only viewer of the last export.
  * - **Renders** is what an export made: its preview renders, the `.glb` in 3D
  *   and Blender's wireframe pass, with the parts list.
- * - **Compare** sets two export versions side by side. It is drawn and cannot
- *   be chosen until it is built (#319); its tooltip says so.
+ * - **Compare** is what changed between two kept versions of the file
+ *   (`compare/CompareMode.tsx`, #319). With fewer than two it is drawn and
+ *   cannot be chosen, and its tooltip says why.
  */
 import type { SegmentedOption } from "../../../shared/SegmentedControl";
 
 export type BlenderMode = "editor" | "renders" | "compare";
 
-export const COMPARE_LATER =
-  "Compare is not built yet. It will set two export versions side by side; until then, Renders shows the newest.";
+export const COMPARE_NEEDS_TWO =
+  "Compare needs two exports of this file. Export it again, or let the agent export it, and Compare shows what changed.";
 
-export const MODES: readonly SegmentedOption<BlenderMode>[] = [
-  { value: "editor", label: "Editor" },
-  { value: "renders", label: "Renders" },
-  { value: "compare", label: "Compare", disabled: true, title: COMPARE_LATER },
-];
+/** The mode switch for a file with `versions` kept versions. */
+export function modesFor(versions: number): readonly SegmentedOption<BlenderMode>[] {
+  const compare: SegmentedOption<BlenderMode> =
+    versions >= 2
+      ? { value: "compare", label: "Compare" }
+      : { value: "compare", label: "Compare", disabled: true, title: COMPARE_NEEDS_TWO };
+  return [{ value: "editor", label: "Editor" }, { value: "renders", label: "Renders" }, compare];
+}
 
 /**
  * How Renders, and the viewer in Editor mode, look at an export, in the

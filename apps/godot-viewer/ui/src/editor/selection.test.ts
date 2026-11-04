@@ -29,6 +29,7 @@ beforeEach(() => {
   let n = 0;
   bridge.invoke.mockImplementation((method: string) => {
     if (method === "context/put") return Promise.resolve({ id: `item${++n}` });
+    if (method === "context/insert") return Promise.resolve({ inserted: true, count: 2 });
     return Promise.resolve(null);
   });
 });
@@ -82,7 +83,21 @@ describe("sendSelection", () => {
     expect(sent.typed).toBe(true);
   });
 
-  it("keeps both items when no prompt takes the references, and says so", async () => {
+  it("says nothing was typed when no agent terminal takes the references", async () => {
+    // What `context/insert` answers with no agent terminal in the cluster:
+    // not an error, because the items are attached in the strip either way.
+    bridge.invoke.mockImplementation((method: string) => {
+      if (method === "context/insert") {
+        return Promise.resolve({ inserted: false, reason: "no agent terminal is open" });
+      }
+      return Promise.resolve({ id: "x" });
+    });
+    const sent = await sendSelection(SELECTION);
+    expect(sent.typed).toBe(false);
+    expect(calls("context/put")).toHaveLength(2);
+  });
+
+  it("keeps both items when typing the references fails, and says so", async () => {
     bridge.invoke.mockImplementation((method: string) => {
       if (method === "context/insert") return Promise.reject(new Error("no agent terminal"));
       return Promise.resolve({ id: "x" });

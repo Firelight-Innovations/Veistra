@@ -314,6 +314,15 @@ const REGISTRY: &[Registered] = &[
         places_window: false,
     },
     Registered {
+        id: "usage",
+        name: "Usage",
+        description: "What your Veistra account has used and spent, by day and by run, against its monthly limit.",
+        // Reads the account service as the signed-in person; see `crate::account`.
+        call: crate::account::methods::app_call,
+        call_for: None,
+        places_window: false,
+    },
+    Registered {
         id: "projects",
         name: "Projects",
         description: "Switch between projects, and open the shared Plane workspace for one.",
@@ -802,6 +811,8 @@ pub const WRITE_METHODS: &[&str] = &[
     "blender-viewer/open",
     // Blender in the pane, which saves the file it has open (#317).
     "blender-viewer/editor-open",
+    // Compare's Keep B (#319): a decision about the work, like a verdict.
+    "blender-viewer/version-keep",
     "files/open-in-blender",
     "play/addon-install",
     "play/addon-remove",

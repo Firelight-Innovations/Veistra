@@ -160,6 +160,52 @@ export const setExecutable = (path: string) =>
 export const getGlb = (blend: string) =>
   invoke<{ base64: string; size: number }>("blender-viewer/glb", { blend });
 
+/** One material's values as the export read them (`collect_materials` in `export.py`). */
+export interface VersionMaterial {
+  name: string;
+  /** RGBA, 0 to 1. */
+  color?: number[];
+  metallic?: number;
+  roughness?: number;
+  alpha?: number;
+}
+
+/** A kept version as `blender-viewer/export-versions` lists it: `export.json`, plus where it is. */
+export interface VersionEntry extends ExportVersion {
+  parts: BlenderPart[];
+  materials: VersionMaterial[];
+  /** The version's `.glb` (absolute), or `null` when the export made none. */
+  model: string | null;
+  /** The version's own copy of the `.blend`, which Go back to A opens; `null` when it kept none. */
+  blendCopy: string | null;
+}
+
+export interface VersionList {
+  rel: string;
+  /** How many versions are kept before the oldest is pruned. */
+  keep: number;
+  /** The version the person kept in Compare, which pruning never takes; `null` for none. */
+  kept: number | null;
+  locked: BlendLockInfo | null;
+  /** Newest first. */
+  versions: VersionEntry[];
+}
+
+export const listVersions = (blend: string) =>
+  invoke<VersionList>("blender-viewer/export-versions", { blend });
+
+/** One kept version's `.glb`, as standard base64. */
+export const getVersionGlb = (blend: string, version: number) =>
+  invoke<{ base64: string; size: number }>("blender-viewer/glb", { blend, version });
+
+/** Compare's Keep B: pins the version. The `.blend` is not touched. The person's call only. */
+export const keepVersion = (blend: string, version: number) =>
+  invoke<{ rel: string; kept: number }>("blender-viewer/version-keep", {
+    blend,
+    version,
+    actor: "human",
+  });
+
 /** Replaces this `.blend`'s kept markup; one pair per file, so it never accumulates. */
 export const saveMarkup = (blend: string, pngBase64: string, json: string) =>
   invoke<{ savedAt: number }>("blender-viewer/markup-save", { blend, pngBase64, json });

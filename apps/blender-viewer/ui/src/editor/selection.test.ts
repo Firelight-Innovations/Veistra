@@ -97,7 +97,21 @@ describe("sendSelection", () => {
     expect(sent.typed).toBe(true);
   });
 
-  it("keeps the items when there is no prompt to type into, and says so", async () => {
+  it("says nothing was typed when no agent terminal takes the references", async () => {
+    // What `context/insert` answers with no agent terminal in the cluster:
+    // not an error, because the items are attached in the strip either way.
+    bridge.invoke.mockImplementation((method: string) =>
+      Promise.resolve(
+        method === "context/insert"
+          ? { inserted: false, reason: "no agent terminal is open" }
+          : { id: "i", key: "k" },
+      ),
+    );
+    const sent = await sendSelection(CAP);
+    expect(sent.typed).toBe(false);
+  });
+
+  it("keeps the items when typing the references fails, and says so", async () => {
     bridge.invoke.mockImplementation((method: string) =>
       method === "context/insert"
         ? Promise.reject(new Error("no agent terminal"))

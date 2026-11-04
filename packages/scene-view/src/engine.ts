@@ -41,6 +41,7 @@ import { findByPath } from "./nodePath";
 import { frameBounds, poseFromCamera } from "./pose";
 import { pickNode, projectPoint } from "./projection";
 import type { CameraPose, PickHit, Vec3, ViewportPoint } from "./markupHost";
+import { parseModel, type ModelSource } from "./formats";
 
 export interface LoadedInfo {
   triangles: number;
@@ -130,23 +131,17 @@ export class SceneEngine {
   }
 
   /**
-   * Parses and adds a glb. A scene over `maxTriangles` is parsed, counted and
-   * thrown away rather than uploaded; the count is the only reason to have
-   * paid for the parse. Calling `load` twice replaces the first scene.
+   * Parses and adds a glb — or, given a `ModelSource`, any format `./formats`
+   * reads. A scene over `maxTriangles` is parsed, counted and thrown away rather
+   * than uploaded; the count is the only reason to have paid for the parse.
+   * Calling `load` twice replaces the first scene.
    */
   async load(
-    source: ArrayBuffer | string,
+    source: ArrayBuffer | string | ModelSource,
     maxTriangles: number,
     signal?: AbortSignal,
   ): Promise<LoadResult> {
-    const data =
-      typeof source === "string"
-        ? await fetch(source, { signal }).then((r) => {
-            if (!r.ok) throw new Error(`${r.status} ${r.statusText} for ${source}`);
-            return r.arrayBuffer();
-          })
-        : source;
-    const gltf = await new GLTFLoader().parseAsync(data, "");
+    const gltf = await this.parse(source, signal);
     if (this.disposed || signal?.aborted) {
       disposeTree(gltf.scene);
       throw new DOMException("aborted", "AbortError");
@@ -172,6 +167,25 @@ export class SceneEngine {
     this.home = authored ? this.poseFromAuthored(authored) : this.framedPose();
     this.applyPose(this.home);
     return { ok: true, info: { triangles, hasGltfCamera: !!authored, hasGltfLights: hasLights } };
+  }
+
+  /** A scene and its authored cameras. Only glTF carries cameras worth starting from. */
+  private async parse(
+    source: ArrayBuffer | string | ModelSource,
+    signal?: AbortSignal,
+  ): Promise<{ scene: Object3D; cameras: Object3D[] }> {
+    if (typeof source === "string") {
+      const data = await fetch(source, { signal }).then((r) => {
+        if (!r.ok) throw new Error(`${r.status} ${r.statusText} for ${source}`);
+        return r.arrayBuffer();
+      });
+      return new GLTFLoader().parseAsync(data, "");
+    }
+    if (source instanceof ArrayBuffer) return new GLTFLoader().parseAsync(source, "");
+    if (source.format === "glb" || source.format === "gltf") {
+      return new GLTFLoader().parseAsync(source.bytes, "");
+    }
+    return { scene: await parseModel(source), cameras: [] };
   }
 
   /** Overrides the pose the view starts at and `resetView` returns to. */

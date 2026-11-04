@@ -35,7 +35,7 @@ import {
   type ToolbarMode,
   type ToolbarStatus,
 } from "../../../../shared/ViewerToolbar";
-import { COMPARE_LATER, type BlenderMode } from "../modes";
+import { COMPARE_NEEDS_TWO, type BlenderMode } from "../modes";
 import type { BlenderViewerState } from "../rpc";
 import { resolvePins } from "./pins";
 import {
@@ -77,6 +77,8 @@ export interface EditorModeProps {
   frameRect: WindowRect | null;
   /** The shell's open overlays (`veistra/overlays`). */
   overlays: WindowRect[];
+  /** The banner's "Compare with v<n>": Compare mode, with that version as B. */
+  onCompare?: (version: number) => void;
 }
 
 interface Marking {
@@ -129,7 +131,7 @@ function errorText(e: unknown): string {
 }
 
 export default function EditorMode(props: EditorModeProps) {
-  const { modeSwitch, viewer, onPick } = props;
+  const { modeSwitch, viewer, onPick, onCompare } = props;
   const [ed, setEd] = useState<BlenderEditorState | null>(null);
   const [ended, setEnded] = useState<BlenderEditorState["ended"] | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -453,8 +455,13 @@ export default function EditorMode(props: EditorModeProps) {
             <button
               type="button"
               className="k-btn k-btn--secondary k-btn--sm"
-              aria-disabled="true"
-              title={COMPARE_LATER}
+              disabled={versions.length < 2}
+              title={
+                versions.length < 2
+                  ? COMPARE_NEEDS_TWO
+                  : `What changed in v${banner.compareWith}, the newest export`
+              }
+              onClick={() => banner.compareWith !== null && onCompare?.(banner.compareWith)}
             >
               Compare with v{banner.compareWith}
             </button>

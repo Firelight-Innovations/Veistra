@@ -53,7 +53,9 @@ export function cameraPose(c: ViewCamera | undefined): CameraPose | null {
 /**
  * Both items, then both references at the prompt. With no agent prompt to
  * type into, the items are still in the Context strip, so that is not a
- * failure; `typed` says which it was.
+ * failure; `typed` says which it was. `context/insert` answers
+ * `{ inserted: false }` for that case rather than an error, so `typed` is
+ * its answer, not whether the call threw.
  */
 export async function sendSelection(
   cap: ViewportCapture,
@@ -74,8 +76,10 @@ export async function sendSelection(
     bytesBase64: cap.pngBase64,
   });
   try {
-    await invoke("context/insert", { itemIds: [text.id, image.id] });
-    return { text, image, typed: true };
+    const r = await invoke<{ inserted?: boolean } | null>("context/insert", {
+      itemIds: [text.id, image.id],
+    });
+    return { text, image, typed: r?.inserted === true };
   } catch (e) {
     console.error("veistra: could not type the selection references at the prompt", e);
     return { text, image, typed: false };

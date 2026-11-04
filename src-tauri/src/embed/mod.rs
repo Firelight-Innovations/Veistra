@@ -10,7 +10,7 @@
 //! on every move of the Veistra window ([`host::reposition_all`]). What it
 //! buys is that the recorder and the still ([`capture`]) capture that window
 //! alone, never Veistra's UI. The R1/R2 row in `docs/design-notes/godot-play.md`
-//! waits on the Windows spike; R1 would change [`sys`] and nothing else.
+//! waits on the embed spike (`godot/spike.rs`); R1 would change only [`sys`].
 //!
 //! [`host`] is the registry all three kinds go through, and its module doc is
 //! the API for an app that hosts a window. This file is one window: finding

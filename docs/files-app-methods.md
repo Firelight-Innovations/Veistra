@@ -23,6 +23,7 @@ and in whatever form the host OS produced.
 | `files/stat` | `{path}` | `{path, name, kind, size, mtime, exists}` |
 | `files/read` | `{path}` | `{path, text, truncated, limit, mtime}` |
 | `files/read-bytes` | `{path}` | `{path, base64, size, mtime}` |
+| `files/read-head` | `{path, bytes?}` | `{path, base64, size, truncated, mtime}` |
 
 `Entry` is `{name, path, kind, size, mtime}`, where `kind` is `"dir"`, `"file"`
 or `"other"` — a pipe, a socket, or a broken symlink. Listings come back sorted
@@ -35,6 +36,9 @@ to a directory nobody named.
 
 `files/read` truncates at `limit` bytes and says so. `files/read-bytes` *refuses*
 above its cap rather than truncating — half a PNG is not a smaller PNG.
+`files/read-head` is the exception that asks for a prefix: the first `bytes` (at most
+4 MiB, the default), with `size` the whole file's length. It exists for formats whose
+answer sits at the front, such as the thumbnail in a `.blend` (`docs/design-notes/asset-previews.md`).
 
 ## Writing
 

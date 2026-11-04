@@ -1534,6 +1534,42 @@ mod tests {
     }
 
     #[test]
+    fn a_mesh_note_keeps_the_file_and_version_compare_finds_it_by() {
+        use serde_json::json;
+
+        let env = TempDir::new().expect("tempdir");
+        let params = json!({
+            "anchor": {
+                "kind": "mesh", "part": "Blanket", "material": "Wool",
+                "blend": "props/bed.blend", "version": 4,
+            },
+            "body": "fold the corner",
+        });
+        let made = call(&context(env.path()), "comments/create", Some(&params))
+            .expect("claimed")
+            .expect("created");
+        assert_eq!(made["anchor"]["blend"], "props/bed.blend");
+        assert_eq!(made["anchor"]["version"], 4);
+
+        // A note from before #319 has neither, reads back with neither, and
+        // is written back without inventing them.
+        let old: Anchor =
+            serde_json::from_value(json!({ "kind": "mesh", "part": "p", "material": "m" }))
+                .expect("an old mesh anchor still reads");
+        assert_eq!(
+            old,
+            Anchor::Mesh {
+                part: "p".into(),
+                material: "m".into(),
+                blend: None,
+                version: None,
+            }
+        );
+        let written = serde_json::to_value(&old).expect("serialize");
+        assert!(written.get("blend").is_none() && written.get("version").is_none());
+    }
+
+    #[test]
     fn resolve_over_the_dispatcher_needs_an_id_and_a_note() {
         use serde_json::json;
 
