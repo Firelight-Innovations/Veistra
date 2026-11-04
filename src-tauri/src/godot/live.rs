@@ -570,7 +570,9 @@ pub fn record_project(
 }
 
 /// The `live` part of `play/state`. `project` is the page's chosen project,
-/// as `godot/status` names it.
+/// as `godot/status` names it. `marks` holds F8's and the toolbar's together;
+/// `f8Marks` counts F8's alone, so the page can tell a mark made in the game.
+/// `mouseCaptured` is the last tick's mouse mode.
 pub fn state(ctx: &Ctx, key_since: u64, project: Option<&str>) -> Value {
     let run = ctx.godot.runner.get(&ctx.key);
     let s = run
@@ -607,8 +609,10 @@ pub fn state(ctx: &Ctx, key_since: u64, project: Option<&str>) -> Value {
             "take": s.take_state(),
             "zero": s.zero(started),
             "marks": s.marks(),
+            "f8Marks": s.f8_count(),
             "keys": s.keys_since(key_since),
             "ticks": s.ticks(),
+            "mouseCaptured": s.mouse_captured(),
             "addon": s.channel.as_deref().and_then(super::addon::running_version),
         },
     })
@@ -837,6 +841,44 @@ mod tests {
             Some(2),
             "attach asks where the pane is when the game shows up"
         );
+    }
+
+    #[test]
+    fn state_counts_f8_marks_apart_and_says_when_the_game_holds_the_mouse() {
+        let w = world();
+        let c = ctx(&w);
+        let channel = w.dir.path().join("chan");
+        std::fs::create_dir_all(&channel).unwrap();
+        let spec = super::super::runner::RunSpec {
+            program: super::super::testing::fake_godot(w.dir.path(), true),
+            project: w.dir.path().join("game"),
+            scene: None,
+            channel: Some(channel.clone()),
+            window: None,
+        };
+        let run = w.godot.runner.start("c1", spec).unwrap();
+        let s = Arc::new(Session::new(run.id, Some(channel.clone()), None));
+        w.godot.set_session("c1", s.clone());
+        s.mark();
+        let file = channel.join(super::super::telemetry::FILE);
+        std::fs::write(
+            &file,
+            "{\"t\":5,\"kind\":\"mark\"}\n{\"t\":6,\"kind\":\"tick\",\"mouse\":2}\n",
+        )
+        .unwrap();
+        let first = state(&c, 0, None)["session"].clone();
+        std::fs::write(
+            &file,
+            "{\"t\":5,\"kind\":\"mark\"}\n{\"t\":6,\"kind\":\"tick\",\"mouse\":2}\n\
+             {\"t\":7,\"kind\":\"tick\",\"mouse\":0}\n",
+        )
+        .unwrap();
+        let then = state(&c, 0, None)["session"].clone();
+        assert_eq!(w.godot.runner.stop("c1"), Ok(true));
+        assert_eq!(first["marks"].as_array().map(Vec::len), Some(2));
+        assert_eq!(first["f8Marks"], 1, "the toolbar's is not F8's");
+        assert_eq!(first["mouseCaptured"], true);
+        assert_eq!(then["mouseCaptured"], false, "the last tick decides");
     }
 
     #[test]

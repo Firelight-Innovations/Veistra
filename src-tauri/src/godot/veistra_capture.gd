@@ -129,6 +129,9 @@ func _input(event: InputEvent) -> void:
 			if not key.pressed:
 				_held.erase(key.keycode)
 		return
+	# A release lost to a change of focus would leave the key marked as ours,
+	# and the game's own next press of it would lose its release.
+	_held.erase(key.keycode)
 	var which := _veistra_key(key)
 	if which == "":
 		return
