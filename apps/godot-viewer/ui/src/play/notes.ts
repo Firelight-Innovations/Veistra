@@ -9,7 +9,7 @@
  * in every packet and every message about it.
  */
 import type { MarkupJson } from "@veistra/markup";
-import type { Comment, Status } from "../../../shared/comments";
+import type { Comment, Status } from "../../../../shared/comments";
 
 /** What a note is about: picked live by ray, or found in the take's recorded boxes. */
 export interface Target {

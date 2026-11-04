@@ -1,9 +1,9 @@
 /**
- * What Play and the Godot Viewer both ask the Godot half of the backend:
+ * What both modes of the Godot app ask the Godot half of the backend:
  * where the engine is, which projects the environment holds, and "Open in
  * Godot". Restated here, not imported from `src-tauri`, for the reason
- * `comments.ts` restates the comment shapes. Both apps answer `godot/*` by
- * delegating to `src-tauri/src/godot/rpc.rs`.
+ * `comments.ts` restates the comment shapes. `godot/*` is answered by
+ * `src-tauri/src/godot/rpc.rs` for the app id and its `play` alias alike.
  */
 import { invoke } from "@veistra/bridge";
 

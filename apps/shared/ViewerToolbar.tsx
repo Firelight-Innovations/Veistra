@@ -1,9 +1,9 @@
 /**
- * The one toolbar Godot Play, Godot Scene and the Blender viewer share. The
+ * The one toolbar the Godot app's Editor and Play and the Blender viewer share. The
  * design (`Components` board, "Toolbar: same five slots in every app") fixes
  * the order, so the three surfaces read as one product:
  *
- * 1. **Mode**: Scene · Play, or Model · Renders · Compare.
+ * 1. **Mode**: Editor · Play, or Model · Renders · Compare.
  * 2. **What you see**: the scene, take or `.blend` picker.
  * 3. **State**: one chip with one word (Playing, Reviewing, Up to date, Changed).
  * 4. **Actions**: Rec, Mark, Mark up, a view switch.

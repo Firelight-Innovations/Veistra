@@ -8,8 +8,8 @@
  * an error shows that line, because the error is the first lead for a note.
  */
 import { useState } from "react";
-import type { Comment, Status, Verdict } from "../../../shared/comments";
-import { statusView } from "../../../shared/comments";
+import type { Comment, Status, Verdict } from "../../../../shared/comments";
+import { statusView } from "../../../../shared/comments";
 import { clock } from "./frames";
 import { commentOf, errorsNear, noteStatus, span, type LogRow, type NoteDraft } from "./notes";
 

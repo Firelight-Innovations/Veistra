@@ -1,21 +1,21 @@
 /**
- * The comment model shared by the Godot Viewer, the Blender Viewer and Play —
- * three apps, one store. `docs/VEISTRA-UX-REWORK.md` §3.4: a comment anchors to
+ * The comment model shared by the Godot app's Editor and Play modes and the
+ * Blender Viewer — one store. `docs/VEISTRA-UX-REWORK.md` §3.4: a comment anchors to
  * a node path, a mesh part plus material, or a scene plus a playhead time plus
  * a screenshot, or is a note on a recorded take, and lives as a file in
  * `.veistra/comments/` inside the calling cluster's environment.
  *
- * The three apps' Rust halves (`godot_viewer.rs`, `blender_viewer.rs`,
- * `play.rs`) all answer the same three methods below by delegating to
+ * Their Rust halves (`godot_viewer.rs` for both of the Godot app's modes, and
+ * `blender_viewer.rs`) answer the same methods below by delegating to
  * `src-tauri/src/comments.rs`, so this module — like `viewer/ui/src/rpc.ts` for
  * the Files app — *restates* the wire shapes rather than importing anything
- * from `src/`. It is the one place any of the three apps spells
+ * from `src/`. It is the one place any of the viewers spells
  * `"comments/create"`.
  *
- * This lives under `apps/shared/` rather than in one of the three apps,
- * because ESLint's app-isolation rule (`eslint.config.js`) forbids an app
- * importing another app's source — three copies of this file would drift the
- * moment one of them fixed a bug the other two still had. `apps/shared/` is
+ * This lives under `apps/shared/` rather than in one of the apps, because
+ * ESLint's app-isolation rule (`eslint.config.js`) forbids an app importing
+ * another app's source — a copy per app would drift the moment one of them
+ * fixed a bug the others still had. `apps/shared/` is
  * deliberately outside that rule (see `apps/README.md`'s layout note).
  */
 import { invoke } from "@veistra/bridge";

@@ -692,7 +692,7 @@ mod tests {
 
     // --- the script ----------------------------------------------------------
     // No Godot runs in CI. These pin the mechanism each of the script's fixes
-    // uses, as apps/play/ui/src/capture.gd.test.ts does for the older ones;
+    // uses, as apps/godot-viewer/ui/src/play/capture.gd.test.ts does for the older ones;
     // what the engine does with it rests on the API facts the script names.
 
     /// One function of the shipped script without its comment lines, from its

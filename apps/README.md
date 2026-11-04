@@ -43,15 +43,14 @@ apps/
   projects/ui/            Projects' frontend: the project switcher and its embedded Plane workspace
   design/ui/              Design Mode's frontend
   schematify/ui/          Schematify's frontend
-  godot-viewer/ui/        Godot Viewer's frontend: the scene an agent's headless Godot run last produced
+  godot-viewer/ui/        The Godot app's frontend: Editor mode (the scene view) and, under src/play/, Play mode
   blender-viewer/ui/      Blender Viewer's frontend: the .glb an agent's headless Blender export last produced
-  play/ui/                Play's frontend: the game in the pane, recorded takes, review and notes for an agent
   canvas/ui/              Canvas's frontend: Excalidraw design canvases, one JSON file each in the checkout
 ```
 
 `apps/shared/` is deliberately outside the app-isolation rule ESLint enforces between the apps above
-(`eslint.config.js`'s `APPS` array) — see "Comments", below, for why the Godot Viewer, the Blender
-Viewer and Play needed one.
+(`eslint.config.js`'s `APPS` array) — see "Comments", below, for why the Godot app and the Blender
+Viewer needed one.
 
 Each app's Rust half lives in `src-tauri/src/apps/<id>.rs`, and
 `src-tauri/src/apps/mod.rs` is the registry that names it, describes it for the
@@ -424,13 +423,25 @@ app — a tab in the switcher and a row in the Apps menu, like Files or the
 Viewer. Scope grows wave by wave; `docs/design/SCHEMATIFY-PRD.md` §17 is
 where that gets filled in.
 
-**Godot Viewer** (`godot-viewer/state`) — read-only: the scene an agent's
-headless `godot --headless` run last produced, a node tree beside a viewport
-render. There is no live game view and no way to change anything from here —
-selecting a node offers a comment, nothing else. `state()` has nothing to walk
-yet, because nothing runs the headless export against this project in this
-build; `nodes` is always `[]` until that lands. "Open in Godot" is visibly
-present and visibly disabled — there is no install handoff behind it yet.
+**Godot** — one app with two modes, Editor and Play (decision 1 in
+`docs/design-notes/godot-play.md`). One Rust entry, `godot::rpc::godot`,
+answers `godot-viewer/*`, `play/*` and `godot/*` for both, reached through
+`godot_viewer.rs`. `play` is not a second app: it is a registry alias that
+opens this frontend with `?mode=play`, keeps its own title so a new Play tab is
+still called Play, and stays out of the Apps menu, so saved layouts, presets
+and agents that name it keep working. A pane opens in the mode its URL names
+and then keeps its own choice, saved per pane instance (`modes.ts`), because a
+cluster switch reloads every frame. `ui/src/App.tsx` is the part that loads up
+front: it catches the window rect, the overlays and an open's payload for
+whichever mode shows (the bridge keeps no event nobody listened for), reads
+`godot/status` for both modes and again on every `project:changed`, and holds
+what must outlive a switch.
+
+*Editor* is, until the embedded editor arrives (C1), the read-only scene view:
+the node tree beside a 3D view or a rendered frame, read from the scene file
+or by a headless Godot. Selecting a node offers a comment. Play scene, or F5,
+turns the pane to Play and runs the game there; Open in Godot opens the real
+editor in its own window.
 
 **Blender Viewer** (`blender-viewer/state`) — read-only, the same shape for
 Blender: a Model/Renders/Wire switch, an honest placeholder in place of a real
@@ -438,16 +449,23 @@ Blender: a Model/Renders/Wire switch, an honest placeholder in place of a real
 `docs/VEISTRA-UX-REWORK.md` §3.2), a parts list, a renders strip. Same story as
 the Godot Viewer on emptiness and "Open in Blender".
 
-**Play** (`play/state`) — runs the environment's game in a pane: on Windows
+*Play* (`ui/src/play/`) runs the environment's game in the pane: on Windows
 the game's own window is placed over the pane's game box, elsewhere it keeps
-its own window and the pane shows its log. With Record on, a run is kept as a
-take; review shows it on a timeline where notes are written, marked up and
-sent to the agent as a feedback packet. Keys are bound on the app's own root
-element, not `window`, so they never fire while a different pane has focus.
+its own window and the pane shows its log. Its toolbar has the board's five
+slots: the mode, the project and scene pickers, the state chip, Rec, Mark and
+Mark up, and Pop out; a button that cannot act is disabled with its reason,
+never hidden. With Record on, a run is kept as a take; review shows it on a
+timeline where notes are written, marked up and sent to the agent as a
+feedback packet. F5 runs or restarts, Shift F5 stops, F6 pauses, F7 stops and
+opens review, F8 marks, Ctrl R toggles Record and Ctrl Shift M marks up the
+live frame. Keys are bound on the mode's own root element, not `window`, so
+they never fire while a different pane has focus. While the game holds the
+mouse, the live strip names F7, the key the capture addon forwards from inside
+the game (`mouseCaptured`, sent by addon v2's backend, #312).
 `docs/design-notes/godot-play.md` has the whole of it.
 
-**A window over the pane.** Play, the Godot Viewer, the Blender Viewer and
-Projects declare `places_window` in the registry (`src-tauri/src/apps/mod.rs`):
+**A window over the pane.** The Godot app (under both of its ids), the Blender
+Viewer and Projects declare `places_window` in the registry (`src-tauri/src/apps/mod.rs`):
 Rust places a native window over the pane, so the shell pushes them
 `veistra/window-rect` and `veistra/overlays` (`docs/tool-protocol.md` §3). The
 game, the Godot editor and Blender share one embedder, `src-tauri/src/embed/`,
@@ -460,21 +478,21 @@ unmount. The game reports through `play/embed-rect`, `play/still`,
 them; an editor uses the host's `embed/rect`, `embed/still`, `embed/pop-out`,
 `embed/dock` and `embed/state` with its `kind` (`apps/shared/nativeWindow.ts`).
 
-All three show an honest empty state everywhere they have nothing to show,
-rather than fabricating a render, a part list or a frame. Each has a single
-"Preview with sample data" toggle, off by default, that swaps in a fixture
-(`fixtures.ts` beside each app's `App.tsx`) so the layout can be reviewed
+The Godot app and the Blender Viewer show an honest empty state everywhere
+they have nothing to show, rather than fabricating a render, a part list or a
+frame. Each scene view has a single "Preview with sample data" toggle, off by
+default, that swaps in a fixture (`fixtures.ts` beside the view) so the layout can be reviewed
 before anything upstream produces real data — never anything that looks like
 it came from a real run.
 
 ## Comments
 
-The Godot Viewer, the Blender Viewer and Play share one comment store rather
-than three: `apps/shared/comments.ts` is the model and the three RPC calls
-(`comments/list`, `comments/create`, `comments/resolve`), and
-`apps/shared/CommentPanel.tsx` is the list every one of them mounts. All three
+The Godot app's two modes and the Blender Viewer share one comment store
+rather than three: `apps/shared/comments.ts` is the model and the three RPC
+calls (`comments/list`, `comments/create`, `comments/resolve`), and
+`apps/shared/CommentPanel.tsx` is the list every one of them mounts. Both apps
 delegate to it from their own Rust module (`src-tauri/src/comments.rs`,
-reached through `godot_viewer.rs`/`blender_viewer.rs`/`play.rs`'s `dispatch`),
+reached through `godot_viewer.rs`'s and `blender_viewer.rs`'s `dispatch`),
 which is why it lives under `apps/shared/` rather than in whichever app needed
 it first — see that directory's note above on why the isolation rule excludes
 it.
