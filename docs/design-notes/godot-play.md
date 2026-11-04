@@ -88,10 +88,21 @@ plus any with drafts, and `.git/info/exclude` keeps them out of git. On read-onl
 under the app's data instead. Time zero is the first video frame's wall-clock time; telemetry
 and the log carry wall time, so every lane lines up on one clock.
 
-**Addon v2** writes a tick ten times a second (scene, camera, player, frame time, viewport,
-tracked node boxes), marks for F8, and keys F7 and Ctrl Shift M, which it handles so the game
-never sees them. `pick` casts a ray through a point. The marker is `# veistra-capture v2`, so a
-project holding v1 shows "Update capture".
+**Addon v2** (`veistra_capture.gd`) writes a tick ten times a second (scene, camera, player,
+the longest frame since the tick before, the viewport and the box the window shows it in, the
+mouse mode, tracked node boxes, and its own cost as `tickUs`), marks for F8, and keys F7 and
+Ctrl Shift M. It handles those three in `_input` from the root's last child, with their repeats
+and releases, so the game's input callbacks never see them. Tracked nodes are the
+`veistra_track` group when it has members, else physics bodies and the geometry and sprites
+that are not part of one, in view by their box's centre, nearest 64. `pick` is answered in the
+physics frame: a camera ray, a 2D point query, then the smallest tracked box. The addon does
+nothing without `--veistra-dir`, and nothing in an exported build whatever its arguments.
+
+The pane shows "Update capture" whenever the installed script is not this build's text (a v1
+script, or an earlier v2, whose game keeps its channel until the update). Stop sends the addon
+`flush` before the take copies its telemetry, and `take.json`'s `ticks`, `tickRate`,
+`tickUsP95` and `tickNodes` count only the take's own ticks. `examples/godot-demo` is the game
+the acceptance runs use, and its README is the procedure (#312).
 
 **Send** (`feedback.rs`) writes `.veistra/feedback/<take>-<n>/` with `packet.md` and per note
 `markup.png`, `markup.json`, `contact.png`, `frames/` and `context.json`, files each note as a
@@ -106,16 +117,40 @@ on the context server from an agent tab.
 | R1 child window or R2 owned popup | R2, pending the Day 1 spike | Graphics Capture records the game window alone, never Veistra's UI. R1 (`SetParent`) is not built; the spike is where `CreateForWindow` on a child window gets tried. |
 | One Godot app or two | Two, with the shared toolbar | Scene · Play switches between the apps (`veistra/open`). Folding Play into the Godot app (open decision 1) is left for the owner; it is a move, not a rewrite. |
 | Record default | Off | Takes cost disk (open decision 2's recommendation). |
-| Tracked nodes | The design's default | `veistra_track` when it has members, else bodies and visible meshes in view, nearest 64. |
+| Tracked nodes | The design's default, with geometry for its "VisualInstance3D" | `veistra_track` when it has members, else bodies, plus the geometry and sprites not inside one, in view by their box's centre, nearest 64. VisualInstance3D also takes in lights, probes and decals; a body's own mesh tracked beside it could take a pin that should name the body; and a character's origin is at its feet, below a frame that shows the rest of it (#312). |
 | Video clip in the packet | Not built | The agent reads the contact sheet; the checkbox is shown disabled with why. |
 | Retention | Ten takes | Open decision 7. |
 | Video size | The window's, not 720p | `windows-capture` crops or pads, it does not scale. The bitrate is fixed at 3.5 Mbit/s, under 60 MB for two minutes. A D3D11 scaling pass is the follow-up. |
+| Where pick's physics query runs (#312) | `_physics_process`; the command poll only queues the pick | Godot makes the direct space state safe there alone: from `_process` it refuses with physics on its own thread, and Jolt refuses while it steps, so the pick fell back to boxes without saying why. The node runs while paused, so a pick still answers during Mark up. |
+| Exported builds (#312) | Inert whenever `OS.has_feature("template")` | Relying on a missing `--veistra-dir` alone was rejected: a shipped game started with the argument by hand would write telemetry and answer commands, against §5.5 rule 6 and the consent text. |
+| When Update capture is offered (#312) | Whenever the installed script's text is not this build's, CRLF read as LF; an earlier v2 goes out as `partial` but keeps its channel | The marker alone called every earlier v2 current, so no fix to the script ever reached a project that had one. Treating an earlier v2 as a broken install was rejected: its game would lose capture and Rec until updated. |
+| The take's last second of ticks (#312) | Stop sends the addon `flush` (600 ms at most, only while the game runs) before the copy; commands to one channel take turns | The addon flushes once a second, so up to a second was missing. Flushing every tick costs a write a tick. The game reads one `cmd.json`, so a flush landing during the pane's pick would have replaced it. |
+| Veistra's keys and the game (#312) | Handled in `_input` by the root's last child, with the key's repeats and release; an InputMap action bound to the key is released | `Window.window_input` was rejected: `push_input` resets the handled flag after it. Two leaks remain: a game polling `Input.is_key_pressed` or `is_action_just_pressed` sees the press in its frame, and a key pressed while the game's own embedded sub-window has focus goes to that window. The demo's clock counts what reaches the game. |
+| Toolbar marks (#312) | Kept out of `telemetry.jsonl`; `take.json` `marks` merges them with F8's, and `play/state` counts F8's apart as `f8Marks` | The game is the only writer of its telemetry file, so no two writers interleave lines in it. `mark_dropped` (#314) needs F8's told apart. |
+| Demo game (#312) | `examples/godot-demo`: text scenes, no textures, no autoload line | The game the earlier runs used was a folder on one machine. Text scenes need no import, a test holds them to the names the checks use, and Enable capture adds the autoload as it would in any project. |
 
 ### Not verified on a real machine
 
 Built and tested on Linux with unit tests and a Windows type-check; the Win32 embedder, the
 recorder and the GDScript have not run. The acceptance list in section 13 of the design needs
 a Windows 11 pass on the demo game and on Anomaly.
+
+From #312, not yet run in a real Godot (gdparse, gdlint and Rust tests only):
+
+- `veistra_capture.gd` on Godot 4.3, 4.4 and 4.5: gdparse checks syntax, not types, API
+  presence or runtime errors. Check `pnpm probe recent_errors` and the take's `log.jsonl` for
+  `SCRIPT ERROR` lines.
+- `examples/godot-demo` loading and playing at all: its scenes are written by hand.
+- Ticks: `tickRate` 9 or more over a two-minute recorded run of the demo, with the game in the
+  pane and again hidden behind another tab. `tickUsP95` 500 or less at `tickNodes` 64 on
+  `bench.tscn`, and on Anomaly.
+- `pick` on Enemy_02 naming `Hallway/Enemy_02` from a ray, also with physics on its own thread
+  and with Jolt; `Arena/Enemy_02` in the 2D scene.
+- F7, F8 and Ctrl Shift M with the game focused: the demo clock's count stays 0 and every other
+  key reaches the game. The F8 mark within 100 ms of the frame (also needs #310's clock).
+- Stop's `flush`: the take's telemetry runs to its last 100 ms.
+- With the addon removed, Play runs, Rec says why it is off, and nothing throws; an exported
+  build with the addon writes nothing to the folder it is given.
 
 ## The Godot Viewer
 
