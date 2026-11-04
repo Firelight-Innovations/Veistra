@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 640" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>Your judgement does not get faster. Veistra turns it into designs, documents, workflows and checks the agent can use on every loop.</title>
+  <rect width="1000" height="640" rx="16" fill="#0B0C0E"/>
+
+  <!-- ===== Lane 1: context in ===== -->
+  <text x="40" y="44" font-size="13" font-weight="700" letter-spacing="1.5" fill="#9AA0A6">CONTEXT IN</text>
+  <rect x="40" y="142" width="150" height="36" fill="#B4442E"/>
+  <path d="M190 142 C 330 142, 330 60, 440 60 H640 V260 H440 C 330 260, 330 178, 190 178 Z" fill="#1D2025" stroke="#F2F4F5" stroke-opacity="0.5" stroke-width="2"/>
+  <rect x="640" y="60" width="320" height="200" fill="#F2F4F5"/>
+
+  <g font-size="16" font-weight="700" text-anchor="middle" fill="#0B0C0E">
+    <rect x="460" y="78" width="160" height="40" rx="8" fill="#F2F4F5"/>
+    <text x="540" y="103">Design canvas</text>
+    <rect x="460" y="130" width="160" height="40" rx="8" fill="#F2F4F5"/>
+    <text x="540" y="155">Documents</text>
+    <rect x="460" y="182" width="160" height="40" rx="8" fill="#F2F4F5"/>
+    <text x="540" y="207">Workflows</text>
+  </g>
+  <g text-anchor="middle">
+    <text x="115" y="124" font-size="15" font-weight="700" fill="#F2F4F5">Your judgement</text>
+    <text x="115" y="204" font-size="13" fill="#9AA0A6">same hours in the day</text>
+    <text x="800" y="150" font-size="22" font-weight="700" fill="#0B0C0E">Model, tools</text>
+    <text x="800" y="178" font-size="22" font-weight="700" fill="#0B0C0E">and workflows</text>
+    <text x="800" y="208" font-size="14" fill="#3A3E45">build faster</text>
+  </g>
+
+  <!-- ===== Lane 2: validation out ===== -->
+  <text x="40" y="324" font-size="13" font-weight="700" letter-spacing="1.5" fill="#9AA0A6">VALIDATION OUT</text>
+  <rect x="40" y="340" width="320" height="200" fill="#F2F4F5"/>
+  <path d="M360 340 H560 C 670 340, 670 422, 810 422 V458 C 670 458, 670 540, 560 540 H360 Z" fill="#1D2025" stroke="#F2F4F5" stroke-opacity="0.5" stroke-width="2"/>
+  <rect x="810" y="422" width="150" height="36" fill="#B4442E"/>
+
+  <g font-size="16" font-weight="700" text-anchor="middle" fill="#0B0C0E">
+    <rect x="380" y="358" width="160" height="40" rx="8" fill="#F2F4F5"/>
+    <text x="460" y="383">Checkers</text>
+    <rect x="380" y="410" width="160" height="40" rx="8" fill="#F2F4F5"/>
+    <text x="460" y="435">Play takes</text>
+    <rect x="380" y="462" width="160" height="40" rx="8" fill="#F2F4F5"/>
+    <text x="460" y="487">Viewer renders</text>
+  </g>
+  <g text-anchor="middle">
+    <text x="200" y="430" font-size="22" font-weight="700" fill="#0B0C0E">What the agent built</text>
+    <text x="200" y="458" font-size="14" fill="#3A3E45">far more than one person can check by hand</text>
+    <text x="885" y="404" font-size="15" font-weight="700" fill="#F2F4F5">Your judgement</text>
+    <text x="885" y="484" font-size="13" fill="#9AA0A6">a verdict, not a full review</text>
+  </g>
+
+  <!-- caption -->
+  <g text-anchor="middle" font-size="15" fill="#F2F4F5">
+    <text x="500" y="590">Your judgement does not get faster. Veistra writes it down once, as a design,</text>
+    <text x="500" y="612">a document, a workflow or a check, so every loop of the agent applies it.</text>
+  </g>
+</svg>

@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 540" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>The ReAct loop: context goes in, the model reasons and acts, validation comes out. Humans sit at both thin ends; Veistra widens both sides of the model.</title>
+  <defs>
+    <marker id="cyc" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0 0L10 5L0 10z" fill="#F2F4F5"/>
+    </marker>
+  </defs>
+  <rect width="1000" height="540" rx="16" fill="#0B0C0E"/>
+
+  <!-- brackets -->
+  <g fill="none" stroke-width="2">
+    <path d="M40 92 V80 H190 V92" stroke="#B4442E"/>
+    <path d="M200 92 V80 H390 V92" stroke="#F2F4F5"/>
+    <path d="M400 92 V80 H600 V92" stroke="#9AA0A6"/>
+    <path d="M610 92 V80 H800 V92" stroke="#F2F4F5"/>
+    <path d="M810 92 V80 H960 V92" stroke="#B4442E"/>
+  </g>
+  <g font-size="17" font-weight="700" text-anchor="middle">
+    <text x="115" y="64" fill="#B4442E">You</text>
+    <text x="295" y="64" fill="#F2F4F5">Veistra</text>
+    <text x="500" y="64" fill="#9AA0A6">Claude, Codex, GPT</text>
+    <text x="705" y="64" fill="#F2F4F5">Veistra</text>
+    <text x="885" y="64" fill="#B4442E">You</text>
+  </g>
+
+  <!-- human context: thin -->
+  <rect x="40" y="250" width="150" height="40" fill="#B4442E"/>
+  <!-- context: widens -->
+  <path d="M200 250 C 300 250, 300 150, 400 150 V390 C 300 390, 300 290, 200 290 Z" fill="#F2F4F5"/>
+  <!-- model -->
+  <rect x="400" y="130" width="200" height="280" fill="#1D2025" stroke="#F2F4F5" stroke-opacity="0.5" stroke-width="2"/>
+  <!-- validation: narrows -->
+  <path d="M610 150 C 710 150, 710 250, 810 250 V290 C 710 290, 710 390, 610 390 Z" fill="#F2F4F5"/>
+  <!-- human validation: thin -->
+  <rect x="820" y="250" width="140" height="40" fill="#B4442E"/>
+
+  <g text-anchor="middle" font-weight="700">
+    <text x="115" y="238" font-size="14" fill="#F2F4F5">Human</text>
+    <text x="115" y="314" font-size="14" fill="#F2F4F5">context</text>
+    <text x="320" y="276" font-size="24" fill="#0B0C0E">Context</text>
+    <text x="500" y="262" font-size="26" fill="#F2F4F5">Model</text>
+    <text x="500" y="288" font-size="13" font-weight="400" fill="#9AA0A6">very capable</text>
+    <text x="690" y="276" font-size="24" fill="#0B0C0E">Validation</text>
+    <text x="890" y="238" font-size="14" fill="#F2F4F5">Human</text>
+    <text x="890" y="314" font-size="14" fill="#F2F4F5">validation</text>
+  </g>
+
+  <!-- ReAct loop -->
+  <text x="500" y="470" text-anchor="middle" font-size="28" font-weight="700" fill="#F2F4F5">ReAct loop</text>
+  <g fill="none" stroke="#F2F4F5" stroke-width="2">
+    <path d="M411 500 A 14 14 0 0 1 436 496" marker-end="url(#cyc)"/>
+    <path d="M440 506 A 14 14 0 0 1 414 510" marker-end="url(#cyc)"/>
+  </g>
+  <text x="456" y="511" font-size="14" fill="#9AA0A6">reason, act, observe, repeat</text>
+</svg>

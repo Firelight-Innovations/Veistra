@@ -40,7 +40,6 @@ import TitleBar from "./titlebar/TitleBar";
 import { APP_COMMAND, defaultMenus, type CommandHandlers } from "./titlebar/menus";
 import { editHandlers, useEditTarget } from "./titlebar/useEditTarget";
 import ClusterStrip from "./rail/ClusterStrip";
-import ToolHealthBadge from "./titlebar/ToolHealthBadge";
 import { cycleTarget, orderClusters } from "./clusterList";
 import ToolWindow, { type ToolWindowHandle } from "./toolwindow/ToolWindow";
 // The two the tool window draws through a render prop rather than importing;
@@ -2221,24 +2220,22 @@ export default function WindowRoot({
                 onHome: () => activeClusterId !== null && onSelectCluster(activeClusterId),
               }}
               menus={menus}
+              searchSlot={<SearchSlot open={searchExpanded} onOpen={openSearch} />}
               actionsSlot={
-                <>
-                  <ToolHealthBadge healthOf={stackTools} onRescan={onRescan} />
-                  <SearchSlot open={searchExpanded} onOpen={openSearch} />
-                  <TitleBarActions
-                    onUpgrade={() => void openUrl(UPGRADE_URL)}
-                    onNewAgent={
-                      activeClusterId === null ? undefined : () => onNewAgent(activeClusterId)
-                    }
-                    terminalOpen={terminalShowing}
-                    onToggleTerminal={onToggleTerminal}
-                    agentsOpen={rightPage?.id === "sessions"}
-                    onToggleAgents={() => onSelectPage("sessions")}
-                    clustersOpen={!clustersCollapsed}
-                    onToggleClusters={onToggleClusters}
-                    onOpenSettings={() => openSettingsOnTop()}
-                  />
-                </>
+                <TitleBarActions
+                  health={{ tools: stackTools, onRescan }}
+                  onUpgrade={() => void openUrl(UPGRADE_URL)}
+                  onNewAgent={
+                    activeClusterId === null ? undefined : () => onNewAgent(activeClusterId)
+                  }
+                  terminalOpen={terminalShowing}
+                  onToggleTerminal={onToggleTerminal}
+                  agentsOpen={rightPage?.id === "sessions"}
+                  onToggleAgents={() => onSelectPage("sessions")}
+                  clustersOpen={!clustersCollapsed}
+                  onToggleClusters={onToggleClusters}
+                  onOpenSettings={() => openSettingsOnTop()}
+                />
               }
             />
           ),

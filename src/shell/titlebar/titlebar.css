@@ -18,10 +18,9 @@
  */
 
 .titlebar {
-  /* Three cells, outer tracks equal: the pill sits on the window's centre
-     whatever the two sides hold, and each side can only ever take its half of
-     what the pill leaves. `container-type` lets the collapse rules below
-     answer to the bar's own width. */
+  /* Three cells, outer tracks equal: the middle group (pill and search) sits
+     on the window's centre whatever the two sides hold. `container-type` lets
+     the middle group size itself against the bar's own width (`100cqw`). */
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
@@ -31,25 +30,41 @@
   container: titlebar / inline-size;
 }
 
-/* No switcher given, no pill: the two cells split the bar as a plain row. */
-.titlebar:not([data-has-pill]) {
+/* No pill and no search: the two cells split the bar as a plain row. */
+.titlebar:not([data-has-middle]) {
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
+/* The two sides are as wide as their content rather than their tracks, so
+   `TitleBar` can measure them (`useSideReserve`); the bar's own drag region
+   covers whatever of the track they leave. */
 .titlebar__start {
+  justify-self: start;
+  width: max-content;
   display: flex;
   align-items: center;
   height: 100%;
-  min-width: 0;
 }
 
 .titlebar__end {
+  justify-self: end;
+  width: max-content;
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: var(--space-2);
   height: 100%;
+}
+
+/* The pill, then search. Never wider than the bar less twice the wider side,
+   which is the most a centred box can take without reaching either one. */
+.titlebar__middle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 100%;
   min-width: 0;
+  max-width: calc(100cqw - 2 * var(--titlebar-side, 0px));
 }
 
 /* --- logo -------------------------------------------------------------- */
@@ -66,7 +81,7 @@
   color: var(--text);
 }
 
-/* --- inline menu bar, >=1100px ------------------------------------------ */
+/* --- inline menu bar, >=1180px ------------------------------------------ */
 
 .menubar {
   flex: none;
@@ -123,7 +138,7 @@
   padding: 6px 0;
 }
 
-/* --- hamburger, <1100px -------------------------------------------------- */
+/* --- hamburger, <1180px -------------------------------------------------- */
 
 .hamburger {
   flex: none;
@@ -307,37 +322,58 @@
   color: #fff;
 }
 
+/* --- overflow button, <1440px ------------------------------------------- */
+
+.overflowmenu {
+  flex: none;
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.titlebar__overflow-button {
+  position: relative;
+}
+
+.titlebar__overflow-button[data-open] {
+  background: var(--bg-layer-1-hover);
+  color: var(--txt-primary);
+}
+
+/* The tool-health badge's warning, carried onto the button that now hides it. */
+.overflowmenu__dot {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+
+/* The hamburger's surface, opening leftwards from the bar's right end. */
+.overflowmenu__dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  width: 260px;
+  max-height: calc(100vh - 60px);
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
+  padding: 6px 0;
+}
+
 /* --- collapse order --------------------------------------------------------
-   Widths are the bar's own (it fills the window). Each step gives up the least
-   useful thing first so nothing ever reaches the pill:
-     <1240  the search box becomes an icon
-     <1180  the six menus become the hamburger (`useNarrowTitlebar`)
-     <1000  the pill gives up the window's centre and sits after the hamburger,
-            so the right cell gets every pixel the short left one leaves
-     <900   Upgrade goes: the one action here that is not part of the work
-   The right cell's buttons do not shrink, so on overflow they would spill left
-   under the pill; the cell clips instead, leaving room for its focus rings. */
-
-.titlebar__end {
-  overflow: clip;
-  overflow-clip-margin: 4px;
-}
-
-@container titlebar (max-width: 999px) {
-  .titlebar[data-has-pill] {
-    grid-template-columns: auto auto minmax(0, 1fr);
-    column-gap: var(--space-2);
-  }
-
-  /* Off the centre, a dropdown centred on the pill would run off the left edge. */
-  .titlebar .clusterswitch__panel {
-    left: 0;
-    translate: none;
-  }
-}
-
-@container titlebar (max-width: 899px) {
-  .titlebar__upgrade {
-    display: none;
-  }
-}
+   Two steps on the window's width (`useNarrowTitlebar.ts`, #336):
+     <1440  the right-hand buttons become one overflow button (`TitleBarActions`)
+     <1180  the six menus become the hamburger
+   The window controls never collapse. Between and below the steps, the
+   middle group is held to what the wider side leaves (`.titlebar__middle`),
+   so it stays centred and nothing reaches it. Short of its full width it gives
+   way in this order: search narrows to its icon and Ctrl+K, then to its icon
+   (`search.css`), then the pill's chip truncates, then its name
+   (`projectPill.css`). `docs/design-notes/shell-chrome.md` has the widths. */

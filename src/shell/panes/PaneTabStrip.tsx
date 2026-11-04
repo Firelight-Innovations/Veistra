@@ -18,8 +18,17 @@ import { useDropZone } from "../dropZones";
 import { fileIconUrl } from "@veistra/file-icons";
 import { agentTabState, agentTabStatesVersion, subscribeAgentTabStates } from "../agentTabStates";
 import { getSubject, subjectsVersion, subscribeSubjects } from "../viewerSubjects";
+import { horizontalWheelDelta, revealScrollLeft } from "../stripScroll";
 import { Close } from "../../ui/Icon";
-import { useRef, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type RefObject,
+} from "react";
 import { Plus } from "../../ui/Icon";
 import AppPicker from "./AppPicker";
 
@@ -60,8 +69,18 @@ export default function PaneTabStrip({
     }),
   });
 
+  const stripRef = useRef<HTMLDivElement | null>(null);
+  const setStrip = useCallback(
+    (el: HTMLDivElement | null) => {
+      stripRef.current = el;
+      stripZone(el);
+    },
+    [stripZone],
+  );
+  useStripScroll(stripRef, tabRefs, members.find((m) => m.showing)?.id);
+
   return (
-    <div className="pane-tabstrip" ref={stripZone} data-pane-strip={paneId}>
+    <div className="pane-tabstrip" ref={setStrip} data-pane-strip={paneId}>
       {members.map((member, i) => (
         <PaneTab
           key={member.id}
@@ -80,6 +99,70 @@ export default function PaneTabStrip({
       {appPicker && <AddAppTab paneId={paneId} picker={appPicker} />}
     </div>
   );
+}
+
+/**
+ * How a mouse reaches the tabs this strip cuts off. Its native scrollbar stays
+ * hidden (`.pane-tabstrip` in panes.css), so two things stand in for it: a
+ * vertical wheel over the strip scrolls it sideways, and whichever tab becomes
+ * active is scrolled wholly into view, so a tab opened past the edge, or one
+ * clicked while half cut off, is never left hidden.
+ *
+ * Chosen over the alternatives:
+ * - `OverlayScrollbar`'s hover thumb, which already has the wheel half. It
+ *   tracks hover against a rect it caches until its strip resizes, which held
+ *   for the fixed bars it was written for and does not here: dragging the
+ *   divider of a split above a pane moves that pane's strip without resizing
+ *   it. While shown it would also cover the active tab's 2px underline and the
+ *   hairline, and take the pointerdown that starts a drag on the tabs under it.
+ * - Chevrons or edge fades: chevrons take width from tabs in a pane that may be
+ *   200px wide, and a fade over the strip fades the hairline along with it.
+ */
+function useStripScroll(
+  stripRef: RefObject<HTMLElement | null>,
+  tabRefs: RefObject<Map<string, HTMLElement>>,
+  activeId: string | undefined,
+) {
+  useEffect(() => {
+    const strip = stripRef.current;
+    if (!strip) return;
+    // Native and `passive: false`: React registers its wheel listener as
+    // passive, where `preventDefault` is ignored, and a tick spent moving the
+    // strip must not go on to scroll anything else.
+    const onWheel = (e: WheelEvent) => {
+      // A trackpad pinch arrives as Ctrl+wheel; it is not a request to scroll.
+      if (e.ctrlKey || e.metaKey) return;
+      // Nothing cut off, nothing to reach: the tick is not claimed.
+      if (strip.scrollWidth - strip.clientWidth < 1) return;
+      const delta = horizontalWheelDelta(strip, e.deltaX, e.deltaY, e.deltaMode);
+      if (delta === null) return;
+      strip.scrollLeft += delta;
+      e.preventDefault();
+    };
+    strip.addEventListener("wheel", onWheel, { passive: false });
+    return () => strip.removeEventListener("wheel", onWheel);
+  }, [stripRef]);
+
+  // A layout effect, so the strip never paints one frame at the old offset.
+  // Keyed on the active tab alone: a wheel scroll that leaves it off screen is
+  // the user's choice, and re-running on every render would undo it.
+  //
+  // Not `tab.scrollIntoView`, which goes on to scroll every ancestor that still
+  // cannot show the whole tab, `overflow: hidden` ones included. A tab can be
+  // wider than a 200px pane, and scrolling `.pane` would slide the pane host
+  // out from under the surfaces `ToolWindow` places by measured rect, with
+  // nothing to scroll it back. Writing the strip's own `scrollLeft` cannot.
+  useLayoutEffect(() => {
+    const strip = stripRef.current;
+    const tab = activeId === undefined ? undefined : tabRefs.current.get(activeId);
+    if (!strip || !tab) return;
+    const view = strip.getBoundingClientRect();
+    const next = revealScrollLeft(
+      { left: view.left, right: view.right, scrollLeft: strip.scrollLeft },
+      tab.getBoundingClientRect(),
+    );
+    if (next !== strip.scrollLeft) strip.scrollLeft = next;
+  }, [stripRef, tabRefs, activeId]);
 }
 
 /**
