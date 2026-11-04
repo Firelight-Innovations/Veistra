@@ -7,8 +7,9 @@
  * decides is in a pure module beside it; this is the part with timers.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { telemetryConfig, type TelemetryConfig } from "../../bindings";
+import { onBackendUsage, telemetryConfig, type TelemetryConfig } from "../../bindings";
 import { analytics } from "./analytics";
+import { trackFromBackend } from "./backendTrack";
 import { listen } from "./bus";
 import { readConsent, type Consent, type SettingsReader } from "./consent";
 import { considerLaunchPrompts, handleFeatureEvent, setPipelineConsent } from "./pipeline";
@@ -38,6 +39,27 @@ export function useTelemetry(consent: Consent | null): TelemetryState {
   const [deferred, setDeferred] = useState(false);
 
   useEffect(() => listen(handleFeatureEvent), []);
+
+  // Rust's own usage events (`telemetry::track`). Only the main window is sent any, so in
+  // any other window this listens and hears nothing. A refusal is a Rust caller naming an
+  // event the registry does not declare: a bug to see in the console, never a crash.
+  useEffect(() => {
+    let live = true;
+    let unlisten: (() => void) | undefined;
+    onBackendUsage((params) => {
+      const answer = trackFromBackend(params);
+      if (!answer.ok) console.warn("veistra: a usage event from Rust was refused:", answer.message);
+    })
+      .then((stop) => {
+        if (live) unlisten = stop;
+        else stop();
+      })
+      .catch((err: unknown) => console.error("veistra: could not hear Rust's usage events:", err));
+    return () => {
+      live = false;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     let live = true;

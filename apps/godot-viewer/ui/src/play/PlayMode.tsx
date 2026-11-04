@@ -43,14 +43,17 @@ import {
 } from "lucide-react";
 import type { MarkupExport } from "@veistra/markup/layer";
 import { CommentPanel } from "../../../../shared/CommentPanel";
+import { useCommentsChanged } from "../../../../shared/commentEvents";
 import {
   createComment,
   listComments,
   resolveComment,
+  takeHistory,
   verdictComment,
   formatPlayTime,
   type Comment,
 } from "../../../../shared/comments";
+import { handToAgent, listAgents, type Delivery } from "../../../../shared/context";
 import { errorText, openInGodot } from "../../../../shared/godot";
 import type { WindowRect } from "../../../../shared/nativeBox";
 import { blobBase64, sendMarkup } from "../../../../shared/markupFlow";
@@ -62,11 +65,14 @@ import {
   ViewerToolbar,
   type ToolbarStatus,
 } from "../../../../shared/ViewerToolbar";
+import { track } from "../../../../shared/telemetry";
 import { clock } from "./frames";
 import { isTyping, liveAction } from "./keys";
 import { LiveStrip, LiveView, LogView, type LiveMarking } from "./LiveView";
-import type { Target } from "./notes";
-import Review, { type LiveNote } from "./Review";
+import { newF8Marks, type MarkCount } from "./markTelemetry";
+import { noteName, type Target } from "./notes";
+import { RecordSettings } from "./RecordSettings";
+import Review, { reportNote, type LiveNote } from "./Review";
 import {
   addonStatus,
   capture,
@@ -79,18 +85,21 @@ import {
   popOut,
   removeAddon,
   restart,
+  revealTakes,
   run,
   setPaused,
   setRecord,
+  setRecordSettings,
   stop,
   type AddonStatus,
   type Capture,
   type ListedTake,
   type Live,
   type LogLine,
+  type RecordQuality,
   type RunInfo,
 } from "./rpc";
-import { dragContext, putLog, putShot } from "./context";
+import { dragContext, putLog, putShot, putStillBroken } from "./context";
 import type { RunRequest } from "../App";
 import { focusIfDropped, type ModeProps } from "../modes";
 import { getState as readScenes } from "../rpc";
@@ -103,7 +112,8 @@ const POLL_MS = 500;
 const SAVING_WAIT_MS = 5_000;
 const SAVING_POLL_MS = 250;
 
-type View = { kind: "live" } | { kind: "review"; take: string };
+/** `openedAt` is when review was asked for, which review measures its opening from. */
+type View = { kind: "live" } | { kind: "review"; take: string; openedAt?: number };
 type Drawer = "closed" | "output" | "errors" | "notes";
 
 const PLAY_TARGET = { app: "play", label: "Play" };
@@ -171,6 +181,8 @@ export default function PlayMode(props: PlayModeProps) {
   const [view, setView] = useState<View>({ kind: "live" });
   const [takes, setTakes] = useState<ListedTake[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
+  /** Record settings' popover, which covers the game like the picker does. */
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [marking, setMarking] = useState<
     (LiveMarking & { atWall: number; wasPaused: boolean }) | null
   >(null);
@@ -186,12 +198,18 @@ export default function PlayMode(props: PlayModeProps) {
   const runId = useRef<number | null>(null);
   /** Whether a poll has answered since this pane opened. */
   const primed = useRef(false);
+  /** The game's own marks the poll has reported, for `mark_dropped`. */
+  const f8Marks = useRef<MarkCount | null>(null);
   /** The last saved take the poll saw, so a take saved anywhere refreshes Takes. */
   const savedTake = useRef<string | null>(null);
   /** The chosen project, for the poll, which outlives every render. */
   const projectRel = useRef<string | undefined>(undefined);
   /** What the poll's keys do, and the run the render that made them had drawn. */
-  const actions = useRef<{ run: number | null; review: () => void; markup: () => void }>({
+  const actions = useRef<{
+    run: number | null;
+    review: (at?: number) => void;
+    markup: () => void;
+  }>({
     run: null,
     review: () => undefined,
     markup: () => undefined,
@@ -224,6 +242,17 @@ export default function PlayMode(props: PlayModeProps) {
       setCommentsLoading(false);
     }
   }, []);
+
+  // An agent's fix or a verdict made elsewhere changes the drawer's list and
+  // its count. Listed again quietly: no spinner, and a failure keeps the list.
+  useCommentsChanged(() => {
+    listComments()
+      .then((next) => {
+        setComments(next);
+        setCommentsError(null);
+      })
+      .catch(() => {});
+  });
 
   const loadAddon = useCallback(async (rel: string | undefined) => {
     try {
@@ -340,7 +369,17 @@ export default function PlayMode(props: PlayModeProps) {
           const fresh = s.log.lines;
           setLines((prev) => [...prev, ...fresh].slice(-LOG_KEEP));
         }
-        const keys = s.live?.session?.keys ?? [];
+        const sess = s.live?.session;
+        const keys = sess?.keys ?? [];
+        // F8 pressed in the game never reaches the page; its count does.
+        if (sess && typeof sess.f8Marks === "number") {
+          const seen = newF8Marks(f8Marks.current, sess.runId, sess.f8Marks, opening);
+          f8Marks.current = seen.next;
+          const recording = sess.take.state === "recording";
+          for (let i = 0; i < seen.report; i++) {
+            track("mark_dropped", { source: "game", recording });
+          }
+        }
         // Keys from before this pane opened were for whoever had it then;
         // replaying an old F7 would stop the game.
         if (opening) {
@@ -353,7 +392,9 @@ export default function PlayMode(props: PlayModeProps) {
         if (actions.current.run !== s.run.id) return;
         for (const k of keys) {
           keyCursor.current = k.seq;
-          if (k.key === "F7") actions.current.review();
+          // From the press in the game, not this poll, which is up to a tick later.
+          if (k.key === "F7")
+            actions.current.review(k.t > 0 ? Math.min(k.t, Date.now()) : undefined);
           if (k.key === "Ctrl Shift M") actions.current.markup();
         }
       } catch {
@@ -386,23 +427,99 @@ export default function PlayMode(props: PlayModeProps) {
     }
   }, []);
 
+  /** Run a scene, throwing what failed; `options` are `play/run`'s (X9, #321). */
+  const launch = useCallback(
+    async (scene?: string, projectRel?: string, options?: Parameters<typeof run>[2]) => {
+      const rel = projectRel ?? chosenRel;
+      const s = await run(
+        rel,
+        scene ?? (picked && picked.rel === rel ? picked.scene : undefined),
+        options,
+      );
+      // Played from elsewhere (Play scene, review), the scene is what F5 runs next.
+      if (scene && rel !== undefined) setPicked({ rel, scene });
+      setInfo(s.run);
+      setLive(s.live ?? null);
+      setShot(null);
+      setMarking(null);
+      setView({ kind: "live" });
+    },
+    [chosenRel, picked],
+  );
   const start = useCallback(
-    (scene?: string, projectRel?: string) =>
+    (scene?: string, projectRel?: string, options?: Parameters<typeof run>[2]) =>
+      guarded(() => launch(scene, projectRel, options)),
+    [guarded, launch],
+  );
+
+  // From review, Play again, F5 and a fixed note's Play run the reviewed
+  // take's project: the take picker lists every project's takes, so it need
+  // not be the one picked, and the picker follows it.
+  const reviewed = view.kind === "review" ? takes.find((t) => t.id === view.take) : undefined;
+  const reviewedRel =
+    reviewed && projects.some((p) => p.rel === reviewed.project) ? reviewed.project : chosenRel;
+  const playAgain = useCallback(
+    (scene?: string, options?: Parameters<typeof run>[2]) => {
+      if (reviewedRel !== undefined && reviewedRel !== chosenRel) setProject(reviewedRel);
+      return start(scene, reviewedRel, options);
+    },
+    [reviewedRel, chosenRel, setProject, start],
+  );
+
+  /**
+   * Still broken on a take note (#321): the verdict, then the note's scene
+   * again in its take's project, recorded once and carrying the note, so the
+   * take Rust saves starts with a draft for it and Send adds that take to the
+   * same comment for the same agent (`sentTo`). Where Record cannot run there
+   * is no take: the agent that had the note gets the person's words instead.
+   * Any other note takes the verdict alone, as before.
+   */
+  const stillBroken = useCallback(
+    (comment: Comment, reply?: string) =>
       guarded(async () => {
-        const rel = projectRel ?? chosenRel;
-        const s = await run(
-          rel,
-          scene ?? (picked && picked.rel === rel ? picked.scene : undefined),
+        await verdictComment(comment.id, "broken", reply);
+        void refreshComments();
+        const anchor = comment.anchor.kind === "take" ? comment.anchor : null;
+        const first = takeHistory(comment)[0];
+        if (!anchor || !first) return;
+        if (recordBlocked) {
+          const to = comment.sentTo ?? (await listAgents().catch(() => []))[0] ?? null;
+          const item = await putStillBroken(comment, reply, recordBlocked);
+          const said: Delivery = to
+            ? await handToAgent(to, item.id, "Play - still broken", {
+                before: `Still broken after your fix: ${noteName(first)}. Read `,
+                after: ".",
+              }).catch((e: unknown) => ({ delivered: false as const, reason: errorText(e) }))
+            : { delivered: false, reason: "no agent is running here" };
+          setNotice(
+            said.delivered
+              ? `No new take: ${recordBlocked} Your words are waiting at ${to?.label ?? "the agent"}'s prompt.`
+              : `No new take: ${recordBlocked} No agent was told: ${said.reason}.`,
+          );
+          return;
+        }
+        // The note's take says which project; a take since deleted leaves the picked one.
+        const from = takes.find((t) => t.id === anchor.take);
+        const known = status?.projects ?? [];
+        const rel = from && known.some((p) => p.rel === from.project) ? from.project : chosenRel;
+        if (running) await stop();
+        if (rel !== undefined && rel !== chosenRel) setProject(rel);
+        await launch(anchor.scene ?? undefined, rel, { followUp: comment.id });
+        setNotice(
+          `Checking ${noteName(first)}: press F8 where it still breaks, F7 when you are done.`,
         );
-        // Played from elsewhere (Play scene, review), the scene is what F5 runs next.
-        if (scene && rel !== undefined) setPicked({ rel, scene });
-        setInfo(s.run);
-        setLive(s.live ?? null);
-        setShot(null);
-        setMarking(null);
-        setView({ kind: "live" });
       }),
-    [chosenRel, guarded, picked],
+    [
+      guarded,
+      refreshComments,
+      recordBlocked,
+      takes,
+      status,
+      chosenRel,
+      running,
+      setProject,
+      launch,
+    ],
   );
 
   // Play scene, from Editor mode or another pane, names its project: a
@@ -447,8 +564,8 @@ export default function PlayMode(props: PlayModeProps) {
   );
 
   const openReview = useCallback(
-    (id: string) => {
-      setView({ kind: "review", take: id });
+    (id: string, openedAt = Date.now()) => {
+      setView({ kind: "review", take: id, openedAt });
       void loadTakes();
     },
     [loadTakes],
@@ -456,8 +573,9 @@ export default function PlayMode(props: PlayModeProps) {
 
   /** F7 and Stop and review: stop, and open the take this run made. */
   const stopAndReview = useCallback(
-    () =>
+    (at?: number) =>
       guarded(async () => {
+        const askedAt = at ?? Date.now();
         const s = running ? await stop() : null;
         if (s) {
           setInfo(s.run);
@@ -472,7 +590,7 @@ export default function PlayMode(props: PlayModeProps) {
           t = (await getState(cursor.current, keyCursor.current, projectRel.current)).live?.session
             ?.take;
         }
-        if (t?.state === "saved") openReview(t.id);
+        if (t?.state === "saved") openReview(t.id, askedAt);
         else if (t?.state === "failed") setProblem(t.reason);
         else if (t?.state === "saving")
           setNotice("The take is still being saved. Open it from Takes in a moment.");
@@ -490,12 +608,15 @@ export default function PlayMode(props: PlayModeProps) {
     setCapturing(false);
   }, [guarded]);
 
+  /** Mark and F8 with the pane focused; the game's own F8 is counted by the poll. */
   const doMark = useCallback(
-    () =>
+    (fromKey: boolean) =>
       guarded(async () => {
         await mark();
+        const recording = take?.state === "recording";
+        track("mark_dropped", { source: fromKey ? "pane_key" : "button", recording });
       }),
-    [guarded],
+    [guarded, take],
   );
 
   /** Ctrl Shift M and Mark up: pause, take the frame, draw on it. */
@@ -563,6 +684,8 @@ export default function PlayMode(props: PlayModeProps) {
         const atMs = m.atWall - session.zero;
         const note = { take: take.id, atMs, body: words, markup: json, markupPng, target };
         setLiveNotes((n) => [...n, note]);
+        // Made now, though the take's notes.json gets it when review opens.
+        reportNote("frame", "live");
         setNotice("Kept as a note on this take. It opens with the take in review.");
       } else {
         await guarded(() => sendMarkup(PLAY_TARGET, result.png, json, info?.scene ?? null));
@@ -575,7 +698,7 @@ export default function PlayMode(props: PlayModeProps) {
 
   actions.current = {
     run: info?.id ?? null,
-    review: () => void stopAndReview(),
+    review: (at) => void stopAndReview(at),
     markup: () => void startLiveMarkup(),
   };
 
@@ -591,6 +714,18 @@ export default function PlayMode(props: PlayModeProps) {
       setLive((l) => (l ? { ...l, record: { ...l.record, on: !recordOn } } : l));
     });
   }, [recordOn, recordBlocked, guarded, chosenRel]);
+
+  /** Quality or keep from Record settings: kept now, used from the next take. */
+  const changeRecordSettings = useCallback(
+    (next: { quality?: RecordQuality; keep?: number }) =>
+      void guarded(async () => {
+        const saved = await setRecordSettings(next, chosenRel);
+        setLive((l) =>
+          l ? { ...l, record: { ...l.record, quality: saved.quality, keep: saved.keep } } : l,
+        );
+      }),
+    [guarded, chosenRel],
+  );
 
   const onLiveNotesTaken = useCallback(
     (id: string) => setLiveNotes((notes) => notes.filter((n) => n.take !== id)),
@@ -653,7 +788,7 @@ export default function PlayMode(props: PlayModeProps) {
     if (view.kind === "review") {
       if (action === "run-or-restart" && canRun) {
         e.preventDefault();
-        void start();
+        void playAgain();
       }
       return;
     }
@@ -679,7 +814,7 @@ export default function PlayMode(props: PlayModeProps) {
         void stopAndReview();
         break;
       case "mark":
-        if (running) void doMark();
+        if (running) void doMark(true);
         break;
       case "markup":
         void startLiveMarkup();
@@ -818,7 +953,7 @@ export default function PlayMode(props: PlayModeProps) {
         value={view.take}
         onFocus={() => setPickerOpen(true)}
         onBlur={() => setPickerOpen(false)}
-        onChange={(e) => setView({ kind: "review", take: e.target.value })}
+        onChange={(e) => setView({ kind: "review", take: e.target.value, openedAt: Date.now() })}
       >
         {takes.map((t) => (
           <option key={t.id} value={t.id}>
@@ -906,12 +1041,20 @@ export default function PlayMode(props: PlayModeProps) {
   const liveActions = (
     <Fragment key="live">
       {recButton}
+      <RecordSettings
+        open={settingsOpen}
+        onOpen={setSettingsOpen}
+        record={live?.record ?? { on: false, blocked: null }}
+        onRecord={toggleRecord}
+        onChange={changeRecordSettings}
+        onReveal={() => void guarded(revealTakes)}
+      />
       <ToolbarButton
         kbd="F8"
         disabled={!running}
         title="Drop a mark on the recording without stopping (F8)"
         icon={<Flag size={16} strokeWidth={1.5} aria-hidden="true" />}
-        onClick={() => void doMark()}
+        onClick={() => void doMark(false)}
       >
         Mark
       </ToolbarButton>
@@ -942,7 +1085,7 @@ export default function PlayMode(props: PlayModeProps) {
             : "Run the game again (F5)"
         }
         icon={<PlayIcon size={14} strokeWidth={1.5} aria-hidden="true" />}
-        onClick={() => void start()}
+        onClick={() => void playAgain()}
       >
         Play again
       </ToolbarButton>
@@ -1056,15 +1199,12 @@ export default function PlayMode(props: PlayModeProps) {
         <Review
           key={view.take}
           takeId={view.take}
+          openedAt={view.openedAt}
           readOnly={readOnly}
           liveNotes={liveNotes}
           onLiveNotesTaken={onLiveNotesTaken}
-          onPlayScene={(scene) =>
-            void guarded(async () => {
-              if (!recordOn && !recordBlocked) await setRecord(true, chosenRel);
-              await start(scene);
-            })
-          }
+          onPlayScene={(scene) => void playAgain(scene, { recordOnce: true })}
+          onStillBroken={(c, reply) => void stillBroken(c, reply)}
           onProblem={setProblem}
           onNotice={setNotice}
           onDeleted={() => {
@@ -1081,7 +1221,7 @@ export default function PlayMode(props: PlayModeProps) {
               lines={lines}
               frameRect={frameRect}
               overlays={overlays}
-              coveredHere={pickerOpen || consentOpen || shot !== null}
+              coveredHere={pickerOpen || settingsOpen || consentOpen || shot !== null}
               marking={marking}
               hint={hint}
               onMarkupDone={(r, shown) => void doneLiveMarkup(r, shown)}
@@ -1184,6 +1324,11 @@ export default function PlayMode(props: PlayModeProps) {
                     await refreshComments();
                   }}
                   onVerdict={async (id, verdict, reply) => {
+                    const c = comments.find((x) => x.id === id);
+                    if (verdict === "broken" && c?.anchor.kind === "take") {
+                      await stillBroken(c, reply);
+                      return;
+                    }
                     await verdictComment(id, verdict, reply);
                     await refreshComments();
                   }}

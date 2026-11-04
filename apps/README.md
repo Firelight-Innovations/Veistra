@@ -501,8 +501,9 @@ it came from a real run.
 ## Comments
 
 The Godot app's two modes and the Blender Viewer share one comment store
-rather than three: `apps/shared/comments.ts` is the model and the three RPC
-calls (`comments/list`, `comments/create`, `comments/resolve`), and
+rather than three: `apps/shared/comments.ts` is the model and the four RPC
+calls (`comments/list`, `comments/create`, `comments/resolve`, and
+`comments/verdict` for Looks good and Still broken), and
 `apps/shared/CommentPanel.tsx` is the list every one of them mounts. Both apps
 delegate to it from their own Rust module (`src-tauri/src/comments.rs`,
 reached through `godot_viewer.rs`'s and `blender_viewer.rs`'s `dispatch`),
@@ -510,13 +511,31 @@ which is why it lives under `apps/shared/` rather than in whichever app needed
 it first — see that directory's note above on why the isolation rule excludes
 it.
 
-A comment anchors to one of three things: a Godot node path, a Blender part
-plus material, or a Play scene plus a playhead time (`docs/VEISTRA-UX-REWORK.md`
-§3.4). It is a file — one per comment — under `.veistra/comments/` inside the
-calling cluster's environment, not a database row, for the same reason the
-rest of this repo's structured state is files: it travels with the branch and
-merges the way git already merges text. `src-tauri/src/comments.rs`'s doc
-comment has the ID scheme and the merge reasoning in full.
+A comment anchors to a Godot node path, a Blender part plus material, a Play
+scene plus a playhead time (`docs/VEISTRA-UX-REWORK.md` §3.4), or a note on a
+recorded take (`take`: the take, the note's number, its time or range, the
+feedback packet, and the scene and node when known). It is a file — one per
+comment — under `.veistra/comments/` inside the calling cluster's environment,
+not a database row, for the same reason the rest of this repo's structured state
+is files: it travels with the branch and merges the way git already merges text.
+`src-tauri/src/comments.rs`'s doc comment has the ID scheme and the merge
+reasoning in full.
+
+A comment is `open`, `working`, `fixed` or `resolved`. An agent starts one and
+reports it fixed; only the person resolves it, or sends it back to `open` with a
+reply. The store enforces that, not its callers: an agent's resolve of a comment
+that is not open or working is refused, as is any resolve of a resolved one.
+
+**Changes are pushed.** Every write is announced as `comments:changed`
+(`src-tauri/src/comment_events.rs`), and the shell relays it into the app frames
+of every cluster on that environment. A pane subscribes with one call,
+`useCommentsChanged(refresh)` from `apps/shared/commentEvents.ts`, which gathers a
+burst (Send files one comment per note) into one refresh. That is how an agent's
+`resolve_play_note`, which no frame sees, turns an open card to "Fixed, check it".
+The payload names the comment and its old and new status, never its text. The
+Blender Viewer and both modes of the Godot app subscribe: Editor and Play's
+drawer list again on any change, and Play's review lists its take's notes when a
+change names that take, keeping its 2 s poll only as the fallback.
 
 "Send to agent now" is on every comment panel, and it is always disabled: it
 is drawn now so the layout is right, but nothing reads `.veistra/comments/` into
@@ -548,10 +567,24 @@ await invoke("context/put", { path: "C:/game/renders/out.png" }); // a file you 
 await invoke("context/list"); // ContextItem[], newest first
 await invoke("context/get", { id: item.id });
 await invoke("context/remove", { id: item.id });
-// Type @path references at the agent terminal's prompt, without pressing Enter. Answers
-// { inserted: false, reason } when no agent is running; the items stay attached either way.
-await invoke("context/insert", { itemIds: [item.id] });
+// Type @path references at an agent terminal's prompt, without pressing Enter. `terminal` is
+// one from context/agents (unset: the cluster's first agent); `before` and `after` are typed
+// around the references on the same line, control characters dropped. Answers
+// { inserted: false, reason } when that agent is not running; the items stay attached either way.
+await invoke("context/insert", { itemIds: [item.id], terminal, before: "Read ", after: " first." });
+// Who a page can hand an item to, the default first (X8): agent terminals, the shown one
+// leading, then agent tabs. { agents: [{ kind: "terminal" | "agentTab", id, label }] }
+await invoke("context/agents");
 ```
+
+To send to one chosen agent, use `handToAgent` and `listAgents` from
+`apps/shared/context.ts` rather than the calls themselves: a `terminal` gets
+`context/insert` with its `terminal`, an `agentTab` gets the shell's
+`veistra/attach-to-agent { contextId, label, instanceId, before, after }`, which
+puts a chip on that tab's prompt alone and answers `{ delivered }`, the number of
+tabs reached (0 when the chosen one has closed). Without `instanceId` the chip goes
+to every agent tab. Play's Send goes this way, and keeps the target on each
+comment it files as `sentTo`.
 
 Pass a stable `key` that names the source, never the moment
 (`blender/<blend>/<view>`, `godot/<scene>/frame`, `file/<relpath>`). Sending

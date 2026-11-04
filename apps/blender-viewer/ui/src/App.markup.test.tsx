@@ -12,6 +12,7 @@ const bridge = vi.hoisted(() => ({ invoke: vi.fn() }));
 
 vi.mock("@veistra/bridge", () => ({
   invoke: bridge.invoke,
+  on: () => () => {},
   reportPainted: vi.fn(),
   openIn: vi.fn(),
 }));

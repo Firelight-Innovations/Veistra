@@ -21,6 +21,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { CommentPanel } from "../../../shared/CommentPanel";
+import { useCommentsChanged } from "../../../shared/commentEvents";
 import {
   createComment,
   listComments,
@@ -131,6 +132,17 @@ export default function SceneMode({ modeSwitch, status, epoch, onPlay }: SceneMo
   useEffect(() => {
     if (!cloud) void refreshComments();
   }, [refreshComments, epoch, cloud]);
+
+  // A fix an agent made over MCP, or a verdict from Play, moves a card and
+  // the tree's badges here too. Quietly: no spinner, and a failure keeps them.
+  useCommentsChanged(() => {
+    listComments()
+      .then((next) => {
+        setComments(next);
+        setCommentsError(null);
+      })
+      .catch(() => {});
+  });
 
   useEffect(() => reportPainted(), []);
 

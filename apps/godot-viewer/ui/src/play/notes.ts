@@ -9,7 +9,7 @@
  * in every packet and every message about it.
  */
 import type { MarkupJson } from "@veistra/markup";
-import type { Comment, Status } from "../../../../shared/comments";
+import type { Comment, Status, TakeRef } from "../../../../shared/comments";
 
 /** What a note is about: picked live by ray, or found in the take's recorded boxes. */
 export interface Target {
@@ -37,6 +37,12 @@ export interface NoteDraft {
   /** Set by Send: the comment this note became, and its packet. */
   commentId?: string;
   packet?: string;
+  /**
+   * On a Still broken take's draft (#321): the take note, a comment id, this
+   * take was recorded to check. Send adds the take to that comment rather than
+   * filing a new one, so `commentId` becomes the same id.
+   */
+  followUp?: string;
 }
 
 export interface NotesDoc {
@@ -71,6 +77,33 @@ export function normalize(raw: unknown): NotesDoc {
     nextN: Math.max(next, highest + 1),
     dismissed,
   };
+}
+
+/** A range being set with I and O, either end still missing. */
+export interface PendingRange {
+  inMs: number | null;
+  outMs: number | null;
+}
+
+export const NO_RANGE: PendingRange = { inMs: null, outMs: null };
+
+/**
+ * I at `ms`, from the key or the In button alike. An end at or before the
+ * new start is let go, so the range is never backwards.
+ */
+export function withIn(range: PendingRange, ms: number): PendingRange {
+  return { inMs: ms, outMs: range.outMs !== null && range.outMs > ms ? range.outMs : null };
+}
+
+/** O at `ms`; a start at or after it is let go. */
+export function withOut(range: PendingRange, ms: number): PendingRange {
+  return { inMs: range.inMs !== null && range.inMs < ms ? range.inMs : null, outMs: ms };
+}
+
+/** The range a new note covers: both ends set, in order. */
+export function settledRange(range: PendingRange): { inMs: number; outMs: number } | null {
+  const { inMs, outMs } = range;
+  return inMs !== null && outMs !== null && outMs > inMs ? { inMs, outMs } : null;
 }
 
 /** A new note at `atMs`, over `range` when one is set. */
@@ -129,6 +162,22 @@ export function markSent(
   };
 }
 
+/**
+ * The one line Send leaves at the agent's prompt (X8), around the packet's
+ * reference: "Playtest feedback: 2 notes. Read <packet>/packet.md first."
+ * Veistra never presses Enter; the person reads it and sends it.
+ */
+export function packetMessage(count: number, stillBroken = 0): { before: string; after: string } {
+  const notes = (n: number) => `${n} ${n === 1 ? "note" : "notes"}`;
+  const before =
+    stillBroken === 0
+      ? `Playtest feedback: ${notes(count)}. Read `
+      : stillBroken >= count
+        ? `Still broken after your fix: ${notes(count)}. Read `
+        : `Playtest feedback: ${notes(count)}, ${stillBroken} still broken after your fix. Read `;
+  return { before, after: " first." };
+}
+
 /** Drafts with words: what Send sends. */
 export function sendable(doc: NotesDoc): NoteDraft[] {
   return doc.notes.filter((n) => isDraft(n) && n.body.trim() !== "");
@@ -173,6 +222,20 @@ export function parseLog(text: string): LogRow[] {
   return rows;
 }
 
+/**
+ * What a note's chip says about the lines near it, `1 error · 2 warnings`,
+ * since Send attaches both; `null` when there are none.
+ */
+export function nearWords(rows: readonly LogRow[]): string | null {
+  const errors = rows.filter((r) => r.level === "error").length;
+  const warnings = rows.length - errors;
+  const words = [
+    errors > 0 ? `${errors} ${errors === 1 ? "error" : "errors"}` : "",
+    warnings > 0 ? `${warnings} ${warnings === 1 ? "warning" : "warnings"}` : "",
+  ].filter(Boolean);
+  return words.length > 0 ? words.join(" · ") : null;
+}
+
 /** Errors and warnings within `windowMs` of the span `fromMs` to `toMs`. */
 export function errorsNear(
   log: readonly LogRow[],
@@ -201,4 +264,17 @@ export function noteStatus(note: NoteDraft, comments: readonly Comment[]): Statu
 
 export function commentOf(note: NoteDraft, comments: readonly Comment[]): Comment | undefined {
   return note.commentId ? comments.find((c) => c.id === note.commentId) : undefined;
+}
+
+/** "note 2 of Take 4", or "note 2" for a note sent before takes kept their number. */
+export function noteName(ref: Pick<TakeRef, "n" | "number">): string {
+  return `note ${ref.n}${ref.number !== undefined ? ` of Take ${ref.number}` : ""}`;
+}
+
+/**
+ * The take note a Still broken draft checks, before Send and after it (when
+ * it is `commentOf` too). `play/notes` lists it with the take, so it is found.
+ */
+export function checkedOf(note: NoteDraft, comments: readonly Comment[]): Comment | undefined {
+  return note.followUp ? comments.find((c) => c.id === note.followUp) : undefined;
 }
