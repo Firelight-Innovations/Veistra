@@ -4,14 +4,14 @@
 //! or app id, so Play in two panes and Play inside the Godot app both work.
 //! Visibility, moves, Pop out and Dock, and release at exit walk this list.
 //!
-//! **Hosting a window** (C1 and C2 do what Play does in `godot::rpc::start_run`):
+//! **Hosting a window**, as `godot::rpc::start_run` and `godot::editor` do:
 //! 1. Size and place the launch from the pane's last box: [`Hosts::box_of`]
 //!    then [`super::launch_rect`], so the window starts where the pane is.
-//! 2. Spawn it supervised (never detached; `CREATE_NO_WINDOW` for a console
-//!    program, so no console window can be matched), then [`Hosts::host`]
-//!    with a [`HostSpec`]: instance, cluster, an [`Embed`] from
-//!    [`Hosts::embed`], process ids, an alive check, what to do once it is
-//!    placed, and what to do when its pane closes ([`Orphan`]).
+//! 2. Spawn it (a game supervised, `CREATE_NO_WINDOW` for a console program
+//!    so no console window can be matched; an editor detached, to outlive
+//!    Veistra), then [`Hosts::host`] with a [`HostSpec`]: instance, cluster,
+//!    an [`Embed`] from [`Hosts::embed`], process ids, an alive check, what
+//!    to do once it is placed, and what to do when its pane closes ([`Orphan`]).
 //! 3. The pane reports its box with `embed/rect {kind, x, y, w, h, visible,
 //!    window, dpr}` (the game's is `play/embed-rect`) through
 //!    `apps/shared/useNativeBox.ts`, shows `embed/still` while an overlay

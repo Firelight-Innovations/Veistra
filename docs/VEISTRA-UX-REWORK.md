@@ -43,7 +43,7 @@ Project
 
 ## 3. Viewers, Play and comments
 
-1. Godot and Blender are **never embedded**. Agents run them headless (`godot --headless`, `blender -b`) in terminal tabs.
+1. ~~Godot and Blender are **never embedded**.~~ **Replaced** by owner decision 6 (2026-11-02): the person works in the Godot editor and in Blender inside a pane. See the row "Embedded editors" in `docs/design-notes/godot-play.md`'s Decisions and `docs/design/VEISTRA-PLAY-REVIEW.md` §11. Agents still run them headless (`godot --headless`, `blender -b`) in terminal tabs.
 2. The **Godot viewer** shows the scene as last rendered headless: the node tree plus a viewport render. The **Blender viewer** loads the exported `.glb` (orbit, select parts) plus its renders. Both are read-only and show how old their render is.
 3. **Play** runs the environment's debug build in a pane. Controls: pause, restart, stop, and **Capture & comment** (F5, Ctrl Shift C).
 4. **Comments.** Select a node, a mesh part or a point in a frame, then write a comment. Each comment stores its anchor: node path, mesh + material, or scene + time + screenshot.

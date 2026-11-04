@@ -1,5 +1,6 @@
 //! The methods the Godot app answers over the bridge, for both of its modes:
-//! Editor's `godot-viewer/*` and Play's `play/*`, with `godot/*` shared.
+//! Editor's `godot-viewer/*` and `godot/editor-*` ([`super::editor`]), Play's
+//! `play/*`, with the rest of `godot/*` shared.
 //!
 //! [`Ctx`] carries everything a method needs - which cluster asked, its
 //! environment root, whether that environment is the read-only main checkout,
@@ -8,9 +9,10 @@
 //! only has to build one from the live application.
 //!
 //! What is allowed on the read-only main checkout (#163): **running and viewing
-//! are**, because they read the project. Installing the capture addon is not,
-//! and neither is launching the editor - both are refused there, and both are
-//! also in `apps::WRITE_METHODS` so the refusal happens before a handler runs.
+//! are**, because they read the project. Installing the capture addon or the
+//! editor plugin is not, and neither is launching the editor or saving from it
+//! - each is refused there, and is also in `apps::WRITE_METHODS` so the
+//! refusal happens before a handler runs.
 //! Two things still touch a main checkout that Veistra does not control: Godot
 //! itself keeps an import cache in `<project>/.godot/` whenever it loads a
 //! project, and that folder is gitignored by every Godot template. The viewer's

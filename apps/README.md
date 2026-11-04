@@ -440,15 +440,27 @@ what must outlive a switch.
 *Editor* shows where the backend says: `godot/status` answers `editor`,
 `{surface, reason, code}`, decided once in `src-tauri/src/editor_surface.rs`
 (a cloud session, then main, then no Godot, then the pane where there is an
-embedder and its own window where there is not). On the first three it is the
-read-only scene view, and until the embedded editor arrives (C1) it is that
-view every time: the node tree beside a 3D view or a rendered frame, read from
-the scene file or by a headless Godot. Selecting a node offers a comment. Play
-scene, or F5, turns the pane to Play and runs the game there; Open in Godot
-opens the real editor in its own window. `apps/shared/editorSurface.ts`'s
+embedder and its own window where there is not). `apps/shared/editorSurface.ts`'s
 `editorBody` is the one switch from the answer to what renders; the reason is
 one line under the toolbar (`EditorReason`), with Open Settings when Godot is
 missing.
+
+On the last two it is the Godot editor itself (`ui/src/editor/`, #316):
+`godot --editor --single-window` on the chosen project, started by a press and
+never on mount, with its window placed over the pane's box through `embed/*` as
+`godotEditor`, so Project Settings and the save prompt open inside the box.
+The bar has the same five slots: the environment chip, project and scene;
+Starting, Editing, Popped out, Own window or Closing; Viewport only, Mark up
+and Send selection; Pop out and Close, which asks Godot to save first. The
+three tools need the opt-in Veistra plugin (`addons/veistra/veistra_editor.gd`,
+Godot 4.2 or later), whose consent reads like the capture addon's; each says
+why while it cannot act. A banner under the bar asks the person to save while
+an agent works in the same environment. The pane polls `godot/editor-state`.
+
+On the first three it is the read-only scene view: the node tree beside a 3D
+view or a rendered frame, read from the scene file or by a headless Godot.
+Selecting a node offers a comment. Play scene, or F5, turns the pane to Play
+and runs the game there.
 
 **Blender Viewer** (`blender-viewer/state`) — read-only, the same shape for
 Blender: a Model/Renders/Wire switch, an honest placeholder in place of a real

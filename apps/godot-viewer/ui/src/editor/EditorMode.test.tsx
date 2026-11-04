@@ -295,6 +295,7 @@ describe("Editor mode before the editor opens", () => {
     expect(dialog.textContent).toContain("addons/veistra/veistra_editor.gd");
     expect(dialog.textContent).toContain("[editor_plugins]");
     expect(dialog.textContent).toContain("the selected nodes, the edited scene");
+    expect(dialog.textContent).toContain("saves or closes the editor when you press");
     expect(dialog.textContent).toContain("No network port");
     expect(dialog.textContent).toContain("does nothing in an exported build");
     expect(calls("godot/plugin-install")).toHaveLength(0);

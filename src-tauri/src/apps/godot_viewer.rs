@@ -1,19 +1,18 @@
 //! The Godot app's Rust half, for both of its modes (DECISIONS X3).
 //!
-//! **Editor** shows the scene an agent's headless run last produced: refreshing
-//! runs `godot --headless` as a child process, reads the scene tree it dumps,
-//! optionally renders one frame, and caches both under `.veistra/` stamped with
-//! their age. **Play** runs the environment's project as a child process with
-//! its window placed in the pane, streams its log, records takes and captures
-//! frames (`docs/design-notes/godot-play.md`). The work lives in
-//! [`crate::godot`]; this module only routes `godot-viewer/*`, `play/*` and
-//! `godot/*` there, and hands comments anchored to a node, or to a scene, a
-//! time and a screenshot (`docs/VEISTRA-UX-REWORK.md` §3.4), to
-//! [`crate::comments`], shared with every other viewer.
+//! **Editor** is the Godot editor, launched `--editor --single-window` and
+//! placed over the pane ([`crate::godot::editor`], #316), or the scene view
+//! where `godot/status`'s `editor` ([`crate::editor_surface`]) says it cannot
+//! open (main, a cloud session, no Godot): a headless run's dumped tree and
+//! one rendered frame, cached under `.veistra/` with their age. **Play** runs
+//! the project with its window placed in the pane, streams its log, records
+//! takes and captures frames (`docs/design-notes/godot-play.md`).
 //!
-//! `godot/status` answers `editor`, where Editor mode shows
-//! ([`crate::editor_surface`]): the scene view above is its read-only surface,
-//! the one main, a cloud session or a missing Godot get.
+//! The work lives in [`crate::godot`]; this module only routes
+//! `godot-viewer/*`, `play/*` and `godot/*` there, and hands comments anchored
+//! to a node, or to a scene, a time and a screenshot
+//! (`docs/VEISTRA-UX-REWORK.md` §3.4), to [`crate::comments`], shared with
+//! every other viewer.
 //!
 //! The app id stays `godot-viewer`, and `play` is a second registry row that
 //! opens this frontend in Play mode with this same dispatch, so a saved layout

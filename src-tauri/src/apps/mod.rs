@@ -241,8 +241,8 @@ const REGISTRY: &[Registered] = &[
     Registered {
         id: "godot-viewer",
         name: "Godot",
-        description: "Look at the scene an agent's headless run produced in Editor mode, or play \
-                      the game in the pane in Play mode and record what you see.",
+        description: "Work in the Godot editor inside the pane in Editor mode, or play the game in \
+                      the pane in Play mode and record what you see.",
         // One app with two modes (DECISIONS X3). The id is the one saved
         // layouts already hold; `play` below is the same frontend in Play mode.
         call: godot_viewer::call,

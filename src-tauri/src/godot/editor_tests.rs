@@ -312,3 +312,20 @@ fn close_asks_the_window_as_its_close_button_would_and_kills_nothing() {
     assert!(editor.is_running(), "asked, not ended: Godot decides");
     end(&w);
 }
+
+#[test]
+fn an_open_is_counted_once_with_whether_the_plugin_is_enabled() {
+    let w = world();
+    let seen: Arc<Mutex<Vec<(&'static str, Value)>>> = Arc::default();
+    let log = seen.clone();
+    let mut c = ctx(&w, "c1");
+    c.usage = Arc::new(move |event, props| log.lock().unwrap().push((event, props)));
+    call(&c, "godot/editor-open", json!({})).unwrap();
+    // A second press while it runs answers the open editor and counts nothing.
+    call(&c, "godot/editor-open", json!({})).unwrap();
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![("editor_opened", json!({ "plugin": false }))]
+    );
+    end(&w);
+}

@@ -1,14 +1,15 @@
 //! Godot integration: finding the engine, running a project, capturing a frame,
-//! recording a run, and reading a scene's tree.
+//! recording a run, reading a scene's tree, and the editor in the pane.
 //!
 //! Godot always runs as its own native process: the game when someone plays
 //! it, a windowless `--headless` process when the viewer reads a scene, and
 //! the editor. Play places the game's window over its pane through
-//! [`crate::embed`], the way Godot's own editor shows a running game, and the
-//! editor joins it there (owner decision 6 of the v0.2 design, replacing
-//! `docs/VEISTRA-UX-REWORK.md` §3.1's "never embedded"). Placed is not drawn:
-//! the process is still its own, and Veistra holds the handles, the logs and
-//! the results.
+//! [`crate::embed`], the way Godot's own editor shows a running game, and
+//! Editor mode places the editor's there too ([`editor`], #316). Owner
+//! decision 6 of the v0.2 design replaces `docs/VEISTRA-UX-REWORK.md` §3.1's
+//! "never embedded"; the decision row is in `docs/design-notes/godot-play.md`.
+//! Placed is not drawn: the process is still its own, and Veistra holds the
+//! handles, the logs and the results.
 
 /// The opt-in capture script and its file channel.
 pub mod addon;

@@ -584,8 +584,9 @@ export default function EditorMode(props: EditorModeProps) {
             </li>
             <li>
               While the editor runs from Veistra it reports the selected nodes, the edited scene,
-              the 3D camera and a picture of the viewport, and takes three commands: select a node,
-              open a scene and Viewport only.
+              the 3D camera and a picture of the viewport. It takes three commands, select a node,
+              open a scene and Viewport only, and saves or closes the editor when you press Save all
+              or Close here.
             </li>
             <li>It talks to Veistra through a temporary folder. No network port.</li>
             <li>
