@@ -488,8 +488,9 @@ it came from a real run.
 ## Comments
 
 The Godot app's two modes and the Blender Viewer share one comment store
-rather than three: `apps/shared/comments.ts` is the model and the three RPC
-calls (`comments/list`, `comments/create`, `comments/resolve`), and
+rather than three: `apps/shared/comments.ts` is the model and the four RPC
+calls (`comments/list`, `comments/create`, `comments/resolve`, and
+`comments/verdict` for Looks good and Still broken), and
 `apps/shared/CommentPanel.tsx` is the list every one of them mounts. Both apps
 delegate to it from their own Rust module (`src-tauri/src/comments.rs`,
 reached through `godot_viewer.rs`'s and `blender_viewer.rs`'s `dispatch`),
@@ -497,13 +498,30 @@ which is why it lives under `apps/shared/` rather than in whichever app needed
 it first — see that directory's note above on why the isolation rule excludes
 it.
 
-A comment anchors to one of three things: a Godot node path, a Blender part
-plus material, or a Play scene plus a playhead time (`docs/VEISTRA-UX-REWORK.md`
-§3.4). It is a file — one per comment — under `.veistra/comments/` inside the
-calling cluster's environment, not a database row, for the same reason the
-rest of this repo's structured state is files: it travels with the branch and
-merges the way git already merges text. `src-tauri/src/comments.rs`'s doc
-comment has the ID scheme and the merge reasoning in full.
+A comment anchors to a Godot node path, a Blender part plus material, a Play
+scene plus a playhead time (`docs/VEISTRA-UX-REWORK.md` §3.4), or a note on a
+recorded take (`take`: the take, the note's number, its time or range, the
+feedback packet, and the scene and node when known). It is a file — one per
+comment — under `.veistra/comments/` inside the calling cluster's environment,
+not a database row, for the same reason the rest of this repo's structured state
+is files: it travels with the branch and merges the way git already merges text.
+`src-tauri/src/comments.rs`'s doc comment has the ID scheme and the merge
+reasoning in full.
+
+A comment is `open`, `working`, `fixed` or `resolved`. An agent starts one and
+reports it fixed; only the person resolves it, or sends it back to `open` with a
+reply. The store enforces that, not its callers: an agent's resolve of a comment
+that is not open or working is refused, as is any resolve of a resolved one.
+
+**Changes are pushed.** Every write is announced as `comments:changed`
+(`src-tauri/src/comment_events.rs`), and the shell relays it into the app frames
+of every cluster on that environment. A pane subscribes with one call,
+`useCommentsChanged(refresh)` from `apps/shared/commentEvents.ts`, which gathers a
+burst (Send files one comment per note) into one refresh. That is how an agent's
+`resolve_play_note`, which no frame sees, turns an open card to "Fixed, check it".
+The payload names the comment and its old and new status, never its text. The
+Blender Viewer subscribes today; Play and the Godot Viewer are wired when they
+become one app (#313), and until then Play's review sees a fix by its 2 s poll.
 
 "Send to agent now" is on every comment panel, and it is always disabled: it
 is drawn now so the layout is right, but nothing reads `.veistra/comments/` into
