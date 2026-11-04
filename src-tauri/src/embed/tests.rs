@@ -39,16 +39,27 @@ impl Still for FakeStill {
 /// `hung` held by a test is a process that stopped pumping messages; the
 /// `fail_*` flags are Windows refusing.
 #[derive(Default)]
-pub(super) struct Fake {
+pub(crate) struct Fake {
     pub finds_before: usize,
     pub looks: AtomicUsize,
     pub hung: Mutex<()>,
-    pub placed: Mutex<Vec<(Placement, ThreadId)>>,
+    pub(super) placed: Mutex<Vec<(Placement, ThreadId)>>,
     pub fail_embed: AtomicBool,
     pub fail_place: AtomicBool,
     pub released: Mutex<Vec<Option<ScreenRect>>>,
     pub shown_near: Mutex<Vec<Option<ScreenRect>>>,
     pub kinds: Mutex<Vec<Kind>>,
+}
+
+impl Fake {
+    /// One whose window is found on the `looks`th look; for a test outside
+    /// this module, which cannot name every field.
+    pub(crate) fn finding_after(looks: usize) -> Self {
+        Self {
+            finds_before: looks,
+            ..Self::default()
+        }
+    }
 }
 
 impl WindowSystem for Fake {
@@ -530,16 +541,31 @@ fn a_cause_known_up_front_skips_placing_and_only_shows_the_window() {
     assert_eq!(fake.shown_near.lock_or_panic().len(), 1);
 }
 
+/// The settled hook's calls, for the outcome a window reports.
+fn settled_log(embed: &Embed) -> Arc<Mutex<Vec<State>>> {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = seen.clone();
+    embed.when_settled(Box::new(move |s| log.lock_or_panic().push(s.clone())));
+    seen
+}
+
 #[test]
 fn a_window_started_with_no_pane_docks_into_the_pane_that_opens() {
     let fake = Arc::new(Fake::default());
     let embed = Embed::with(fake.clone(), Kind::Game);
+    let seen = settled_log(&embed);
     embed.attach(Some(Cause::NoPane), &|| vec![1], &|| None, &|| true);
     assert_eq!(cause(&embed), Cause::NoPane);
+    assert!(seen.lock_or_panic().is_empty(), "no pane is no outcome yet");
     embed.set_rect(shown(rect(10.0, 640.0)), None);
     embed.dock(&owner(1.0)).unwrap();
     assert_eq!(embed.state(), State::Embedded);
     assert_eq!(placed(&fake).len(), 1);
+    assert_eq!(
+        seen.lock_or_panic().clone(),
+        vec![State::Embedded],
+        "the pane that docked it had the first try"
+    );
     let refused = Embed::with(fake.clone(), Kind::Game);
     refused.attach(Some(Cause::Forced), &|| vec![1], &|| None, &|| true);
     assert!(
@@ -548,13 +574,75 @@ fn a_window_started_with_no_pane_docks_into_the_pane_that_opens() {
     );
 }
 
+/// An agent's run with no pane open, and Play opened while the game is still
+/// loading: the window is placed when it shows, not left in its own frame.
+#[test]
+fn a_pane_that_opens_before_the_window_shows_gets_it_placed() {
+    let fake = Arc::new(Fake {
+        finds_before: 3,
+        ..Fake::default()
+    });
+    let embed = Embed::with(fake.clone(), Kind::Game);
+    let seen = settled_log(&embed);
+    // As `Hosts::host` does: the cause first, then the search. The pane's
+    // box lands before the window shows; the `ops` lock decides the order
+    // when the two race, so the search runs after it here.
+    embed.give_up(Cause::NoPane);
+    embed.set_rect(shown(rect(10.0, 640.0)), None);
+    assert!(embed.rejoin(), "no window yet, so it is looked for again");
+    let found = embed.attach(None, &|| vec![1], &|| Some(owner(1.0)), &|| true);
+    assert_eq!(found, Some(7));
+    assert_eq!(embed.state(), State::Embedded);
+    assert_eq!(placed(&fake).len(), 1, "placed over the pane that opened");
+    assert!(
+        fake.shown_near.lock_or_panic().is_empty(),
+        "never decorated"
+    );
+    assert_eq!(seen.lock_or_panic().clone(), vec![State::Embedded]);
+    assert!(!embed.rejoin(), "in the pane, nothing to rejoin");
+
+    let found = Embed::with(fake.clone(), Kind::Game);
+    found.attach(Some(Cause::NoPane), &|| vec![1], &|| None, &|| true);
+    assert!(!found.rejoin(), "its window exists: Dock places it");
+    assert_eq!(cause(&found), Cause::NoPane);
+}
+
+/// The pane opens after the wait would have run out, and the window shows
+/// just after that: it is placed, not left in its own frame, because the wait
+/// counts from the pane. Without that, a pane opened at 15 s kept a window
+/// that showed at 20 s out, while one opened at 25 s docked it.
+#[test]
+fn a_pane_that_rejoins_late_gets_the_whole_wait() {
+    let fake = Arc::new(Fake {
+        finds_before: 3,
+        ..Fake::default()
+    });
+    let embed = Embed::with(fake.clone(), Kind::Game);
+    let seen = settled_log(&embed);
+    embed.give_up(Cause::NoPane);
+    embed.set_rect(shown(rect(10.0, 640.0)), None);
+    let looks = AtomicUsize::new(0);
+    // Asked after each look that found nothing; the third comes at least
+    // 200 ms in, past the wait, and the pane rejoins there.
+    let alive = || {
+        if looks.fetch_add(1, Ordering::SeqCst) == 2 {
+            assert!(embed.rejoin());
+        }
+        true
+    };
+    let wait = Duration::from_millis(150);
+    let found = embed.attach_within(wait, None, &|| vec![1], &|| Some(owner(1.0)), &alive);
+    assert_eq!(found, Some(7));
+    assert_eq!(embed.state(), State::Embedded);
+    assert_eq!(placed(&fake).len(), 1);
+    assert_eq!(seen.lock_or_panic().clone(), vec![State::Embedded]);
+}
+
 #[test]
 fn the_outcome_is_reported_once_whatever_it_is() {
-    let seen = Arc::new(Mutex::new(Vec::new()));
     let fake = Arc::new(Fake::default());
     let embed = Embed::with(fake.clone(), Kind::Game);
-    let log = seen.clone();
-    embed.when_settled(Box::new(move |s| log.lock_or_panic().push(s.clone())));
+    let seen = settled_log(&embed);
     embed.set_rect(shown(rect(10.0, 640.0)), None);
     embed.attach(None, &|| vec![1], &|| Some(owner(1.0)), &|| true);
     embed.pop_out(None).unwrap();
@@ -579,6 +667,11 @@ fn the_outcome_is_reported_once_whatever_it_is() {
         cause: Cause::Exited,
     };
     assert_eq!(usage_for(&exited, 0), None, "nothing failed");
+    let no_pane = State::OwnWindow {
+        reason: String::new(),
+        cause: Cause::NoPane,
+    };
+    assert_eq!(usage_for(&no_pane, 0), None, "nothing was tried");
 }
 
 #[test]

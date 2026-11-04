@@ -93,7 +93,7 @@ fn owner(ctx: &Ctx, s: &Session) -> Option<Owner> {
 /// so the next launch is sized to the pane that pressed Play, and the pane
 /// that sends `visible: true` takes the cluster's game: Play in two panes
 /// hands it between them. A game an agent started with no Play pane open
-/// joins the first pane that shows it, as a Dock.
+/// joins the first pane that shows it ([`join_pane`]).
 fn embed_rect(ctx: &Ctx, raw: Option<&Value>) -> Result<Value, RpcError> {
     let (asked, window) = host::parse_box(raw)?;
     let instance = ctx
@@ -116,9 +116,23 @@ fn embed_rect(ctx: &Ctx, raw: Option<&Value>) -> Result<Value, RpcError> {
         )
     });
     if asked.visible && waiting_for_a_pane {
-        dock(ctx)?;
+        join_pane(ctx);
     }
     Ok(json!({ "ok": true }))
+}
+
+/// A game started with no pane open meets the pane that shows it: placed
+/// when its window appears if it has none yet, docked now if it has. The box
+/// is kept either way, so a failure is only logged.
+fn join_pane(ctx: &Ctx) {
+    let Some(s) = session(ctx) else {
+        return;
+    };
+    if s.embed.rejoin() {
+        replan(ctx, &s);
+    } else if let Err(e) = dock(ctx) {
+        crate::veistra_log!("play: could not dock the game: {}", e.message);
+    }
 }
 
 /// Pop out ends a take going: the recorder captures the whole window, and a
@@ -138,24 +152,32 @@ fn dock(ctx: &Ctx) -> Result<Value, RpcError> {
     let s = live_session(ctx)?;
     let o = owner(ctx, &s).ok_or_else(|| fail("the Veistra window is not known"))?;
     s.embed.dock(&o).map_err(fail)?;
-    if let (Some(run), Some(root)) = (ctx.godot.runner.get(&ctx.key), ctx.root.as_ref()) {
-        let rel = run
-            .spec
-            .project
-            .strip_prefix(root)
-            .map(|r| r.to_string_lossy().replace('\\', "/"))
-            .ok()
-            .filter(|r| !r.is_empty())
-            .unwrap_or_else(|| ".".to_string());
-        let godot = ctx.godot.version_for_takes();
-        if let Some(plan) = plan_for(ctx, &run.spec.project, &rel, &godot) {
-            s.plan(plan);
-            if let Some(hwnd) = s.embed.hwnd() {
-                s.begin_take(hwnd);
-            }
+    replan(ctx, &s);
+    Ok(json!({ "embed": s.embed.state() }))
+}
+
+/// With Record on, plan a take of the rest of the run and start it if the
+/// window is in the pane already; one still being looked for starts it when
+/// it is placed (`session::attached`).
+fn replan(ctx: &Ctx, s: &Session) {
+    let (Some(run), Some(root)) = (ctx.godot.runner.get(&ctx.key), ctx.root.as_ref()) else {
+        return;
+    };
+    let rel = run
+        .spec
+        .project
+        .strip_prefix(root)
+        .map(|r| r.to_string_lossy().replace('\\', "/"))
+        .ok()
+        .filter(|r| !r.is_empty())
+        .unwrap_or_else(|| ".".to_string());
+    let godot = ctx.godot.version_for_takes();
+    if let Some(plan) = plan_for(ctx, &run.spec.project, &rel, &godot) {
+        s.plan(plan);
+        if let Some(hwnd) = s.embed.hwnd() {
+            s.begin_take(hwnd);
         }
     }
-    Ok(json!({ "embed": s.embed.state() }))
 }
 
 // --- Record ------------------------------------------------------------------
@@ -622,6 +644,64 @@ mod tests {
             Some(running)
         );
         assert_eq!(record_project(Some(root), None, None, None), None);
+    }
+
+    /// An agent's `play/run` with no Play pane open, and Play opened while the
+    /// game is still loading: the pane's first box puts the game back to being
+    /// looked for, to be placed when its window shows, instead of failing the
+    /// report and leaving the game in its own frame.
+    #[test]
+    fn a_play_pane_that_opens_before_an_agent_s_game_shows_takes_it() {
+        use crate::embed::host::{HostSpec, Hosts, Orphan};
+        use crate::embed::OwnerFn;
+        let fake = Arc::new(crate::embed::tests::Fake::finding_after(usize::MAX));
+        let mut w = world();
+        w.hosts = Hosts::with(fake, true, false);
+        let spec = super::super::runner::RunSpec {
+            program: super::super::testing::fake_godot(w.dir.path(), true),
+            project: w.dir.path().join("game"),
+            scene: None,
+            channel: None,
+            window: None,
+        };
+        let run = w.godot.runner.start("c1", spec).unwrap();
+        let embed = w.hosts.embed(Kind::Game);
+        let session = Session::with_embed(run.id, None, None, embed.clone());
+        w.godot.set_session("c1", Arc::new(session));
+        let (alive, nowhere): (_, OwnerFn) = (run.clone(), Arc::new(|_| None));
+        let hosted = w.hosts.host(
+            nowhere,
+            false,
+            HostSpec {
+                instance: None,
+                cluster: "c1".into(),
+                embed: embed.clone(),
+                pids: Box::new(Vec::new),
+                alive: Arc::new(move || alive.is_running()),
+                on_attached: None,
+                on_orphan: Orphan::Stop(Box::new(|| {})),
+            },
+        );
+        let before = embed.state();
+        let rect =
+            json!({ "x": 10, "y": 20, "w": 800, "h": 400, "visible": true, "window": "main" });
+        let reply = call(&ctx(&w), "play/embed-rect", Some(&rect)).unwrap();
+        let after = embed.state();
+        // Clean-up only: nothing below depends on how the stop went.
+        let _ = w.godot.runner.stop("c1");
+        assert!(
+            matches!(
+                before,
+                EmbedState::OwnWindow {
+                    cause: Cause::NoPane,
+                    ..
+                }
+            ),
+            "{before:?}"
+        );
+        assert!(reply.is_ok(), "{reply:?}");
+        assert_eq!(after, EmbedState::Waiting, "to be placed when it shows");
+        assert_eq!(hosted.instance().as_deref(), Some("play-1"));
     }
 
     #[test]

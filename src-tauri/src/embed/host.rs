@@ -89,7 +89,8 @@ pub enum Orphan {
 pub struct HostSpec {
     /// The pane instance that shows it; `None` for one started with no pane
     /// open (an agent's `play/run`), which keeps its own window until a pane
-    /// claims it ([`Embed::dock`]).
+    /// claims it: [`Embed::rejoin`] before the window shows, [`Embed::dock`]
+    /// after.
     pub instance: Option<String>,
     pub cluster: String,
     /// From [`Hosts::embed`], so the host can hold it before the window exists.
@@ -216,9 +217,9 @@ impl Hosts {
     }
 
     /// Register a window and start looking for it on a thread of its own.
-    /// `shown` is whether the pane is on screen now, from the shell's state:
-    /// a window started by an agent while its pane is another tab must not
-    /// appear over that tab first.
+    /// `shown` is whether the pane is on screen now, [`shown`] of the shell's
+    /// state: a window started by an agent while its pane is another tab must
+    /// not appear over that tab first.
     pub fn host(&self, owner_of: OwnerFn, shown: bool, spec: HostSpec) -> Arc<Hosted> {
         let HostSpec {
             instance,
@@ -265,10 +266,15 @@ impl Hosts {
             }
             return hosted;
         }
+        // Here rather than on the thread: a pane that claims the window
+        // meanwhile must find it already waiting for one ([`Embed::rejoin`]).
+        if let Some(cause) = own {
+            embed.give_up(cause);
+        }
         let (boxes, who) = (self.boxes.clone(), hosted.clone());
         std::thread::spawn(move || {
             let owner = || owner_of(window_of(&boxes, &who).as_deref());
-            let hwnd = embed.attach(own, &*pids, &owner, &*alive);
+            let hwnd = embed.attach(None, &*pids, &owner, &*alive);
             if let Some(attached) = on_attached {
                 attached(hwnd);
             }

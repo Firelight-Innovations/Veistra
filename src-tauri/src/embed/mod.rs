@@ -419,6 +419,10 @@ struct Inner {
     still: Mutex<Option<Box<dyn Still>>>,
     placed: Mutex<Option<Placed>>,
     settled: Mutex<Option<Settled>>,
+    /// When the wait for the window began: the attach, or the pane that
+    /// rejoined it ([`Embed::rejoin`]). [`Kind::find_for`] counts from here,
+    /// because time with no pane open had nothing to place the window in.
+    since: Mutex<Instant>,
 }
 
 impl Inner {
@@ -515,6 +519,7 @@ impl Embed {
                 still: Mutex::new(None),
                 placed: Mutex::new(None),
                 settled: Mutex::new(None),
+                since: Mutex::new(Instant::now()),
             }),
             worker: Once::new(),
         }
@@ -559,10 +564,14 @@ impl Embed {
     }
 
     /// Leave the window in its own frame, saying why, without looking for it:
-    /// a platform with no embedder.
+    /// a platform with no embedder. No pane is not an outcome: nothing was
+    /// tried, and the pane that later shows the window ([`Self::rejoin`],
+    /// [`Self::dock`]) has the first one.
     pub fn give_up(&self, cause: Cause) {
         self.own_window(cause);
-        self.settle();
+        if cause != Cause::NoPane {
+            self.settle();
+        }
     }
 
     /// The process ended: its window is gone, so nothing may be sent to the
@@ -609,7 +618,7 @@ impl Embed {
         if let Some(cause) = own {
             self.give_up(cause);
         }
-        let started = Instant::now();
+        *self.inner.since.lock_or_panic() = Instant::now();
         let hwnd = loop {
             if let Some(hwnd) = self.inner.win.find_window(&pids(), self.inner.kind) {
                 break hwnd;
@@ -621,30 +630,65 @@ impl Embed {
                 self.settle();
                 return None;
             }
-            let late = started.elapsed() > wait;
-            if late && self.state() == State::Waiting {
-                self.own_window(Cause::NoWindow);
+            let (late, gave_up) = {
+                // Under `ops`, so a pane rejoining now restarts the wait
+                // before it is judged over.
+                let _ops = self.inner.ops.lock_or_panic();
+                let late = self.inner.since.lock_or_panic().elapsed() > wait;
+                let gave_up = late && self.state() == State::Waiting;
+                if gave_up {
+                    self.own_window(Cause::NoWindow);
+                }
+                (late, gave_up)
+            };
+            if gave_up {
                 self.settle();
             }
             std::thread::sleep(if late { LATE_POLL } else { POLL });
         };
-        *self.inner.hwnd.lock_or_panic() = Some(hwnd);
-        if self.state() != State::Waiting {
-            self.show_own(hwnd, owner().as_ref());
-            return Some(hwnd);
-        }
-        let Some(owner) = owner() else {
-            self.own_window(Cause::NoOwner);
-            self.show_own(hwnd, None);
-            self.settle();
-            return Some(hwnd);
-        };
         {
+            // Under `ops` from here to the decision, so a pane claiming the
+            // window ([`Self::rejoin`]) is either seen here or sees the window.
             let _ops = self.inner.ops.lock_or_panic();
-            self.embed_now(hwnd, &owner, Cause::Refused);
+            *self.inner.hwnd.lock_or_panic() = Some(hwnd);
+            if self.state() != State::Waiting {
+                self.show_own(hwnd, owner().as_ref());
+                return Some(hwnd);
+            }
+            match owner() {
+                Some(owner) => {
+                    self.embed_now(hwnd, &owner, Cause::Refused);
+                }
+                None => {
+                    self.own_window(Cause::NoOwner);
+                    self.show_own(hwnd, None);
+                }
+            }
         }
         self.settle();
         Some(hwnd)
+    }
+
+    /// A pane opened for a window started with no pane open, before the
+    /// window showed: look for it as though the pane had been there from the
+    /// start, so it is placed the moment it appears, and give it the whole
+    /// wait from now. `false` once the window exists, which [`Self::dock`]
+    /// places, or for one not waiting for a pane.
+    pub fn rejoin(&self) -> bool {
+        let _ops = self.inner.ops.lock_or_panic();
+        let no_pane = matches!(
+            self.state(),
+            State::OwnWindow {
+                cause: Cause::NoPane,
+                ..
+            }
+        );
+        if !no_pane || self.hwnd().is_some() {
+            return false;
+        }
+        *self.inner.since.lock_or_panic() = Instant::now();
+        self.set(State::Waiting);
+        true
     }
 
     /// Bring a window that is not going to be placed on screen, over the pane
@@ -794,23 +838,29 @@ impl Embed {
     /// Dock: back over the pane, sized to it before this returns. Also how a
     /// window started with no pane open joins the pane that opens later.
     pub fn dock(&self, owner: &Owner) -> Result<(), String> {
-        let _ops = self.inner.ops.lock_or_panic();
         let what = self.inner.kind.what();
-        let hwnd = self
-            .hwnd()
-            .ok_or_else(|| format!("{what} has no window yet"))?;
-        let dockable = matches!(
-            self.state(),
-            State::PoppedOut
-                | State::OwnWindow {
-                    cause: Cause::NoPane,
-                    ..
-                }
-        );
-        if !dockable {
-            return Err(format!("{what} is not popped out"));
-        }
-        if self.embed_now(hwnd, owner, Cause::Refused) {
+        let placed = {
+            let _ops = self.inner.ops.lock_or_panic();
+            let hwnd = self
+                .hwnd()
+                .ok_or_else(|| format!("{what} has no window yet"))?;
+            let dockable = matches!(
+                self.state(),
+                State::PoppedOut
+                    | State::OwnWindow {
+                        cause: Cause::NoPane,
+                        ..
+                    }
+            );
+            if !dockable {
+                return Err(format!("{what} is not popped out"));
+            }
+            self.embed_now(hwnd, owner, Cause::Refused)
+        };
+        // A window started with no pane has its first outcome here; after a
+        // Pop out this does nothing, the outcome long since reported.
+        self.settle();
+        if placed {
             Ok(())
         } else {
             Err(format!("{what} could not be placed in the pane"))
@@ -841,13 +891,13 @@ impl Embed {
 
 /// The usage event a settled game reports (`docs/telemetry.md`; spec §13):
 /// `play_embedded` once placed, `play_embed_failed` with the cause otherwise.
-/// A game that closed before it showed a window failed nothing, and says
-/// nothing. Properties are short scalars only.
+/// A game that closed before it showed a window, or while no pane was open
+/// for it, failed nothing, and says nothing. Properties are short scalars only.
 pub fn usage_for(state: &State, ms: u64) -> Option<(&'static str, Value)> {
     match state {
         State::Embedded => Some(("play_embedded", json!({ "ms": ms }))),
         State::OwnWindow {
-            cause: Cause::Exited,
+            cause: Cause::Exited | Cause::NoPane,
             ..
         }
         | State::Waiting
@@ -967,5 +1017,6 @@ pub mod sys {
 /// Whether this build can place a window in a pane at all.
 pub const SUPPORTED: bool = cfg!(windows);
 
+/// The fake window system is shared with Play's tests (`godot::live`).
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
