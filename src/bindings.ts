@@ -97,6 +97,12 @@ export interface AppInfo {
   description: string;
   /** Root-relative, so it resolves against whatever origin the shell is on. */
   url: string;
+  /**
+   * Rust places a native window over this app's pane (Plane's webview, the game, the Godot
+   * editor, Blender), so the shell pushes the pane its window rect and the overlays over it
+   * (`apps::Registered::places_window`).
+   */
+  placesWindow: boolean;
 }
 
 /**

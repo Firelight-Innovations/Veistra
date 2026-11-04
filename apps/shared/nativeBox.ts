@@ -1,14 +1,23 @@
 /**
- * Where Play's game box is in the Veistra window, and whether anything the
- * shell draws is over it.
+ * Where a pane's box for a native window is in the Veistra window, and
+ * whether anything the shell draws is over it: the arithmetic behind
+ * `useNativeBox`, for the game, the Godot editor and Blender alike (design
+ * §4.2 and §11.1).
  *
- * `getBoundingClientRect()` inside this iframe is relative to the iframe; the
+ * `getBoundingClientRect()` inside an iframe is relative to the iframe; the
  * shell reports where the iframe is in the window over `veistra/window-rect`
  * (the same report `apps/projects` combines with its own rect for Plane), and
- * the sum is the box the backend places the game window on. Overlay boxes
+ * the sum is the box the backend places the window on. Overlay boxes
  * (`veistra/overlays`) arrive in the same window space.
  */
-import type { Rect } from "./rpc";
+
+/** A box in window CSS pixels, as `play/embed-rect` and `embed/rect` take it. */
+export interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
 
 export interface WindowRect {
   x: number;
@@ -40,7 +49,7 @@ export function overlayRects(p: unknown): WindowRect[] {
   return Array.isArray(rects) ? rects.filter(isWindowRect) : [];
 }
 
-/** The game box in window CSS pixels. */
+/** The box in window CSS pixels. */
 export function boxInWindow(
   frame: WindowRect,
   local: { left: number; top: number; width: number; height: number },
@@ -55,7 +64,7 @@ export function sameRect(a: Rect | null, b: Rect | null): boolean {
   );
 }
 
-/** Whether any overlay covers part of the game box. */
+/** Whether any overlay covers part of the box. */
 export function covered(box: Rect, overlays: readonly WindowRect[]): boolean {
   return overlays.some(
     (o) =>

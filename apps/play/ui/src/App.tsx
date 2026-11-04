@@ -40,6 +40,7 @@ import {
 import { errorText, getStatus, openInGodot, type GodotStatus } from "../../../shared/godot";
 import { blobBase64, sendMarkup } from "../../../shared/markupFlow";
 import { SendButton, SendFooter, useSendAction } from "../../../shared/SendFooter";
+import { useShellPlacement } from "../../../shared/useNativeBox";
 import {
   ToolbarButton,
   ToolbarChip,
@@ -47,7 +48,6 @@ import {
   type ToolbarStatus,
 } from "../../../shared/ViewerToolbar";
 import { clock } from "./frames";
-import { isWindowRect, overlayRects, type WindowRect } from "./geometry";
 import { isTyping, liveAction } from "./keys";
 import { LiveStrip, LiveView, LogView, type LiveMarking } from "./LiveView";
 import type { Target } from "./notes";
@@ -131,8 +131,8 @@ export default function App() {
   const [posting, setPosting] = useState(false);
   const [view, setView] = useState<View>({ kind: "live" });
   const [takes, setTakes] = useState<ListedTake[]>([]);
-  const [frameRect, setFrameRect] = useState<WindowRect | null>(null);
-  const [overlays, setOverlays] = useState<WindowRect[]>([]);
+  // Where this iframe is in the window, and what the shell draws over it.
+  const { frameRect, overlays } = useShellPlacement();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [marking, setMarking] = useState<
     (LiveMarking & { atWall: number; wasPaused: boolean }) | null
@@ -217,18 +217,6 @@ export default function App() {
   useEffect(() => {
     if (chosenRel !== undefined) void loadAddon(chosenRel);
   }, [chosenRel, loadAddon]);
-
-  // Where this iframe is in the window, and what the shell draws over it.
-  useEffect(() => {
-    const offRect = on("veistra/window-rect", (p) => {
-      if (isWindowRect(p)) setFrameRect(p);
-    });
-    const offOverlays = on("veistra/overlays", (p) => setOverlays(overlayRects(p)));
-    return () => {
-      offRect();
-      offOverlays();
-    };
-  }, []);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);

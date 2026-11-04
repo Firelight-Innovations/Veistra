@@ -50,6 +50,37 @@ describe("visibleOverlays", () => {
     // A pane's own surface and a docked page sit beside the game, not over it.
     expect(visibleOverlays(document.body).map((r) => r.x)).toEqual([0, 1, 2, 3, 5]);
   });
+
+  // A modal's sheet may sit clear of a game in a lower or side pane while its
+  // scrim dims the whole window: the scrim is what covers the game then.
+  it("counts every full-window scrim, not only the sheet on it", () => {
+    const scrims = [
+      "palette",
+      "k-dialog-scrim",
+      "settings__backdrop",
+      "shortcuts__backdrop",
+      "library__backdrop",
+    ];
+    document.body.innerHTML = scrims.map((c) => `<div class="${c}" id="${c}"></div>`).join("");
+    scrims.forEach((id, i) => box(document.getElementById(id)!, i, 0, 1200, 800));
+    expect(visibleOverlays(document.body).map((r) => r.x)).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  // The drop highlight covers the whole pane under a dragged tab, the game's
+  // box included, though the ghost itself is elsewhere.
+  it("counts where a dragged tab would drop, its hint and the detach outline", () => {
+    document.body.innerHTML = `
+      <span class="pane__drop" id="drop"><span class="pane__drop-label">Split right</span></span>
+      <span class="pane__drop pane__drop--edge" id="edge"></span>
+      <div class="drag-hint" id="hint"></div>
+      <div class="drag-detach-outline" id="outline"></div>
+      <span class="pane__drop-label" id="label-alone"></span>`;
+    ["drop", "edge", "hint", "outline", "label-alone"].forEach((id, i) =>
+      box(document.getElementById(id)!, i, 0, 300, 200),
+    );
+    // A label is inside its drop, which already counts.
+    expect(visibleOverlays(document.body).map((r) => r.x)).toEqual([0, 1, 2, 3]);
+  });
 });
 
 describe("intersects", () => {

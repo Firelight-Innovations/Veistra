@@ -170,6 +170,8 @@ interface World {
   record: { on: boolean; blocked: string | null };
   takes: unknown[];
   projects: unknown[];
+  /** Where the game's window is (`embed::State`); embedded unless a test says otherwise. */
+  embed: { kind: string; reason?: string; cause?: string };
   /** While set, `play/state` answers wait here, to be let go together. */
   held: (() => void)[] | null;
 }
@@ -182,6 +184,7 @@ function liveBackend(over: Partial<World> = {}): World {
     record: { on: true, blocked: null },
     takes: [],
     projects: [],
+    embed: SESSION.embed,
     held: null,
     ...over,
   };
@@ -192,6 +195,8 @@ function liveBackend(over: Partial<World> = {}): World {
       record: world.record,
       session: world.run && {
         ...SESSION,
+        embed: world.embed,
+        embedded: world.embed.kind === "embedded",
         runId: world.run.id,
         take: world.take,
         // Each key once, after the pane's cursor, as `Session::keys_since` answers.
@@ -245,6 +250,14 @@ function liveBackend(over: Partial<World> = {}): World {
         return Promise.resolve({ takes: world.takes, dir: "" });
       case "play/take":
         return new Promise(() => undefined);
+      case "play/still":
+        return Promise.resolve({ png: "AAAA", source: "capture" });
+      case "play/pop-out":
+        world.embed = { kind: "poppedOut" };
+        return Promise.resolve({ embed: world.embed });
+      case "play/dock":
+        world.embed = { kind: "embedded" };
+        return Promise.resolve({ embed: world.embed });
       default:
         return Promise.resolve(null);
     }
@@ -390,6 +403,52 @@ describe("Play live view", () => {
     await waitFor(() =>
       expect(lastParams("play/embed-rect")).toMatchObject({ visible: true, w: 640 }),
     );
+  });
+
+  // Spec §13 test 2: what covers the box is the game's last frame, not a hole.
+  it("shows the game's last frame in the box while an overlay covers it", async () => {
+    liveBackend();
+    render(<App />);
+    await screen.findByText("Playing");
+    placeBox();
+    await waitFor(() => expect(lastParams("play/embed-rect")?.visible).toBe(true));
+    expect(screen.queryByRole("img", { name: "The game's last frame" })).toBeNull();
+    events.get("veistra/overlays")?.({ rects: [{ x: 100, y: 100, width: 50, height: 50 }] });
+    const img = await screen.findByRole("img", { name: "The game's last frame" });
+    expect(img.getAttribute("src")).toBe("blob:frame");
+    events.get("veistra/overlays")?.({ rects: [] });
+    await waitFor(() =>
+      expect(screen.queryByRole("img", { name: "The game's last frame" })).toBeNull(),
+    );
+  });
+
+  // Spec §13 test 9: the reason Rust gives is the strip's line, and the box
+  // shows the game's output rather than an empty frame.
+  it("says the game is playing in its own window when it could not be placed", async () => {
+    const reason =
+      "Playing in its own window: placing it in the pane is switched off (VEISTRA_EMBED).";
+    liveBackend({ take: { state: "off" }, embed: { kind: "ownWindow", reason, cause: "forced" } });
+    render(<App />);
+    expect(await screen.findByText(reason)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Pop out into its own window" })).toBeNull();
+    placeBox();
+    await waitFor(() => expect(calls("play/embed-rect").length).toBeGreaterThan(0));
+    events.get("veistra/overlays")?.({ rects: [{ x: 100, y: 100, width: 50, height: 50 }] });
+    await waitFor(() => expect(lastParams("play/embed-rect")?.visible).toBe(false));
+    expect(calls("play/still")).toHaveLength(0);
+  });
+
+  it("pops the game out into its own window and docks it back", async () => {
+    liveBackend({ take: { state: "off" } });
+    render(<App />);
+    await screen.findByText("Playing");
+    fireEvent.click(await screen.findByRole("button", { name: "Pop out into its own window" }));
+    await waitFor(() => expect(calls("play/pop-out")).toHaveLength(1));
+    await screen.findByText("Popped out into its own window. Dock brings it back.");
+    fireEvent.click(await screen.findByRole("button", { name: "Dock into the pane" }));
+    await waitFor(() => expect(calls("play/dock")).toHaveLength(1));
+    await screen.findByRole("button", { name: "Pop out into its own window" });
+    expect(calls("play/pop-out")).toHaveLength(1);
   });
 
   it("hides the game when review takes its box, and shows it again back in live", async () => {

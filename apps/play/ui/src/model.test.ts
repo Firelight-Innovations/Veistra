@@ -1,11 +1,10 @@
 /**
  * Play's pure modules: the note model, telemetry in the page, the contact
- * sheet's times, the game box's geometry and the keys.
+ * sheet's times and the keys. The game box's geometry is `apps/shared/nativeBox.ts`'s.
  */
 import { describe, expect, it } from "vitest";
 import type { Comment } from "../../../shared/comments";
 import { CONTACT_MAX, clock, contactLayout, contactTimes } from "./frames";
-import { boxInWindow, covered, isWindowRect, overlayRects, sameRect } from "./geometry";
 import { liveAction, reviewAction } from "./keys";
 import {
   addNote,
@@ -220,20 +219,6 @@ describe("contact sheets", () => {
     expect(clock(102_180)).toBe("1:42");
     expect(clock(102_180, true)).toBe("1:42.18");
     expect(clock(-5)).toBe("0:00");
-  });
-});
-
-describe("geometry", () => {
-  it("place the game box in window space and see what covers it", () => {
-    const frame = { x: 400, y: 120, width: 900, height: 700 };
-    const box = boxInWindow(frame, { left: 16, top: 60, width: 640, height: 360 });
-    expect(box).toEqual({ x: 416, y: 180, w: 640, h: 360 });
-    expect(covered(box, [{ x: 1000, y: 500, width: 200, height: 200 }])).toBe(true);
-    expect(covered(box, [{ x: 0, y: 0, width: 400, height: 100 }])).toBe(false);
-    expect(sameRect(box, { ...box })).toBe(true);
-    expect(isWindowRect({ x: 1, y: 2, width: 3, height: 4, window: "main" })).toBe(true);
-    expect(isWindowRect({ x: 1 })).toBe(false);
-    expect(overlayRects({ rects: [{ x: 0, y: 0, width: 1, height: 1 }, "bad"] })).toHaveLength(1);
   });
 });
 

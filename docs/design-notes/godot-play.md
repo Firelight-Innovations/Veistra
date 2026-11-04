@@ -66,20 +66,31 @@ moves the game into the pane, records runs as takes, and closes the loop with an
 native run above still holds: the game is its own process, and a crash in it never takes
 Veistra down.
 
-**The game in the pane** (`embed.rs`, Windows). After spawn, the game's window is found by
-process (the game and its children, since `_console.exe` starts the real executable), its
-caption and borders removed, `WS_EX_TOOLWINDOW` set, and made owned by the Veistra window. The
-pane sends `play/embed-rect` with its game box in window CSS pixels; Rust adds the window's
-client origin and scale. The game is launched with `--windowed --resolution <pane size>
---position -32000,-32000` so it never flashes in the wrong place. Rust hides it whenever its
-cluster is off screen or Play is not the active tab (`live::sync_visibility`, from the shell
-state, beside the Plane webview's). With no embedder (macOS, Linux) or no window within 10 s,
-the game keeps its own window and the live strip says so.
+**The game in the pane** (`src-tauri/src/embed/`, Windows). After spawn, the game's window is
+found by process (the game and its children, since `_console.exe` starts the real executable;
+the `Engine` class first, never a console or a message box), its caption and borders removed,
+`WS_EX_TOOLWINDOW` set, made owned by the Veistra window, and its input queue detached from
+Veistra's so a hung game cannot stall Veistra. The pane sends `play/embed-rect` with its game box
+in window CSS pixels; Rust adds the window's client origin and scale, and a worker applies only
+the newest box. The game is launched with `--windowed --resolution <pane size> --position <the
+pane on screen>` so it first shows where the pane is. One registry (`embed/host.rs`) holds every
+placed window, game, Godot editor or Blender, by the pane instance that shows it: it hides a
+window whenever that pane is not the active tab of a cluster on screen (from the shell state)
+and moves them all with the Veistra window. With no embedder (macOS, Linux), no window within
+10 s, a refused style change (an elevated game) or a failed first move, the game keeps or gets
+back its own decorated window, on screen over the pane, and the live strip says "Playing in its
+own window" and why; `VEISTRA_EMBED=off` forces that path. A game whose Play pane closes is
+stopped, its take saved first. An editor is never killed: it is handed back as a normal window
+when its pane closes and at exit.
 
-**Airspace.** The game paints above the WebView. The shell reports its open overlays (menus,
-popovers, dialogs, the palette, the drag ghost, and a takeover or expanded page that covers the
-whole tool window) to Play as `veistra/overlays` (`src/shell/overlayWatch.ts`), and Play hides
-the game and shows its last frame while one covers the box.
+**Airspace.** The placed window paints above the WebView. The shell reports its open overlays
+(menus, popovers, dialogs and the scrims behind modal sheets, the palette, toasts, the drag
+ghost and where a dragged tab would drop, and a takeover or expanded page that covers the whole
+tool window) as `veistra/overlays` (`src/shell/overlayWatch.ts`) to every app that declares
+`places_window`. The pane (`apps/shared/useNativeBox.ts`) hides the window and shows its last
+frame while one covers the box: the recording's while a take records, else a Graphics Capture of
+the window itself (`embed/capture.rs`, only where Windows can leave out its yellow border), else
+the capture addon's.
 
 **Takes** (`record.rs`, `takes.rs`, `session.rs`). Record is per project, per computer, off by
 default, and needs addon v2 and Windows. A take is `.veistra/takes/<utc minute>-<4 hex>/` with
@@ -110,12 +121,39 @@ on the context server from an agent tab.
 | Video clip in the packet | Not built | The agent reads the contact sheet; the checkbox is shown disabled with why. |
 | Retention | Ten takes | Open decision 7. |
 | Video size | The window's, not 720p | `windows-capture` crops or pads, it does not scale. The bitrate is fixed at 3.5 Mbit/s, under 60 MB for two minutes. A D3D11 scaling pass is the follow-up. |
+| One embedder for the game, the Godot editor and Blender (#309) | `crate::embed`, a registry keyed by pane instance and kind; the game belongs to the Play pane that last sent `visible: true` | Keying by cluster or app id was rejected: a cluster can hold an editor and a game, Play can be open in two panes, and `play` becomes a mode of the Godot app (#313). The embed living inside Play's run gave the editors nothing to call. |
+| Which apps get window rects and overlays (#309) | A `places_window` capability on the registry entry: projects, play, godot-viewer, blender-viewer | The hard-coded `{projects, play}` lists in `ToolWindow.tsx` would have hidden the game once Play moves into `godot-viewer`. A plugin surface never gets it. |
+| Overlay signal (#309) | `veistra/overlays` with the overlays' rects, to frames; the `veistra:overlay-open/close` DOM events kept in the shell document | The spec's DOM events (§4.3.2) cannot reach a cross-origin frame, and a flag cannot tell a menu over the box from one across the window. Modal scrims and tab drop targets count, so a game in a pane the sheet does not reach steps aside too. |
+| Method names (#309) | `play/embed-rect` (the spec's `play/embed_rect`); `embed/rect`, `embed/still`, `embed/pop-out`, `embed/dock`, `embed/state` with a `kind` for the editors | Every app method here is kebab-case. The game keeps methods of its own because Pop out finishes a take and Dock starts one. |
+| The fallback (#309) | Launch at the pane's screen rect; on any failure a decorated window on screen over the pane, a cause code beside the reason; a window that shows after the 10 s wait is brought on screen, not placed | `--position -32000,-32000` left every fallback off screen, which is not "in its own window". `VEISTRA_EMBED=off` lets spec test 9 run where embedding works. |
+| Editors when their pane closes and at exit (#309) | Handed back as a normal decorated window, never killed; the game keeps its rule (stopped, take saved) | Killing an editor loses unsaved work. A game left running hidden after its pane closed plays audio nobody can stop. |
+| A still without a recording or the addon (#309) | Graphics Capture of the placed window, a frame kept every 500 ms, only where Windows can leave out the border; order recorder, capture, addon | Record is off by default and the addon is opt-in, so a plain run, and an editor always, had no still. A permanent yellow border on older Windows 10 is worse than an empty box. |
+| `WS_EX_TOOLWINDOW` on a placed window (#309) | Kept | `windows-capture` 2.0.1 skips tool windows only in `Window::enumerate` (`is_valid`); the recorder and the still build the item from the handle (`from_raw_hwnd`, then `CreateForWindow`), which does not check. To confirm in the spike run. |
+| Input queues under R2 (#309) | Detached once the window is owned (`AttachThreadInput(.., FALSE)`), as Godot's own embedding does | The owner link joins the two queues, so a hung game or a long editor import would stall Veistra's focus changes. |
+| Where play_embedded and play_embed_failed fire (#309) | Rust, once per run when the outcome settles, through `telemetry::track`: `{ms}` or `{cause}`; nothing for a game that closed first, or for Pop out | The page sees the outcome only while a Play pane polls, so an agent's run would go uncounted. |
 
 ### Not verified on a real machine
 
 Built and tested on Linux with unit tests and a Windows type-check; the Win32 embedder, the
 recorder and the GDScript have not run. The acceptance list in section 13 of the design needs
 a Windows 11 pass on the demo game and on Anomaly.
+
+From #309, unit-tested through a fake window system and type-checked for Windows only:
+
+- Spec test 1: the demo game and Anomaly in the pane with no title bar and no taskbar button;
+  Pop out brings both back and Dock removes them. After a splitter drag or a maximise the window
+  matches the box within 50 ms: `lastPlaceMs` in `pnpm probe --agent shell_snapshot`'s `embeds`.
+- Moving Veistra, a monitor of another scale and 125% View zoom keep the window on the box.
+- Spec test 2: a menu, the Ctrl K palette and its scrim, a dialog, a toast and a dragged tab
+  over the box show the still, and the game never paints over them. The Graphics Capture still
+  has no yellow border on Windows 11 and is the frame from just before the hide.
+- Spec test 9: with `VEISTRA_EMBED=off`, and with an elevated game whose style change UIPI
+  refuses, the game opens decorated on screen over the pane and the strip says "Playing in its
+  own window". A window that first shows after 10 s ends up on screen.
+- A hung game (a GDScript infinite loop) does not freeze Veistra's UI.
+- The window classes `Engine` (Godot 4, game and editor) and `GHOST_WindowClass` (Blender).
+- The real-window test in `embed/win32.rs`, which runs on CI's `windows-latest` only.
+- `godot:play_embedded` and `godot:play_embed_failed` reaching PostHog.
 
 ## The Godot Viewer
 

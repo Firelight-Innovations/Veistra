@@ -491,6 +491,31 @@ user does in the field comes back as an event:
 wraps all of it. Under the Tauri host both methods are refused, and the frame draws its own
 input. See `docs/design-notes/titlebar-search.md`.
 
+#### `veistra/window-rect` and `veistra/overlays` — a native window over the pane
+
+Some first-party apps have Rust place another process's window, or a webview, over their pane
+rather than drawing in the iframe: Plane's webview, the game, the Godot editor and Blender. Such
+an app declares `placesWindow` in the app registry (`src-tauri/src/apps/mod.rs`), and the shell
+pushes it two events (constants `WINDOW_RECT_EVENT` and `OVERLAYS_EVENT` in
+`@veistra/bridge/protocol`):
+
+```jsonc
+{"veistra":1,"kind":"event","event":"veistra/window-rect","payload":{"x":240,"y":96,"width":900,"height":640,"window":"main"}}
+{"veistra":1,"kind":"event","event":"veistra/overlays","payload":{"rects":[{"x":300,"y":40,"width":520,"height":380}]}}
+```
+
+The first is where the frame's pane is in its Veistra window, in CSS pixels, sent whenever it
+moves; a frame can measure itself only relative to its own iframe. The second is every overlay
+the shell has open (menus, the palette and its scrim, dialogs, toasts, a dragged tab and where
+it would drop), in the same space, sent whenever the set changes. A native window paints above
+the WebView, so the pane hides its window and shows a still while a rect covers its box. Rects
+rather than a flag, so a menu across the window from the box hides nothing. The shell's own
+document also gets `veistra:overlay-open` and `veistra:overlay-close` DOM events as the first
+overlay opens and the last closes (design §4.3.2), which a cross-origin frame cannot hear.
+`apps/shared/useNativeBox.ts` reads both pushes; neither name is a `veistra:` event, because
+both predate that convention and Plane already listens for the first. A plugin surface never
+declares `placesWindow`, so it gets neither.
+
 #### Under the Tauri host
 
 The sideways channel, the drag and the search claim are **refused** with `-32601`, not accepted and dropped the way

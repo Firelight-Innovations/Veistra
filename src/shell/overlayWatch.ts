@@ -1,14 +1,15 @@
 /**
  * Which of the shell's overlays are open, and where: menus, the Ctrl K
- * palette, search, dialogs, tooltips, toasts, a dragged tab, and the surfaces
+ * palette, search, dialogs and the scrims that dim the window behind them,
+ * tooltips, toasts, a dragged tab and where it would drop, and the surfaces
  * that cover the whole tool window.
  *
- * A native window placed over a pane (Play's game, design §4.3) paints above
- * the WebView, so anything the shell draws over that pane would be hidden
- * under it. The fix is the pane's: it swaps the game for its last frame while
- * an overlay covers it. What the shell owes it is this, the overlays' boxes in
- * window coordinates, so the pane can tell an overlay over its game from one
- * across the window.
+ * A native window placed over a pane (the game, the Godot editor or Blender,
+ * design §4.3 and §11.1) paints above the WebView, so anything the shell draws
+ * over that pane would be hidden under it. The fix is the pane's: it swaps the
+ * window for its last frame while an overlay covers it. What the shell owes it
+ * is this, the overlays' boxes in window coordinates, so the pane can tell an
+ * overlay over its box from one across the window.
  *
  * Found in the DOM by role and class rather than registered by each
  * component. The alternative, a hook every overlay calls, would be a promise
@@ -16,6 +17,7 @@
  * accessible overlay already has. The cost is a query per animation frame
  * after a DOM change, and only while something is listening.
  */
+import { OVERLAY_CLOSE_EVENT, OVERLAY_OPEN_EVENT } from "@veistra/bridge/protocol";
 
 /** What counts as an overlay. A role an overlay already carries, or the class or attribute of one with none. */
 export const OVERLAY_SELECTOR = [
@@ -30,6 +32,18 @@ export const OVERLAY_SELECTOR = [
   ".hamburger__dropdown",
   // Every surface `MenuItemList` portals beside a row, a prompt field included.
   "[data-menu-surface]",
+  // The scrims that dim the whole window behind a modal sheet. The sheet itself
+  // is a dialog, but a game box it does not overlap (a lower or side pane)
+  // would stay bright above the dimmed window without these.
+  ".palette",
+  ".k-dialog-scrim",
+  ".settings__backdrop",
+  ".shortcuts__backdrop",
+  ".library__backdrop",
+  // A tab dragged over a pane draws where it would drop over that whole pane.
+  ".pane__drop",
+  ".drag-hint",
+  ".drag-detach-outline",
   // These two cover the whole tool window: a takeover (Home, Tutorials) and an
   // expanded rail page. Play stays its pane's active tab under them, so nothing
   // else tells it that it is hidden. Named here rather than marked with
@@ -94,6 +108,11 @@ export function intersects(a: OverlayRect, b: OverlayRect): boolean {
  * Call `onChange` with the open overlays whenever the set changes, and
  * dispatch `veistra:overlay-open` / `veistra:overlay-close` on `window` as the
  * first opens and the last closes. Answers the stop function.
+ *
+ * The rects are what an app frame gets (`OVERLAYS_EVENT`, from `ToolWindow`):
+ * a cross-origin frame cannot hear the shell document's DOM events, and a
+ * flag could not tell a menu over the box from one across the window. The DOM
+ * events stay for listeners in the shell document.
  */
 export function watchOverlays(
   onChange: (rects: OverlayRect[]) => void,
@@ -110,7 +129,7 @@ export function watchOverlays(
     const view = doc.defaultView;
     if (view && was !== now.length > 0) {
       view.dispatchEvent(
-        new CustomEvent(now.length > 0 ? "veistra:overlay-open" : "veistra:overlay-close"),
+        new CustomEvent(now.length > 0 ? OVERLAY_OPEN_EVENT : OVERLAY_CLOSE_EVENT),
       );
     }
     onChange(now);

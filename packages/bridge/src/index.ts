@@ -33,7 +33,16 @@ export type {
   Session,
   ThemeChangedPayload,
 } from "./protocol.js";
-export { OPENED_EVENT, SEARCH_EVENT, THEME_CHANGED_EVENT, TOPIC_EVENT_PREFIX } from "./protocol.js";
+export {
+  OPENED_EVENT,
+  OVERLAYS_EVENT,
+  OVERLAY_CLOSE_EVENT,
+  OVERLAY_OPEN_EVENT,
+  SEARCH_EVENT,
+  THEME_CHANGED_EVENT,
+  TOPIC_EVENT_PREFIX,
+  WINDOW_RECT_EVENT,
+} from "./protocol.js";
 export { VeistraErrorCode, VeistraRpcError } from "./errors.js";
 
 // The cast narrows `addEventListener`: `Window`'s takes any event type, an
