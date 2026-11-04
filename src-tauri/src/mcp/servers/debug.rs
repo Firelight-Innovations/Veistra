@@ -55,8 +55,9 @@ pub(super) const TOOL_LIST: [McpTool; 3] = [
     McpTool {
         name: "shell_snapshot",
         description: "The live shell layout: every window, cluster, pane tree, mounted surface \
-                      and terminal tab, as the running app holds it. This is what is on screen \
-                      now, which layout.json on disk is not.",
+                      and terminal tab, as the running app holds it, plus `embeds`: every native \
+                      window placed over a pane, with its box and how long its last move took. \
+                      This is what is on screen now, which layout.json on disk is not.",
         schema: no_params,
     },
     McpTool {
@@ -131,15 +132,21 @@ pub(super) fn call(
 /// Taken through `ShellState` rather than read from `layout.json`, which is the
 /// whole point of the tool: the file lags the screen and omits everything that
 /// does not survive a restart.
+///
+/// `embeds` is every native window placed over a pane (`crate::embed::host`):
+/// its pane instance, state, box, last placement and how long that move took
+/// to land (`lastPlaceMs`), which is how a Windows pass reads §13 test 1.
 fn shell_snapshot(app: &AppHandle) -> Result<Value, RpcError> {
     let snapshot = app.state::<ShellState>().snapshot();
 
-    serde_json::to_value(&snapshot).map_err(|e| {
+    let mut value = serde_json::to_value(&snapshot).map_err(|e| {
         RpcError::new(
             INTERNAL_ERROR,
             format!("the shell snapshot would not serialize: {e}"),
         )
-    })
+    })?;
+    value["embeds"] = app.state::<crate::embed::host::Hosts>().report();
+    Ok(value)
 }
 
 /// Recent failures, with the counts that say whether the list is complete.

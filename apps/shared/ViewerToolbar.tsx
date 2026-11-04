@@ -1,9 +1,9 @@
 /**
- * The one toolbar Godot Play, Godot Scene and the Blender viewer share. The
+ * The one toolbar the Godot app's Editor and Play and the Blender viewer share. The
  * design (`Components` board, "Toolbar: same five slots in every app") fixes
  * the order, so the three surfaces read as one product:
  *
- * 1. **Mode**: Scene · Play, or Model · Renders · Compare.
+ * 1. **Mode**: Editor · Play, or Model · Renders · Compare.
  * 2. **What you see**: the scene, take or `.blend` picker.
  * 3. **State**: one chip with one word (Playing, Reviewing, Up to date, Changed).
  * 4. **Actions**: Rec, Mark, Mark up, a view switch.
@@ -121,6 +121,7 @@ export function ToolbarButton({
   kbd,
   title,
   pressed,
+  expanded,
   primary = false,
   disabled,
   onClick,
@@ -133,6 +134,8 @@ export function ToolbarButton({
   title?: string;
   /** For toggles (Record): `aria-pressed`. */
   pressed?: boolean;
+  /** For a button that opens a dialog (Record settings): whether it is open. */
+  expanded?: boolean;
   primary?: boolean;
   disabled?: boolean;
   onClick?: () => void;
@@ -151,6 +154,8 @@ export function ToolbarButton({
       className={classes}
       aria-label={iconOnly ? label : undefined}
       aria-pressed={pressed}
+      aria-expanded={expanded}
+      aria-haspopup={expanded === undefined ? undefined : "dialog"}
       title={title ?? (iconOnly ? label : undefined)}
       disabled={disabled}
       onClick={onClick}

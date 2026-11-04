@@ -12,6 +12,7 @@ mod boot;
 mod branding;
 mod cloud;
 mod commands;
+mod comment_events;
 mod comments;
 mod context;
 mod context_commands;
@@ -21,6 +22,7 @@ mod design_comments;
 mod devtools;
 mod diagnostics;
 mod discovery;
+mod embed;
 mod environments;
 mod error;
 mod exit_watchdog;
@@ -196,6 +198,9 @@ pub fn run() {
         .manage(cloud::tunnel::Tunnel::default())
         // Games Play started and the Godot Viewer's jobs; `RunEvent::Exit` stops the games.
         .manage(godot::Godot::default())
+        // Every window placed over a pane (the game, the Godot editor,
+        // Blender) and the panes' boxes; `RunEvent::Exit` hands editors back.
+        .manage(embed::host::Hosts::default())
         // Whether the Plane child webview is open, and the wake flow's snapshot
         // for `projects/wake-status` to poll. See `plane_webview` and
         // `apps::projects::WakeManager`.
@@ -298,9 +303,9 @@ pub fn run() {
                     if window.label() == app.state::<plane_webview::PlaneWebview>().owner() {
                         plane_webview::sync_visibility(app, &app.state::<ShellState>().snapshot());
                     }
-                    // A game in a Play pane is an owned window, which stays
-                    // above its owner but does not move with it.
-                    godot::rpc::reposition_all(app);
+                    // A window placed over a pane is an owned window, which
+                    // stays above its owner but does not move with it.
+                    embed::host::reposition_all(app);
                 }
                 // A window has been asked to close — by our own titlebar's ×,
                 // by Alt+F4, by the taskbar, or by the OS shutting down
@@ -387,6 +392,10 @@ pub fn run() {
                 app.manage(Comments::default());
                 app.state::<Comments>().hydrate(app.handle());
             }
+
+            // Before the MCP listener, the first thing that can write a comment
+            // without a frame: an agent's resolve must reach open panes too.
+            comment_events::install(app.handle());
 
             // Immediately after seeding and **before any terminal is spawned**,
             // because a terminal inherits the port and token as environment
@@ -662,6 +671,9 @@ pub fn run() {
                     // than the OS cleaning up an orphan, is what makes "no
                     // gcloud process remains after exit" true.
                     handle.state::<cloud::tunnel::Tunnel>().stop();
+                    // Editors back as normal windows first, never killed, so
+                    // unsaved work survives; then the games stop.
+                    embed::host::release_all(handle);
                     handle.state::<godot::Godot>().shutdown();
                     handle.state::<apps::agent_tab::Sessions>().stop_all();
                 }

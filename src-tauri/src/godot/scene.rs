@@ -1011,4 +1011,113 @@ script = ExtResource("3_player")
             "another cluster is independent"
         );
     }
+
+    // --- examples/godot-demo -------------------------------------------------
+    // The game the acceptance runs use (design §13). No Godot runs in CI, so
+    // these hold the hand-written scenes to what the tests name and to what
+    // Godot needs to load them at all.
+
+    fn demo() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/godot-demo")
+    }
+
+    fn find<'a>(nodes: &'a [Node], path: &str) -> &'a Node {
+        fn walk<'a>(nodes: &'a [Node], path: &str) -> Option<&'a Node> {
+            nodes.iter().find_map(|n| {
+                (n.path == path)
+                    .then_some(n)
+                    .or_else(|| walk(&n.children, path))
+            })
+        }
+        walk(nodes, path).unwrap_or_else(|| panic!("{path} is missing"))
+    }
+
+    #[test]
+    fn the_demo_game_names_the_enemy_the_acceptance_tests_pick() {
+        let hallway = parse_tscn(&demo(), "res://levels/hallway.tscn").unwrap();
+        let enemy = find(&hallway, "Hallway/Enemy_02");
+        assert_eq!(enemy.kind, "CharacterBody3D");
+        let parts: Vec<&str> = enemy.children.iter().map(|c| c.kind.as_str()).collect();
+        assert_eq!(
+            parts,
+            ["CollisionShape3D", "MeshInstance3D"],
+            "a ray hits its collider, and its mesh folds into it"
+        );
+        assert_eq!(find(&hallway, "Hallway/Player").kind, "CharacterBody3D");
+        assert_eq!(find(&hallway, "Hallway/Player/Camera").kind, "Camera3D");
+        let clock = find(&hallway, "Hallway/HUD/Clock");
+        assert_eq!(clock.script.as_deref(), Some("res://scripts/clock.gd"));
+
+        let arena = parse_tscn(&demo(), "res://levels/arena_2d.tscn").unwrap();
+        assert_eq!(find(&arena, "Arena/Enemy_02").kind, "CharacterBody2D");
+        assert_eq!(find(&arena, "Arena/Camera").kind, "Camera2D");
+        let bench = parse_tscn(&demo(), "res://levels/bench.tscn").unwrap();
+        assert_eq!(bench[0].script.as_deref(), Some("res://scripts/bench.gd"));
+
+        for scene in ["hallway", "arena_2d"] {
+            let text =
+                std::fs::read_to_string(demo().join(format!("levels/{scene}.tscn"))).unwrap();
+            assert!(
+                text.contains("[node name=\"Player\" type=\"CharacterBody")
+                    && text.contains("parent=\".\" groups=[\"player\"]]"),
+                "{scene}: the tick's player is the first node in the group `player`"
+            );
+        }
+    }
+
+    /// What Godot would refuse in a hand-written scene: a resource used before
+    /// it is declared, or a script that is not on disk or that extends another
+    /// class than its node's. load_steps only drives the loading bar, but is
+    /// held to what Godot 4.3 writes (the resources plus one) all the same.
+    #[test]
+    fn every_demo_scene_declares_what_it_uses_before_it_uses_it() {
+        let quoted = |line: &str, call: &str| -> Vec<String> {
+            line.match_indices(call)
+                .filter_map(|(i, _)| line[i + call.len()..].split('"').next())
+                .map(str::to_string)
+                .collect()
+        };
+        for scene in ["hallway", "arena_2d", "bench"] {
+            let text =
+                std::fs::read_to_string(demo().join(format!("levels/{scene}.tscn"))).unwrap();
+            let (mut ext, mut sub) = (Vec::new(), Vec::new());
+            for line in text.lines() {
+                for id in quoted(line, "ExtResource(\"") {
+                    assert!(
+                        ext.contains(&id),
+                        "{scene}: ExtResource {id} is not declared above"
+                    );
+                }
+                for id in quoted(line, "SubResource(\"") {
+                    assert!(
+                        sub.contains(&id),
+                        "{scene}: SubResource {id} is not declared above"
+                    );
+                }
+                if line.starts_with("[ext_resource") {
+                    let path = attr(line, "path").unwrap();
+                    assert!(res_to_path(&demo(), &path).is_file(), "{scene}: {path}");
+                    ext.push(attr(line, "id").unwrap());
+                } else if line.starts_with("[sub_resource") {
+                    sub.push(attr(line, "id").unwrap());
+                }
+            }
+            let steps = text.lines().next().and_then(|head| {
+                head.split_whitespace()
+                    .find_map(|w| w.strip_prefix("load_steps="))
+            });
+            let expected = (ext.len() + sub.len() + 1).to_string();
+            assert_eq!(steps, Some(expected.as_str()), "{scene}: load_steps");
+
+            let mut stack = parse_tscn(&demo(), &format!("res://levels/{scene}.tscn")).unwrap();
+            while let Some(node) = stack.pop() {
+                if let Some(script) = &node.script {
+                    let source = std::fs::read_to_string(res_to_path(&demo(), script)).unwrap();
+                    let extends = source.lines().find_map(|l| l.strip_prefix("extends "));
+                    assert_eq!(extends, Some(node.kind.as_str()), "{scene}: {}", node.path);
+                }
+                stack.extend(node.children);
+            }
+        }
+    }
 }

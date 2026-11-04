@@ -36,7 +36,6 @@ pub mod method_catalog;
 // project*` methods, rather than this having a `Dispatch` of its own — the
 // New Project page is still Home, and `REGISTRY` has one row for it.
 pub(crate) mod home_create;
-mod play;
 // `pub(crate)` rather than private: `lib.rs` needs `apps::projects::WakeManager`
 // to `.manage()` it, the same reason `design_comments::Comments` lives outside
 // `apps::design` altogether — this one stays nested because nothing else in
@@ -70,6 +69,8 @@ pub struct AppInfo {
     pub name: &'static str,
     pub description: &'static str,
     pub url: String,
+    /// The app places a native window over its pane (see [`Registered`]).
+    pub places_window: bool,
 }
 
 /// Where a call is happening: which cluster asked, and what that cluster is
@@ -165,11 +166,24 @@ impl CallContext {
 /// app that had to reimplement the reply could get it wrong.
 type Dispatch = fn(&AppHandle, &CallContext, &str, Option<Value>) -> Result<Value, RpcError>;
 
+/// [`Dispatch`] with the pane instance that asked, for an app whose state
+/// belongs to a pane rather than to its cluster: where Play's game box is.
+type InstanceDispatch =
+    fn(&AppHandle, &CallContext, Option<&str>, &str, Option<Value>) -> Result<Value, RpcError>;
+
 struct Registered {
     id: &'static str,
     name: &'static str,
     description: &'static str,
     call: Dispatch,
+    /// Used in place of `call` when the shell knows which instance asked.
+    call_for: Option<InstanceDispatch>,
+    /// Rust places something native over the pane (Plane's webview, the game,
+    /// the Godot editor, Blender), so the shell pushes the pane's window-space
+    /// rect (`veistra/window-rect`) and the overlays drawn over it
+    /// (`veistra/overlays`), and the host answers `embed/*` for it. A declared
+    /// capability, so Play moving into the Godot app takes it along.
+    places_window: bool,
 }
 
 /// Every app this build ships, in the order they appear in the switcher bar.
@@ -186,12 +200,16 @@ const REGISTRY: &[Registered] = &[
         name: "Home",
         description: "Where a session starts — open a project, or pick up a recent one.",
         call: home::call,
+        call_for: None,
+        places_window: false,
     },
     Registered {
         id: "files",
         name: "File Explorer",
         description: "Browse the open project — its folders, and what is in them.",
         call: files::call,
+        call_for: None,
+        places_window: false,
     },
     Registered {
         id: "viewer",
@@ -217,16 +235,19 @@ const REGISTRY: &[Registered] = &[
         // `two_apps_in_one_cluster_resolve_the_same_context` below, which is
         // there to keep that true.
         call: files::call,
+        call_for: None,
+        places_window: false,
     },
     Registered {
         id: "godot-viewer",
-        name: "Godot Viewer",
-        description: "The scene an agent's headless Godot run last produced — read-only, node tree \
-                      plus a viewport render.",
-        // A fourth app sharing no dispatch with anything else: this is the
-        // first of three (with `blender-viewer` and `play`) whose only real
-        // work today is `crate::comments` — see `godot_viewer.rs`.
+        name: "Godot",
+        description: "Look at the scene an agent's headless run produced in Editor mode, or play \
+                      the game in the pane in Play mode and record what you see.",
+        // One app with two modes (DECISIONS X3). The id is the one saved
+        // layouts already hold; `play` below is the same frontend in Play mode.
         call: godot_viewer::call,
+        call_for: Some(godot_viewer::call_for),
+        places_window: true,
     },
     Registered {
         id: "blender-viewer",
@@ -234,13 +255,21 @@ const REGISTRY: &[Registered] = &[
         description: "Runs Blender headless on a .blend and shows what came out — preview renders, \
                       parts list and the .glb — with Open in Blender for the real editor.",
         call: blender_viewer::call,
+        call_for: None,
+        places_window: true,
     },
     Registered {
         id: "play",
         name: "Play",
-        description: "Run the environment's debug build in a pane, and capture a comment on what \
-                      you see.",
-        call: play::call,
+        description: "The Godot app, opened in Play mode.",
+        // An alias, not a second app: [`ALIASES`] serves it the Godot app's
+        // frontend in Play mode, it shares that dispatch, and the Apps menu
+        // leaves it out. Still a row because layouts saved before the move, the
+        // Godot starting layout and agents' `veistra/open` all name `play`, and
+        // its pane keeps the game's box under its own instance id.
+        call: godot_viewer::call,
+        call_for: Some(godot_viewer::call_for),
+        places_window: true,
     },
     Registered {
         id: "canvas",
@@ -253,6 +282,8 @@ const REGISTRY: &[Registered] = &[
         // points at a running page. This is the design canvas of
         // `docs/VEISTRA-UX-REWORK.md` §5, and it is always compiled in.
         call: canvas::call_live,
+        call_for: None,
+        places_window: false,
     },
     Registered {
         id: "agent-tab",
@@ -261,6 +292,8 @@ const REGISTRY: &[Registered] = &[
         // Reached with its instance through `call_for_instance` below; this
         // dispatch is the instance-free path, and answers one read.
         call: agent_tab::call,
+        call_for: None,
+        places_window: false,
     },
     Registered {
         id: "agents",
@@ -268,6 +301,8 @@ const REGISTRY: &[Registered] = &[
         description: "Agent machines in Veistra Cloud, their sessions, and what each one did.",
         // Reads Google Cloud with the user's own gcloud login; see `cloud`.
         call: agents::call,
+        call_for: None,
+        places_window: false,
     },
     Registered {
         id: "costs",
@@ -275,6 +310,8 @@ const REGISTRY: &[Registered] = &[
         description: "What Veistra Cloud has cost this month at list price, and the forecast against its budget.",
         // Read-only: inventory, Cloud Monitoring usage and the Billing Catalog.
         call: costs::call,
+        call_for: None,
+        places_window: false,
     },
     Registered {
         id: "projects",
@@ -284,6 +321,8 @@ const REGISTRY: &[Registered] = &[
         // and — once a project is picked — wakes and embeds Plane CE. See
         // `apps/projects.rs` and `VEISTRA-PLANE-DESIGN.md`.
         call: projects::call,
+        call_for: None,
+        places_window: true,
     },
     // Disabled by default; see `[features]` in `Cargo.toml`.
     #[cfg(feature = "design-mode")]
@@ -296,6 +335,8 @@ const REGISTRY: &[Registered] = &[
         // `design::normalize` and `design::arm` — neither of which is a
         // decision the frontend is allowed to make.
         call: design::call,
+        call_for: None,
+        places_window: false,
     },
     // Disabled by default (ORC-SCO-001); see `[features]` in `Cargo.toml`.
     #[cfg(feature = "schematify")]
@@ -312,6 +353,8 @@ const REGISTRY: &[Registered] = &[
         // Apps menu and boot all already know its shape before anything is
         // built behind it.
         call: schematify::call,
+        call_for: None,
+        places_window: false,
     },
     Registered {
         id: "tutorial",
@@ -322,6 +365,8 @@ const REGISTRY: &[Registered] = &[
         // cluster rather than taking a pane. This row is still what makes
         // `veistra/open` resolve a frontend. See `docs/tutorials.md` §8.
         call: tutorial::call,
+        call_for: None,
+        places_window: false,
     },
 ];
 
@@ -334,6 +379,7 @@ pub fn list() -> Vec<AppInfo> {
             name: a.name,
             description: a.description,
             url: entry_url(a.id),
+            places_window: a.places_window,
         })
         .collect()
 }
@@ -460,8 +506,9 @@ pub fn openables(app: &AppHandle) -> Vec<Openable> {
 fn compose_openables(installed: Vec<Openable>) -> Vec<Openable> {
     REGISTRY
         .iter()
-        // A page's app is reached through its chip, never opened into a pane.
-        .filter(|a| !crate::pages::is_page_app(a.id))
+        // A page's app is reached through its chip, never opened into a pane,
+        // and an alias would list its app twice.
+        .filter(|a| !crate::pages::is_page_app(a.id) && !is_alias(a.id))
         .map(|a| Openable {
             id: a.id.to_string(),
             name: a.name.to_string(),
@@ -489,8 +536,9 @@ fn compose_openables(installed: Vec<Openable>) -> Vec<Openable> {
 // pure function today and tested as one.
 
 /// What a new instance of `id` is called, before its own frontend renames the
-/// tab. Falls back to the id, which is what a surface with no registry entry
-/// would have shown anyway and is better than an untitled tab.
+/// tab. Falls back to the registry's name, for an alias the menu leaves out,
+/// and then to the id, which is what a surface with no registry entry would
+/// have shown anyway and is better than an untitled tab.
 ///
 /// Looks through [`openables`] rather than `REGISTRY` alone so a plugin surface
 /// gets its declared name too. The fallback still matters and is now more
@@ -502,7 +550,13 @@ pub fn display_name(app: &AppHandle, id: &str) -> String {
         .into_iter()
         .find(|o| o.id == id)
         .map(|o| o.name)
+        .or_else(|| registered_name(id).map(str::to_string))
         .unwrap_or_else(|| id.to_string())
+}
+
+/// The registry's name for `id`, which an alias has though the menu omits it.
+fn registered_name(id: &str) -> Option<&'static str> {
+    REGISTRY.iter().find(|a| a.id == id).map(|a| a.name)
 }
 
 /// Every app's id and display name, for boot.
@@ -532,7 +586,22 @@ pub fn roster() -> Vec<(&'static str, &'static str)> {
 /// message body or its origin — but a tool is untrusted code and an app is not,
 /// and only the first of those earns the cost of a separate origin.
 pub fn entry_url(id: &str) -> String {
-    format!("/apps/{id}/ui/index.html")
+    match ALIASES.iter().find(|(alias, _, _)| *alias == id) {
+        Some((_, target, query)) => format!("/apps/{target}/ui/index.html?{query}"),
+        None => format!("/apps/{id}/ui/index.html"),
+    }
+}
+
+/// Registry ids that open another app's frontend in one of its modes rather
+/// than having one of their own: the id, the app it opens, and the query that
+/// picks the mode. The frontend reads the query once, as the mode a new pane
+/// starts in; a pane that has been switched remembers its own.
+const ALIASES: &[(&str, &str, &str)] = &[("play", "godot-viewer", "mode=play")];
+
+/// Whether `id` is one of [`ALIASES`]: registered, so it mounts and dispatches,
+/// but not offered in the Apps menu beside the app it opens.
+pub fn is_alias(id: &str) -> bool {
+    ALIASES.iter().any(|(alias, _, _)| *alias == id)
 }
 
 /// Route one `invoke` from an app's frontend to that app's Rust half.
@@ -551,6 +620,18 @@ pub fn entry_url(id: &str) -> String {
 pub fn call(
     app: &AppHandle,
     context: &CallContext,
+    id: &str,
+    method: &str,
+    params: Option<Value>,
+) -> Result<Value, RpcError> {
+    call_from(app, context, None, id, method, params)
+}
+
+/// [`call`], knowing which pane instance asked when the shell does.
+fn call_from(
+    app: &AppHandle,
+    context: &CallContext,
+    instance_id: Option<&str>,
     id: &str,
     method: &str,
     params: Option<Value>,
@@ -576,14 +657,11 @@ pub fn call(
         return Ok(json!({ "section": section }));
     }
 
-    // Typing context references at the agent's prompt needs the terminals, which
-    // the store (`context.rs`) deliberately knows nothing about.
-    if method == crate::context_commands::INSERT_METHOD {
-        return crate::context_commands::insert_for_cluster(
-            app,
-            context.cluster_id.as_deref(),
-            params,
-        );
+    // Typing context references at an agent's prompt, and listing the agents
+    // there are to type at, need the terminals, which the store (`context.rs`)
+    // deliberately knows nothing about.
+    if crate::context_commands::is_method(method) {
+        return crate::context_commands::call(app, context.cluster_id.as_deref(), method, params);
     }
 
     // The context store, likewise answered by the host so every app (and every
@@ -608,6 +686,11 @@ pub fn call(
     }
 
     if let Some(registered) = REGISTRY.iter().find(|a| a.id == id) {
+        // A pane's box and the window over it, for every app that places one
+        // (`crate::embed::host`). Reads of the checkout, so before the refusal.
+        if registered.places_window && crate::embed::host::is_method(method) {
+            return crate::embed::host::call(app, instance_id, method, params.as_ref());
+        }
         // One choke point for every first-party write, whoever is calling: the
         // app's own frontend, the shell's menu, or an agent over MCP `app_call`
         // all arrive here with a resolved cluster.
@@ -615,7 +698,10 @@ pub fn call(
             let env = app.state::<ShellState>().cluster_write_environment(cluster);
             write_refusal(env.as_ref(), method)?;
         }
-        return (registered.call)(app, context, method, params);
+        return match registered.call_for {
+            Some(call_for) => call_for(app, context, instance_id, method, params),
+            None => (registered.call)(app, context, method, params),
+        };
     }
 
     // Not a first-party app, so the answer is not in this process. A plugin
@@ -643,9 +729,10 @@ pub fn call(
 }
 
 /// [`call`], for a caller that knows which instance asked — the shell's
-/// `app_call` command, and nothing else. The agent tab is the one app whose
-/// state belongs to an instance rather than to its cluster, so it is the one
-/// app that is handed it; every other call carries on through [`call`].
+/// `app_call` command, and nothing else. The agent tab's state belongs to an
+/// instance rather than to its cluster, and so does a placed window's box:
+/// those apps are handed it ([`Registered::call_for`], `embed/*`); every other
+/// call carries on as through [`call`].
 pub fn call_for_instance(
     app: &AppHandle,
     context: &CallContext,
@@ -655,7 +742,7 @@ pub fn call_for_instance(
     params: Option<Value>,
 ) -> Result<Value, RpcError> {
     if id != agent_tab::ID || !method.starts_with("agent-tab/") {
-        return call(app, context, id, method, params);
+        return call_from(app, context, instance_id, id, method, params);
     }
     // The same choke point `call` applies to every registered app.
     if let Some(cluster) = context.cluster_id.as_deref() {
@@ -1061,23 +1148,24 @@ mod tests {
 
     // --- the terminal is offered like an app and is not one ------------------
 
-    /// How many registry rows the Apps menu offers: all of them but the pages'.
+    /// How many registry rows the Apps menu offers: all of them but the pages'
+    /// and the aliases'.
     fn offered_apps() -> usize {
         REGISTRY
             .iter()
-            .filter(|a| !crate::pages::is_page_app(a.id))
+            .filter(|a| !crate::pages::is_page_app(a.id) && !is_alias(a.id))
             .count()
     }
 
     #[test]
-    fn every_app_but_a_page_is_offered_plus_a_terminal() {
+    fn every_app_but_a_page_or_an_alias_is_offered_plus_a_terminal() {
         let composed = compose_openables(Vec::new());
         let offered: Vec<&str> = composed.iter().map(|o| o.id.as_str()).collect();
         for app in REGISTRY {
             assert_eq!(
                 offered.contains(&app.id),
-                !crate::pages::is_page_app(app.id),
-                "{} is offered if and only if it is not a page",
+                !crate::pages::is_page_app(app.id) && !is_alias(app.id),
+                "{} is offered if and only if it is neither a page nor an alias",
                 app.id
             );
         }
@@ -1087,6 +1175,62 @@ mod tests {
             "the terminal comes last, after the apps"
         );
         assert_eq!(offered.len(), offered_apps() + 1);
+    }
+
+    /// The shell pushes window rects and overlays to these, and the host
+    /// answers `embed/*` for them; `godot-viewer` is on the list before Play
+    /// moves into it, so the move keeps the game visible.
+    #[test]
+    fn the_apps_that_place_a_native_window_say_so() {
+        let placing: Vec<&str> = list()
+            .into_iter()
+            .filter(|a| a.places_window)
+            .map(|a| a.id)
+            .collect();
+        assert_eq!(
+            placing,
+            ["godot-viewer", "blender-viewer", "play", "projects"]
+        );
+        for id in ["godot-viewer", "play"] {
+            let row = REGISTRY.iter().find(|a| a.id == id).unwrap();
+            assert!(
+                row.call_for.is_some(),
+                "{id}: the game's box belongs to its pane"
+            );
+        }
+        let info = serde_json::to_value(&list()[0]).unwrap();
+        assert_eq!(info["placesWindow"], false, "camelCase on the wire");
+    }
+
+    /// `play` opens the Godot app in Play mode (DECISIONS X3): same frontend,
+    /// same dispatch, a name of its own for the tab, and no second row in the
+    /// Apps menu.
+    #[test]
+    fn play_is_an_alias_of_the_godot_app_in_play_mode() {
+        assert_eq!(
+            entry_url("play"),
+            "/apps/godot-viewer/ui/index.html?mode=play"
+        );
+        assert_eq!(
+            entry_url("godot-viewer"),
+            "/apps/godot-viewer/ui/index.html"
+        );
+        let row = |id: &str| REGISTRY.iter().find(|a| a.id == id).unwrap();
+        assert_eq!(row("play").call as usize, row("godot-viewer").call as usize);
+        assert_eq!(
+            row("play").call_for.map(|f| f as usize),
+            row("godot-viewer").call_for.map(|f| f as usize)
+        );
+        assert!(is_app("play"), "a saved layout's `play` pane still mounts");
+        assert!(roster().iter().any(|(id, _)| *id == "play"));
+        let menu = compose_openables(Vec::new());
+        assert!(!menu.iter().any(|o| o.id == "play"));
+        assert!(menu
+            .iter()
+            .any(|o| o.id == "godot-viewer" && o.name == "Godot"));
+        assert_eq!(registered_name("play"), Some("Play"));
+        let listed = list().into_iter().find(|a| a.id == "play").unwrap();
+        assert_eq!(listed.url, entry_url("play"), "what the shell mounts");
     }
 
     /// Agents is a page: its chip in the cluster bar is the only way in.

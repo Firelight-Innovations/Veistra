@@ -403,7 +403,7 @@ carries for the shell's own sake (geometry, band heights, restore bookkeeping).
 | `focus` | The focused pane: window, cluster, pane, app, instance id, title, and the file and selection the app reports. Also `visible`, every app showing in the active cluster, because focus is usually in the agent's own terminal. Falls back to each pane's active tab when no page answers. |
 | `layout` | Windows, clusters, nested panes and their tabs (app, instance, title, file where known), the active tab per pane, and each cluster's terminals. |
 | `project` | Per cluster: the project folder, the folder files are read from (a worktree's, when set), the environment kind and branch, and which cluster is active. |
-| `list_play_notes` | The notes the person sent from a recorded Play take: id, status, take, time, scene, object, and the packet's `packet.md`. Open or working ones unless `status` says `fixed` or `all`. |
+| `list_play_notes` | The notes the person sent from a recorded Play take: id, status, take, time, scene, object, and the newest packet's `packet.md`, with `takes` listing every take of a note sent back as Still broken, oldest first. Open or working ones unless `status` says `fixed` or `all`. |
 | `start_play_note` | Marks a note Agent working. Writes. |
 | `resolve_play_note` | `{id, summary, commit?}`: marks a note Fixed, check it, with the summary. Writes. It never closes the note; the person does, with Looks good or Still broken. |
 

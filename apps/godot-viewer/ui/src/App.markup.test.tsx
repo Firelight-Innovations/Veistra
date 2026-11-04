@@ -14,6 +14,9 @@ vi.mock("@veistra/bridge", () => ({
   invoke: bridge.invoke,
   reportPainted: vi.fn(),
   openIn: vi.fn(),
+  OPENED_EVENT: "veistra:opened",
+  on: () => () => undefined,
+  session: () => Promise.resolve({ projectPath: null, instanceId: "i1" }),
 }));
 
 vi.mock("./usePreview", () => ({
@@ -53,6 +56,9 @@ vi.mock("./Scene3D", () => ({
 }));
 
 import App from "./App";
+// The shell loads Editor mode lazily; loading it here keeps that import
+// inside a test's first wait.
+import "./SceneMode";
 
 const STATE = {
   project: ".",

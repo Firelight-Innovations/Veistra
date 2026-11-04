@@ -402,8 +402,9 @@ dropped when its frame goes — a retained value from a surface that has closed
 would be replayed to the next one as though it were current.
 
 The `veistra:topic/` prefix is what keeps an app's topics from colliding with the
-shell's own push events (`project:changed`). A frame cannot publish under a name
-that would arrive looking like news the shell authored.
+shell's own push events (`project:changed`, `files:changed`, `comments:changed`). A
+frame cannot publish under a name that would arrive looking like news the shell
+authored.
 
 `value` is unvalidated, `undefined` included — publishing "there is nothing" is
 a real thing to say, and narrowing it to a refusal would leave the last real
@@ -490,6 +491,31 @@ user does in the field comes back as an event:
 `kind` is `query` (the text changed), `submit` (Enter) or `escape`. The bridge's `claimSearch`
 wraps all of it. Under the Tauri host both methods are refused, and the frame draws its own
 input. See `docs/design-notes/titlebar-search.md`.
+
+#### `veistra/window-rect` and `veistra/overlays` — a native window over the pane
+
+Some first-party apps have Rust place another process's window, or a webview, over their pane
+rather than drawing in the iframe: Plane's webview, the game, the Godot editor and Blender. Such
+an app declares `placesWindow` in the app registry (`src-tauri/src/apps/mod.rs`), and the shell
+pushes it two events (constants `WINDOW_RECT_EVENT` and `OVERLAYS_EVENT` in
+`@veistra/bridge/protocol`):
+
+```jsonc
+{"veistra":1,"kind":"event","event":"veistra/window-rect","payload":{"x":240,"y":96,"width":900,"height":640,"window":"main"}}
+{"veistra":1,"kind":"event","event":"veistra/overlays","payload":{"rects":[{"x":300,"y":40,"width":520,"height":380}]}}
+```
+
+The first is where the frame's pane is in its Veistra window, in CSS pixels, sent whenever it
+moves; a frame can measure itself only relative to its own iframe. The second is every overlay
+the shell has open (menus, the palette and its scrim, dialogs, toasts, a dragged tab and where
+it would drop), in the same space, sent whenever the set changes. A native window paints above
+the WebView, so the pane hides its window and shows a still while a rect covers its box. Rects
+rather than a flag, so a menu across the window from the box hides nothing. The shell's own
+document also gets `veistra:overlay-open` and `veistra:overlay-close` DOM events as the first
+overlay opens and the last closes (design §4.3.2), which a cross-origin frame cannot hear.
+`apps/shared/useNativeBox.ts` reads both pushes; neither name is a `veistra:` event, because
+both predate that convention and Plane already listens for the first. A plugin surface never
+declares `placesWindow`, so it gets neither.
 
 #### Under the Tauri host
 
