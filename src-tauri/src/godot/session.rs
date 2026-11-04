@@ -108,6 +108,10 @@ struct Active {
     capture: Box<dyn Capture>,
     id: String,
     number: u32,
+    /// What it is being encoded at: a quality chosen while it records
+    /// applies from the next take, so take.json must not read it from the
+    /// plan.
+    quality: Quality,
 }
 
 pub struct Session {
@@ -202,6 +206,16 @@ impl Session {
         self.take.lock_or_panic().clone()
     }
 
+    /// A new quality or keep for the takes still to come: one not begun yet
+    /// is encoded at `quality`, and the next one saved keeps `keep`. The take
+    /// recording now keeps the quality it began with.
+    pub fn retune(&self, quality: Quality, keep: usize) {
+        if let Some(plan) = self.plan.lock_or_panic().as_mut() {
+            plan.quality = quality;
+            plan.keep = keep.max(1);
+        }
+    }
+
     /// Plan a take for a run already going (Record switched on mid-run).
     pub fn plan(&self, plan: Plan) {
         let number = takes::next_number(&plan.takes_dir);
@@ -261,6 +275,7 @@ impl Session {
                     capture,
                     id,
                     number,
+                    quality: plan.quality,
                 });
             }
             Err(reason) => {
@@ -338,7 +353,7 @@ impl Session {
             video: VideoInfo {
                 width: stopped.width,
                 height: stopped.height,
-                fps: plan.quality.fps,
+                fps: active.quality.fps,
             },
             channel: self.channel.as_deref(),
             log: &log,
@@ -1035,6 +1050,40 @@ mod tests {
             s.take_log.lock_or_panic().is_none(),
             "kept only while recording"
         );
+    }
+
+    /// A quality chosen in Record's settings reaches the take not begun yet,
+    /// and one chosen while a take records waits for the next: the take
+    /// going keeps what it began with, in its encoder and in take.json.
+    #[test]
+    fn a_quality_chosen_mid_take_applies_from_the_next_take() {
+        let dir = TempDir::new().unwrap();
+        let (_runner, run) = exited_run(dir.path());
+        let plan = plan(dir.path());
+        let takes_dir = plan.takes_dir.clone();
+        let asked: Arc<Mutex<Vec<u32>>> = Arc::default();
+        let seen = asked.clone();
+        let inner = fake_capture(Some(now_ms()), Duration::ZERO);
+        let start: record::Start = Arc::new(move |hwnd, path: &Path, quality: &Quality| {
+            seen.lock_or_panic().push(quality.fps);
+            inner(hwnd, path, quality)
+        });
+        let s = Session::with_embed(run.id, None, Some(plan), embedded()).with_capture(start);
+        s.retune(Quality::HIGH, 3);
+        s.begin_take(7);
+        assert_eq!(*asked.lock_or_panic(), vec![60], "not begun: the new one");
+        s.retune(Quality::DEFAULT, 0);
+        assert_eq!(
+            s.plan.lock_or_panic().as_ref().map(|p| p.keep),
+            Some(1),
+            "at least the take just saved is kept"
+        );
+        s.finish_take(&run);
+        let TakeState::Saved { id, .. } = s.take_state() else {
+            panic!("{:?}", s.take_state());
+        };
+        let summary = takes::read(&takes_dir, &id).unwrap().summary;
+        assert_eq!(summary.video.fps, 60, "the take keeps what it began with");
     }
 
     #[test]

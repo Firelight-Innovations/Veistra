@@ -65,6 +65,8 @@ pub struct Ctx<'a> {
     /// Lets the page load files under this folder (a take's video) through
     /// the asset protocol.
     pub allow_asset: &'a dyn Fn(&Path),
+    /// Opens a folder in the file manager (Record settings' Show folder).
+    pub reveal: &'a dyn Fn(&Path) -> Result<(), String>,
     /// Where placed windows and the panes' boxes are kept.
     pub hosts: &'a Hosts,
     /// The pane that called, or for a call with none (an agent's `app_call`)
@@ -902,6 +904,14 @@ pub fn with_live_for<R>(
             crate::veistra_log!("play: could not serve {}: {e}", dir.display());
         }
     };
+    // Through the plugin's Rust API, as `files/reveal` is, so no webview
+    // capability is granted for it.
+    let reveal = |dir: &Path| {
+        use tauri_plugin_opener::OpenerExt;
+        app.opener()
+            .open_path(dir.to_string_lossy(), None::<&str>)
+            .map_err(|e| format!("could not open {}: {e}", dir.display()))
+    };
     let project_root = context
         .cluster_id
         .as_deref()
@@ -918,6 +928,7 @@ pub fn with_live_for<R>(
         scratch: scratch_root(),
         owner: crate::embed::host::owner_fn(app),
         allow_asset: &allow_asset,
+        reveal: &reveal,
         hosts: &hosts,
         instance,
         shown: &shown,
@@ -984,6 +995,7 @@ mod tests {
             scratch: w.scratch.clone(),
             owner: Arc::new(|_| None),
             allow_asset: &|_| {},
+            reveal: &|_| Ok(()),
             hosts: &w.hosts,
             instance: Some("play-1".into()),
             shown: &|_| true,
