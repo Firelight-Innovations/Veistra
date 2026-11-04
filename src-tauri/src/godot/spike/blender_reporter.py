@@ -89,5 +89,8 @@ def tick():
 
 
 if OUT:
+    # The splash would take the spike's first click and key. --factory-startup
+    # never saves preferences, so this lasts only as long as this Blender.
+    bpy.context.preferences.view.show_splash = False
     bpy.utils.register_class(SPIKE_OT_listen)
     bpy.app.timers.register(tick, first_interval=0.5)

@@ -43,6 +43,7 @@ class BlenderReporterTest(unittest.TestCase):
         self.module = load(self.out)
 
     def tearDown(self):
+        bpy.context.preferences.view.show_splash = True
         if bpy.app.timers.is_registered(self.module["tick"]):
             bpy.app.timers.unregister(self.module["tick"])
         bpy.utils.unregister_class(self.module["SPIKE_OT_listen"])
@@ -50,6 +51,9 @@ class BlenderReporterTest(unittest.TestCase):
     def test_the_listener_and_its_timer_are_registered(self):
         self.assertTrue(hasattr(bpy.ops.wm, "veistra_spike_listen"))
         self.assertTrue(bpy.app.timers.is_registered(self.module["tick"]))
+
+    def test_the_splash_is_turned_off_so_it_cannot_take_the_first_click(self):
+        self.assertFalse(bpy.context.preferences.view.show_splash)
 
     def test_in_the_background_the_timer_stops_at_once_and_writes_nothing(self):
         self.assertTrue(bpy.app.background)
@@ -83,8 +87,10 @@ class BlenderReporterTest(unittest.TestCase):
 
 @unittest.skipIf(bpy is None, "needs Blender's bpy module")
 class WithoutTheVariableTest(unittest.TestCase):
-    def test_nothing_is_registered(self):
+    def test_nothing_is_registered_or_changed(self):
+        bpy.context.preferences.view.show_splash = True
         module = runpy.run_path(SCRIPT, run_name="veistra_spike_reporter_off")
+        self.assertTrue(bpy.context.preferences.view.show_splash)
         self.assertFalse(bpy.app.timers.is_registered(module["tick"]))
         self.assertFalse(hasattr(bpy.types, "WM_OT_veistra_spike_listen"))
 
