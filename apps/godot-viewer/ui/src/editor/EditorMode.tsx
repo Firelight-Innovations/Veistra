@@ -16,9 +16,7 @@
  *
  * One poll drives the view: `godot/editor-state` every half second, one call
  * at a time. It also says when an agent works in this environment, which is
- * the banner under the bar: an agent reads the files, not the editor. And it
- * hands on the presses in the editor's own Veistra dock (#320), which this
- * mode carries out and answers (`apps/shared/editorEvents.ts`).
+ * the banner under the bar: an agent reads the files, not the editor.
  */
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { reportPainted } from "@veistra/bridge";
@@ -171,6 +169,8 @@ export default function EditorMode(props: EditorModeProps) {
     return "Mark up is open in Veistra.";
   };
 
+  // The presses in the editor's own Veistra dock (#320): the poll hands them
+  // on, and this mode carries each out and answers it (`editorEvents.ts`).
   const tab = useEditorEvents(
     { tool: "godot", where: () => view?.scene || null, markup: beginMarkup },
     editorAck,

@@ -16,9 +16,7 @@
  * While Blender has a file open Veistra holds its lock, and the banner under
  * the bar says what that means: the agent's export of the file lands as the
  * next version beside it (`writer.ts`). One poll drives the view,
- * `blender-viewer/editor-state` every half second, one call at a time; it
- * also hands on the presses in Blender's own Veistra tab (#320), which this
- * mode carries out and answers (`apps/shared/editorEvents.ts`).
+ * `blender-viewer/editor-state` every half second, one call at a time.
  */
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { reportPainted } from "@veistra/bridge";
@@ -177,6 +175,8 @@ export default function EditorMode(props: EditorModeProps) {
     return "Mark up is open in Veistra.";
   };
 
+  // The presses in the editor's own Veistra tab (#320): the poll hands them
+  // on, and this mode carries each out and answers it (`editorEvents.ts`).
   const tab = useEditorEvents(
     { tool: "blender", where: () => editor?.file ?? null, markup: beginMarkup },
     editorAck,
