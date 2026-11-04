@@ -13,12 +13,18 @@
 //!   notes/<n>/markup.png markup.json contact.png context.json frames/ [clip.mp4]
 //! ```
 //!
-//! The packet holds its own copies of everything, so it outlives its take.
+//! The packet holds its own copies of everything, so it outlives its take;
+//! `clip.mp4`, when ticked, is cut here from `take.mp4` ([`super::clip`]). Once
+//! the packet is started, a clip that could not be cut or a note that could
+//! not be filed is named in `packet.md` and [`Sent::problems`], and the rest
+//! still goes.
 
 use super::takes::{self, Summary};
 use super::telemetry::{self, Line};
+use super::{clip, scene};
 use crate::apps::CallContext;
 use crate::comments::{self, Anchor, Draft};
+use crate::context_commands::AgentTarget;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use serde::Deserialize;
@@ -30,6 +36,8 @@ use std::path::{Path, PathBuf};
 const LOG_WINDOW_MS: u64 = 10_000;
 /// How far from a note the nearest tick may be and still describe it.
 const TICK_WINDOW_MS: u64 = 1_000;
+/// A frame this slow is a spike: two frames missed at 60 fps.
+const SPIKE_MS: f64 = 33.4;
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -39,7 +47,6 @@ pub struct Images {
     pub in_png: Option<String>,
     pub note_png: Option<String>,
     pub out_png: Option<String>,
-    pub clip_mp4: Option<String>,
 }
 
 /// One note as the page sends it: the shape of §8.3, plus its pictures.
@@ -63,6 +70,10 @@ pub struct Note {
     pub done_when: Option<String>,
     #[serde(default)]
     pub images: Images,
+    /// The take times on `contact.png`, cell by cell, so the agent is told
+    /// how far apart they are rather than assuming one a second.
+    #[serde(default)]
+    pub contact_ms: Option<Vec<u64>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -70,6 +81,12 @@ pub struct Note {
 pub struct Request {
     pub take: String,
     pub notes: Vec<Note>,
+    /// "Video clip per note": cut `clip.mp4` for each note. Off unless sent.
+    #[serde(default)]
+    pub clip: bool,
+    /// The agent the page will hand the packet to, kept on each comment.
+    #[serde(default)]
+    pub sent_to: Option<AgentTarget>,
 }
 
 /// What Send wrote.
@@ -82,6 +99,10 @@ pub struct Sent {
     pub packet_md: String,
     /// Each note's number and the comment it became.
     pub comments: Vec<(u32, String)>,
+    /// What was asked for and is not in the packet, one sentence each: a clip
+    /// that could not be cut, a note that could not be filed (it stays a
+    /// draft). `packet.md` lists the same sentences.
+    pub problems: Vec<String>,
 }
 
 /// `m:ss`, the way the timeline and the board show take time.
@@ -167,7 +188,49 @@ pub fn context(summary: &Summary, lines: &[Line], log: &[Value], note: &Note) ->
         "worstFrame": worst,
         "log": log_near(log, note, true),
         "doneWhen": note.done_when,
+        "contact": note
+            .images
+            .contact_png
+            .as_ref()
+            .map(|_| json!({ "times": note.contact_ms })),
     })
+}
+
+/// The script on the note's object, read from the scene file it was in, for a
+/// target the page could not name one for. `None` when the scene cannot be
+/// read or holds no such node.
+fn script_of(project: &Path, scene: Option<&str>, target: Option<&Value>) -> Option<String> {
+    fn find(nodes: &[scene::Node], path: &str) -> Option<String> {
+        nodes.iter().find_map(|n| {
+            if n.path == path {
+                n.script.clone()
+            } else {
+                find(&n.children, path)
+            }
+        })
+    }
+    let path = target?["nodePath"].as_str()?;
+    let nodes = scene::parse_tscn(project, scene?).ok()?;
+    find(&nodes, path)
+}
+
+/// How far apart a contact sheet's frames are, when they are evenly spaced
+/// whole steps; `None` for a sheet of one frame or of uneven steps.
+fn step_ms(times: &[u64]) -> Option<u64> {
+    let first = times.windows(2).next().map(|w| w[1].saturating_sub(w[0]))?;
+    times
+        .windows(2)
+        .all(|w| w[1].saturating_sub(w[0]).abs_diff(first) <= 1)
+        .then_some(first)
+}
+
+/// Whether a note's sheet is the default, a frame every second. A sheet
+/// whose times the page did not send is taken to be, as every page that
+/// does not send them made it that way.
+fn every_second(note: &Note) -> bool {
+    note.contact_ms
+        .as_deref()
+        .is_none_or(|t| t.len() < 2 || step_ms(t) == Some(1_000))
 }
 
 fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -196,6 +259,7 @@ pub fn packet_md(
     notes: &[(&Note, &Value, &str)],
     project: &str,
     cluster: Option<&str>,
+    problems: &[String],
 ) -> String {
     let mut md = String::new();
     let count = notes.len();
@@ -208,25 +272,31 @@ pub fn packet_md(
         (None, Some(c)) => meta.push(c.clone()),
         (None, None) => {}
     }
-    meta.push(format!("take {}", summary.id));
+    meta.push(takes::utc_label(summary.started_at));
     if !summary.godot.is_empty() {
         meta.push(format!("Godot {}", summary.godot));
     }
     meta.push(clock(summary.duration_ms));
     let _ = writeln!(md, "{}\n", meta.join(" · "));
-    let sheets = notes
+    let sheets: Vec<&Note> = notes
         .iter()
-        .filter(|(n, _, _)| n.images.contact_png.is_some())
-        .count();
-    let motion = match sheets {
-        0 => "",
+        .map(|(n, _, _)| *n)
+        .filter(|n| n.images.contact_png.is_some())
+        .collect();
+    let spacing = if sheets.iter().all(|n| every_second(n)) {
+        "one frame a second"
+    } else {
+        "frames spread across the note"
+    };
+    let motion = match sheets.len() {
+        0 => String::new(),
         s if s == count => {
-            "then `contact.png` for the motion (one frame a second, the time printed on each), "
+            format!("then `contact.png` for the motion ({spacing}, the time printed on each), ")
         }
-        _ => {
-            "then `contact.png`, where a note has one, for the motion (one frame a second, the \
-              time printed on each), "
-        }
+        _ => format!(
+            "then `contact.png`, where a note has one, for the motion ({spacing}, the time \
+             printed on each), "
+        ),
     };
     let pass = cluster
         .map(|c| format!(" Pass `cluster: \"{c}\"` to both: these notes came from that cluster."))
@@ -279,7 +349,7 @@ pub fn packet_md(
                 what.push_str(", from the take's recorded scene data");
             }
             row("Object", what);
-            if let Some(script) = t["script"].as_str() {
+            if let Some(script) = t["script"].as_str().or(ctx["script"].as_str()) {
                 row("Script", format!("`{script}`"));
             }
         }
@@ -320,17 +390,34 @@ pub fn packet_md(
         );
         if let Some(ms) = ctx["worstFrame"]["ms"].as_f64() {
             let at = clock(ctx["worstFrame"]["atMs"].as_u64().unwrap_or(0));
-            row("Frame time", format!("worst {ms:.0} ms at {at}"));
+            row(
+                "Frame time",
+                if ms >= SPIKE_MS {
+                    format!("spike to {ms:.0} ms at {at}")
+                } else {
+                    format!("steady, worst {ms:.0} ms")
+                },
+            );
         }
         let images = &note.images;
         let mut files = vec![format!("`notes/{}/markup.png`", note.n)];
         if images.contact_png.is_some() {
             files.push("`contact.png`".into());
         }
+        if let Some(times) = note.contact_ms.as_deref().filter(|_| !every_second(note)) {
+            let every = step_ms(times).map_or_else(
+                || "unevenly spaced".to_string(),
+                |ms| format!("one every {:.1} s", ms as f64 / 1000.0),
+            );
+            row(
+                "Contact sheet",
+                format!("{} frames, {every}, the time printed on each", times.len()),
+            );
+        }
         if images.in_png.is_some() || images.note_png.is_some() || images.out_png.is_some() {
             files.push("`frames/`".into());
         }
-        if images.clip_mp4.is_some() {
+        if ctx["clip"].is_object() {
             files.push("`clip.mp4`".into());
         }
         files.push("`context.json`".into());
@@ -340,11 +427,41 @@ pub fn packet_md(
         }
         md.push('\n');
     }
+    if !problems.is_empty() {
+        let _ = writeln!(md, "## Not in this packet\n");
+        for p in problems {
+            let _ = writeln!(md, "- {p}");
+        }
+        md.push('\n');
+    }
     md
+}
+
+/// A note's `markup.json` when nothing was drawn: the frame itself, in the
+/// shape `docs/markup-format.md` gives an image, with no pins or ink.
+fn plain_markup(summary: &Summary, has_frame: bool) -> Value {
+    let path = if has_frame {
+        "frames/note.png"
+    } else {
+        "markup.png"
+    };
+    json!({
+        "version": 1,
+        "source": { "kind": "image", "path": path },
+        "size": { "width": summary.video.width, "height": summary.video.height },
+        "pins": [],
+        "annotations": [],
+    })
 }
 
 /// Write the packet and file the notes. `takes_dir` holds the take;
 /// `project` is the environment, where the packet and the comments go.
+///
+/// Everything that can refuse the whole Send (no words, no picture, a picture
+/// that is not base64, a packet that cannot be written) does so before any
+/// note is filed. After that a failure is one note's or one clip's, and is
+/// reported in [`Sent::problems`] while the others go; only a Send that filed
+/// nothing at all is an error.
 pub fn send(
     ctx: &CallContext,
     takes_dir: &Path,
@@ -379,6 +496,8 @@ pub fn send(
         .lines()
         .filter_map(|l| serde_json::from_str(l).ok())
         .collect();
+    let godot_project = root.join(&summary.project);
+    let video = take_dir.join(takes::VIDEO);
 
     let feedback = root.join(".veistra").join("feedback");
     let packet = next_packet(&feedback, &req.take);
@@ -390,6 +509,7 @@ pub fn send(
     std::fs::copy(take_dir.join(takes::SUMMARY), packet.join(takes::SUMMARY))
         .map_err(|e| format!("could not copy take.json: {e}"))?;
 
+    let mut problems = Vec::new();
     let mut contexts = Vec::new();
     for note in &req.notes {
         let dir = packet.join("notes").join(note.n.to_string());
@@ -400,9 +520,10 @@ pub fn send(
             .or(frame.as_ref())
             .ok_or_else(|| format!("note {} has no picture", note.n))?;
         write(&dir.join("markup.png"), picture)?;
-        let markup_json = note.markup.clone().unwrap_or_else(|| {
-            json!({ "version": 1, "pins": [], "annotations": [], "note": "no ink on this frame" })
-        });
+        let markup_json = note
+            .markup
+            .clone()
+            .unwrap_or_else(|| plain_markup(&summary, frame.is_some()));
         write(
             &dir.join("markup.json"),
             serde_json::to_string_pretty(&markup_json)
@@ -414,13 +535,27 @@ pub fn send(
             (&note.images.in_png, "frames/in.png"),
             (&note.images.note_png, "frames/note.png"),
             (&note.images.out_png, "frames/out.png"),
-            (&note.images.clip_mp4, "clip.mp4"),
         ] {
             if let Some(bytes) = decode(b64, name)? {
                 write(&dir.join(name), &bytes)?;
             }
         }
-        let c = context(&summary, &lines, &log, note);
+        let mut c = context(&summary, &lines, &log, note);
+        if let Some(script) = script_of(&godot_project, c["scene"].as_str(), note.target.as_ref()) {
+            c["script"] = json!(script);
+        }
+        if req.clip {
+            let (from, to) = clip::window(note.in_ms, note.out_ms, note.at_ms, summary.duration_ms);
+            let cut = if video.is_file() {
+                clip::cut(&video, &dir.join("clip.mp4"), from, to)
+            } else {
+                Err("the take has no video".into())
+            };
+            match cut {
+                Ok(()) => c["clip"] = json!({ "fromMs": from, "toMs": to }),
+                Err(e) => problems.push(format!("Note {}'s clip was not cut: {e}", note.n)),
+            }
+        }
         write(
             &dir.join("context.json"),
             serde_json::to_string_pretty(&c)
@@ -430,14 +565,14 @@ pub fn send(
         contexts.push(c);
     }
 
-    let mut ids = Vec::new();
+    let mut filed = Vec::new();
     for (note, c) in req.notes.iter().zip(&contexts) {
         let node_path = note
             .target
             .as_ref()
             .and_then(|t| t["nodePath"].as_str())
             .map(str::to_string);
-        let made = comments::create(
+        let made = comments::create_to(
             ctx,
             Draft {
                 anchor: Anchor::Take {
@@ -453,26 +588,42 @@ pub fn send(
                 body: note.body.trim().to_string(),
                 screenshot_png: None,
             },
-        )
-        .map_err(|e| e.message)?;
-        ids.push((note.n, made.id));
+            req.sent_to.clone(),
+        );
+        match made {
+            Ok(made) => filed.push((note, c, made.id)),
+            // The notes filed before it are stamped below either way, so a
+            // second Send cannot file them twice.
+            Err(e) => problems.push(format!(
+                "Note {} could not be filed, so it is still a draft: {}",
+                note.n, e.message
+            )),
+        }
     }
+    let ids: Vec<(u32, String)> = filed.iter().map(|(n, _, id)| (n.n, id.clone())).collect();
+    if ids.is_empty() {
+        return Err(problems.join(" "));
+    }
+    mark_sent(takes_dir, &req.take, &ids, &packet_rel);
 
-    let rows: Vec<(&Note, &Value, &str)> = req
-        .notes
+    let rows: Vec<(&Note, &Value, &str)> = filed
         .iter()
-        .zip(&contexts)
-        .zip(&ids)
-        .map(|((n, c), (_, id))| (n, c, id.as_str()))
+        .map(|(n, c, id)| (*n, *c, id.as_str()))
         .collect();
-    let md = packet_md(&summary, &rows, project_name, ctx.cluster_id.as_deref());
+    let md = packet_md(
+        &summary,
+        &rows,
+        project_name,
+        ctx.cluster_id.as_deref(),
+        &problems,
+    );
     write(&packet.join("packet.md"), md.as_bytes())?;
 
-    mark_sent(takes_dir, &req.take, &ids, &packet_rel);
     Ok(Sent {
         packet: packet_rel,
         packet_md: packet.join("packet.md").display().to_string(),
         comments: ids,
+        problems,
     })
 }
 
@@ -526,9 +677,22 @@ mod tests {
                 in_png: Some(BASE64.encode(PNG)),
                 note_png: Some(BASE64.encode(PNG)),
                 out_png: Some(BASE64.encode(PNG)),
-                clip_mp4: None,
             },
+            contact_ms: None,
         }
+    }
+
+    fn request(take: &str, notes: Vec<Note>) -> Request {
+        Request {
+            take: take.into(),
+            notes,
+            clip: false,
+            sent_to: None,
+        }
+    }
+
+    fn read_json(path: &Path) -> Value {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
     }
 
     fn take(root: &Path) -> (PathBuf, String) {
@@ -591,9 +755,14 @@ mod tests {
             cluster_id: Some("c1".into()),
             project: Some(root.clone()),
         };
-        let req = Request {
-            take: id.clone(),
-            notes: vec![
+        let to = AgentTarget {
+            kind: crate::context_commands::AgentKind::Terminal,
+            id: "term-2".into(),
+            label: "Claude Code · Terminal 2".into(),
+        };
+        let mut req = request(
+            &id,
+            vec![
                 note(1, 41_000, None, "The door light flickers"),
                 note(
                     2,
@@ -602,9 +771,11 @@ mod tests {
                     "The enemy walks into the east wall",
                 ),
             ],
-        };
+        );
+        req.sent_to = Some(to.clone());
         let sent = send(&ctx, &takes_dir, "Anomaly", &req).unwrap();
         assert_eq!(sent.packet, format!(".veistra/feedback/{id}-1"));
+        assert!(sent.problems.is_empty(), "{:?}", sent.problems);
         let packet = root.join(&sent.packet);
         for f in [
             "packet.md",
@@ -638,7 +809,16 @@ mod tests {
 
         let md = std::fs::read_to_string(packet.join("packet.md")).unwrap();
         assert!(md.starts_with("# Playtest feedback · Take 4"));
-        assert!(md.contains("wt/enemy-chase @ 8c41e07"));
+        assert!(
+            md.contains(
+                "Anomaly · wt/enemy-chase @ 8c41e07 · 2026-10-30 14:02 UTC · Godot 4.5.1 · 2:31"
+            ),
+            "the board's meta line: {md}"
+        );
+        assert!(
+            md.contains("**Frame time:** spike to 41 ms at 1:42"),
+            "{md}"
+        );
         assert!(md.contains("## Note 2 · 1:38 → 1:46 · hallway.tscn"));
         assert!(md.contains("> The enemy walks into the east wall"));
         assert!(
@@ -670,6 +850,10 @@ mod tests {
         };
         assert_eq!((*n, p.as_str()), (2, sent.packet.as_str()));
         assert_eq!(node_path.as_deref(), Some("Hallway/Enemy_02"));
+        assert!(
+            all.iter().all(|c| c.sent_to.as_ref() == Some(&to)),
+            "each note keeps the agent it went to, for Still broken"
+        );
 
         assert_eq!(
             takes::read(&takes_dir, &id).unwrap().drafts,
@@ -693,27 +877,18 @@ mod tests {
             cluster_id: None,
             project: Some(root.clone()),
         };
-        let empty = Request {
-            take: id.clone(),
-            notes: vec![note(1, 0, None, "  ")],
-        };
+        let empty = request(&id, vec![note(1, 0, None, "  ")]);
         assert!(send(&ctx, &takes_dir, "x", &empty).is_err());
         let mut bare = note(1, 0, None, "words");
         bare.images = Images::default();
-        let none = Request {
-            take: id,
-            notes: vec![bare],
-        };
+        let none = request(&id, vec![bare]);
         assert!(send(&ctx, &takes_dir, "x", &none).is_err());
         assert!(comments::list(&ctx).unwrap().is_empty());
         assert!(send(
             &ctx,
             &takes_dir,
             "x",
-            &Request {
-                take: "nope".into(),
-                notes: vec![note(1, 0, None, "w")]
-            }
+            &request("nope", vec![note(1, 0, None, "w")])
         )
         .is_err());
     }
@@ -729,21 +904,163 @@ mod tests {
         };
         let mut bare = note(1, 41_000, None, "The door light flickers");
         bare.images.contact_png = None;
-        let sent = send(
-            &ctx,
-            &takes_dir,
-            "Anomaly",
-            &Request {
-                take: id,
-                notes: vec![bare],
-            },
-        )
-        .unwrap();
+        let sent = send(&ctx, &takes_dir, "Anomaly", &request(&id, vec![bare])).unwrap();
         let packet = root.join(&sent.packet);
         assert!(!packet.join("notes/1/contact.png").exists());
         let md = std::fs::read_to_string(packet.join("packet.md")).unwrap();
         assert!(!md.contains("contact.png"), "{md}");
         assert!(md.contains("`notes/1/markup.png` · `frames/` · `context.json`"));
+    }
+
+    fn ctx_for(root: &Path) -> CallContext {
+        CallContext {
+            cluster_id: Some("c1".into()),
+            project: Some(root.to_path_buf()),
+        }
+    }
+
+    #[test]
+    fn a_note_with_no_ink_names_its_frame_in_the_markup_format() {
+        let dir = TempDir::new().unwrap();
+        let (takes_dir, id) = take(dir.path());
+        let ctx = ctx_for(dir.path());
+        let sent = send(
+            &ctx,
+            &takes_dir,
+            "Anomaly",
+            &request(&id, vec![note(1, 41_000, None, "Flicker")]),
+        )
+        .unwrap();
+        let notes = dir.path().join(&sent.packet).join("notes/1");
+        let markup = read_json(&notes.join("markup.json"));
+        assert_eq!(markup["version"], 1);
+        assert_eq!(
+            markup["source"],
+            json!({ "kind": "image", "path": "frames/note.png" })
+        );
+        assert!(markup["size"]["width"].is_u64() && markup["size"]["height"].is_u64());
+        assert_eq!(markup["pins"], json!([]));
+        assert_eq!(markup["annotations"], json!([]));
+        assert!(
+            notes.join("frames/note.png").is_file(),
+            "the frame it names"
+        );
+    }
+
+    #[test]
+    fn a_clip_that_cannot_be_cut_is_named_and_the_send_still_goes() {
+        let dir = TempDir::new().unwrap();
+        let (takes_dir, id) = take(dir.path());
+        let ctx = ctx_for(dir.path());
+        let mut req = request(&id, vec![note(1, 41_000, None, "Flicker")]);
+        req.clip = true;
+        let sent = send(&ctx, &takes_dir, "Anomaly", &req).unwrap();
+        assert_eq!(
+            sent.problems,
+            vec!["Note 1's clip was not cut: the take has no video".to_string()]
+        );
+        let packet = dir.path().join(&sent.packet);
+        assert!(!packet.join("notes/1/clip.mp4").exists());
+        assert!(read_json(&packet.join("notes/1/context.json"))["clip"].is_null());
+        let md = std::fs::read_to_string(packet.join("packet.md")).unwrap();
+        assert!(md.contains("## Not in this packet\n\n- Note 1's clip was not cut"));
+        assert!(!md.contains("`clip.mp4`"), "{md}");
+        assert_eq!(sent.comments.len(), 1, "the note is filed all the same");
+
+        if cfg!(windows) {
+            return;
+        }
+        std::fs::write(takes_dir.join(&id).join(takes::VIDEO), b"not a video").unwrap();
+        let again = send(&ctx, &takes_dir, "Anomaly", &req).unwrap();
+        assert_eq!(
+            again.problems,
+            vec![format!(
+                "Note 1's clip was not cut: {}",
+                clip::unavailable().unwrap()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_sheet_sampled_more_sparsely_is_described_as_it_was_made() {
+        let dir = TempDir::new().unwrap();
+        let (takes_dir, id) = take(dir.path());
+        let ctx = ctx_for(dir.path());
+        let times: Vec<u64> = (0..16).map(|i| 10_000 + i * 2_000).collect();
+        let mut long = note(1, 30_000, Some((12_000, 48_000)), "Drifts the whole way");
+        long.contact_ms = Some(times.clone());
+        let sent = send(&ctx, &takes_dir, "Anomaly", &request(&id, vec![long])).unwrap();
+        let packet = dir.path().join(&sent.packet);
+        let md = std::fs::read_to_string(packet.join("packet.md")).unwrap();
+        assert!(!md.contains("one frame a second"), "{md}");
+        assert!(md.contains("frames spread across the note"));
+        assert!(
+            md.contains("**Contact sheet:** 16 frames, one every 2.0 s, the time printed on each")
+        );
+        let c = read_json(&packet.join("notes/1/context.json"));
+        assert_eq!(c["contact"]["times"], json!(times));
+
+        let mut short = note(1, 41_000, None, "Flicker");
+        short.contact_ms = Some(vec![39_000, 40_000, 41_000, 42_000, 43_000]);
+        let sent = send(&ctx, &takes_dir, "Anomaly", &request(&id, vec![short])).unwrap();
+        let md = std::fs::read_to_string(dir.path().join(&sent.packet).join("packet.md")).unwrap();
+        assert!(md.contains("one frame a second") && !md.contains("**Contact sheet:**"));
+    }
+
+    #[test]
+    fn the_script_is_read_from_the_scene_when_the_target_names_none() {
+        let dir = TempDir::new().unwrap();
+        let (takes_dir, id) = take(dir.path());
+        std::fs::create_dir_all(dir.path().join("levels")).unwrap();
+        std::fs::write(
+            dir.path().join("levels/hallway.tscn"),
+            "[gd_scene format=3]\n\n\
+             [ext_resource type=\"Script\" path=\"res://enemy/enemy_nav.gd\" id=\"1_nav\"]\n\n\
+             [node name=\"Hallway\" type=\"Node3D\"]\n\n\
+             [node name=\"Enemy_02\" type=\"CharacterBody3D\" parent=\".\"]\n\
+             script = ExtResource(\"1_nav\")\n",
+        )
+        .unwrap();
+        let ctx = ctx_for(dir.path());
+        let sent = send(
+            &ctx,
+            &takes_dir,
+            "Anomaly",
+            &request(&id, vec![note(1, 102_180, None, "Walks into the wall")]),
+        )
+        .unwrap();
+        let packet = dir.path().join(&sent.packet);
+        let md = std::fs::read_to_string(packet.join("packet.md")).unwrap();
+        assert!(
+            md.contains("- **Script:** `res://enemy/enemy_nav.gd`"),
+            "{md}"
+        );
+        assert_eq!(
+            read_json(&packet.join("notes/1/context.json"))["script"],
+            "res://enemy/enemy_nav.gd"
+        );
+    }
+
+    #[test]
+    fn a_send_that_can_file_nothing_is_refused_and_stamps_nothing() {
+        let dir = TempDir::new().unwrap();
+        let (takes_dir, id) = take(dir.path());
+        // A file where the comments folder goes: every comment write fails.
+        std::fs::write(dir.path().join(".veistra/comments"), b"").unwrap();
+        let ctx = ctx_for(dir.path());
+        let err = send(
+            &ctx,
+            &takes_dir,
+            "Anomaly",
+            &request(&id, vec![note(1, 41_000, None, "Flicker")]),
+        )
+        .unwrap_err();
+        assert!(err.starts_with("Note 1 could not be filed"), "{err}");
+        assert!(takes::load_notes(&takes_dir, &id)["notes"][0]["commentId"].is_null());
+        assert!(!dir
+            .path()
+            .join(format!(".veistra/feedback/{id}-1/packet.md"))
+            .exists());
     }
 
     #[test]

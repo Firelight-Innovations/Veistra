@@ -501,6 +501,8 @@ fn one_take(ctx: &Ctx, p: &P) -> Result<Value, RpcError> {
         "take": to_value(&listed)?,
         "urls": urls(&dir.join(&id)),
         "notes": takes::load_notes(&dir, &id),
+        // Why Send's "Video clip per note" cannot be ticked here, or null.
+        "clipUnavailable": super::clip::unavailable(),
     }))
 }
 

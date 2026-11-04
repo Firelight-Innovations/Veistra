@@ -20,6 +20,7 @@
 //! all of it is tested without an app.
 
 use crate::apps::CallContext;
+use crate::context_commands::AgentTarget;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use rand::RngCore;
@@ -173,6 +174,10 @@ pub struct Comment {
     pub resolution: Option<Resolution>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub replies: Vec<Reply>,
+    /// The agent Send handed this note to (a `context/agents` entry), so Still
+    /// broken can go back to the same one. Unset on a comment no Send filed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_to: Option<AgentTarget>,
     pub created: u64,
     pub updated: u64,
 }
@@ -234,6 +239,15 @@ pub fn list(context: &CallContext) -> Result<Vec<Comment>, RpcError> {
 
 /// Write a new comment down and return it.
 pub fn create(context: &CallContext, draft: Draft) -> Result<Comment, RpcError> {
+    create_to(context, draft, None)
+}
+
+/// [`create`], recording which agent the comment was sent to. Only Send knows.
+pub fn create_to(
+    context: &CallContext,
+    draft: Draft,
+    sent_to: Option<AgentTarget>,
+) -> Result<Comment, RpcError> {
     let dir = comments_dir(context)?;
     std::fs::create_dir_all(&dir).map_err(|e| {
         RpcError::new(
@@ -267,6 +281,7 @@ pub fn create(context: &CallContext, draft: Draft) -> Result<Comment, RpcError> 
         status: Status::Open,
         resolution: None,
         replies: Vec::new(),
+        sent_to,
         created: at,
         updated: at,
     };

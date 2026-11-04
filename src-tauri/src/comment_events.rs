@@ -179,6 +179,7 @@ mod tests {
             status,
             resolution: None,
             replies: Vec::new(),
+            sent_to: None,
             created: 1,
             updated: 1,
         }
