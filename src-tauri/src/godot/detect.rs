@@ -849,6 +849,39 @@ mod tests {
         assert_eq!(find_projects(dir.path())[0].engine_major, 3);
     }
 
+    /// examples/godot-demo, the game the design's acceptance runs use, is
+    /// found the way Play finds any project, from the checkout's root too.
+    #[test]
+    fn the_demo_game_is_a_godot_4_project_that_starts_in_the_hallway() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let demo = repo.join("examples/godot-demo");
+        let found = find_projects(&demo);
+        assert_eq!(found.len(), 1);
+        let project = &found[0];
+        assert_eq!(project.rel, ".");
+        assert_eq!(project.name, "Godot demo");
+        assert_eq!(project.config_version, Some(5));
+        assert_eq!(project.engine_major, 4);
+        assert_eq!(
+            project.main_scene_path.as_deref(),
+            Some("res://levels/hallway.tscn")
+        );
+        assert_eq!(
+            scenes(&demo),
+            [
+                "res://levels/arena_2d.tscn",
+                "res://levels/bench.tscn",
+                "res://levels/hallway.tscn"
+            ]
+        );
+        assert!(
+            find_projects(&repo)
+                .iter()
+                .any(|p| p.rel == "examples/godot-demo"),
+            "a pane open on Veistra's own checkout lists it"
+        );
+    }
+
     #[test]
     fn scenes_are_listed_as_res_paths() {
         let dir = TempDir::new().unwrap();
