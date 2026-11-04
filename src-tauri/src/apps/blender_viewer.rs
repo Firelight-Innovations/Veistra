@@ -1,11 +1,14 @@
 //! The Blender Viewer's Rust half.
 //!
-//! `docs/VEISTRA-UX-REWORK.md` §3.1-3.2: Blender is never embedded. This app
-//! finds a Blender install, opens a `.blend` in the real editor (detached),
-//! and runs `blender -b` with a bundled script to *export*: a `.glb`, preview
-//! renders and a parts list, cached under `.veistra/blender/`. The viewer shows
-//! that export and its age, never the live scene. The machinery is in
-//! [`crate::blender`]; this file is the RPC surface over it.
+//! `docs/VEISTRA-UX-REWORK.md` §3.1-3.2. This app finds a Blender install,
+//! opens a `.blend` in the real editor (detached), and runs `blender -b` with a
+//! bundled script to *export*: a `.glb`, preview renders and a parts list,
+//! cached under `.veistra/blender/` (under the app's data on main, so the
+//! checkout is never written). The viewer shows that export and its age, never
+//! the live scene. `state` also answers `editor`, where Blender's Editor mode
+//! shows ([`crate::editor_surface`]): the export viewer is the read-only
+//! surface. The machinery is in [`crate::blender`]; this file is the RPC
+//! surface over it.
 //!
 //! Methods: `state`, `image`, `detect`, `set-executable`, `export-start`,
 //! `export-status`, `export-cancel`, `open`. Comments anchored to a mesh part
@@ -15,6 +18,8 @@ use crate::apps::CallContext;
 use crate::blender::detect::{self, Detected, RealHost, VersionCache};
 use crate::blender::job::{Jobs, Spec};
 use crate::blender::{self, keys, Manifest};
+use crate::editor_surface::{self, Facts, Tool};
+use crate::environments::Environment;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use serde_json::{json, Value};
@@ -48,8 +53,31 @@ pub struct Services<'a> {
     pub jobs: &'a Jobs,
     pub versions: &'a VersionCache,
     pub host: &'a dyn detect::Host,
-    /// The cluster is on `main`: nothing may be written into the checkout.
+    /// The cluster's write environment, `None` for a plain folder.
+    pub environment: Option<Environment>,
+    /// `environment` is `main`: nothing may be written into the checkout.
     pub read_only: bool,
+    /// Where the cache goes instead of the checkout's `.veistra/` when it is
+    /// read-only: the app's local data folder.
+    pub app_cache: PathBuf,
+    /// Whether this build can place Blender's window in a pane.
+    pub embedder: bool,
+}
+
+impl Services<'_> {
+    /// The cache folder for one `.blend`: under the checkout, or under the
+    /// app's data on main ([`blender::cache_dir_in`]).
+    fn cache(&self, project: &Path, rel: &str) -> PathBuf {
+        blender::cache_dir_in(project, rel, self.outside())
+    }
+
+    fn cache_root(&self, project: &Path) -> PathBuf {
+        blender::cache_root_in(project, self.outside())
+    }
+
+    fn outside(&self) -> Option<&Path> {
+        self.read_only.then_some(self.app_cache.as_path())
+    }
 }
 
 pub fn call(
@@ -61,17 +89,24 @@ pub fn call(
     if method == "blender-viewer/set-executable" {
         return set_executable(app, params.as_ref());
     }
-    let read_only = context.cluster_id.as_deref().is_some_and(|cluster| {
+    let environment = context.cluster_id.as_deref().and_then(|cluster| {
         app.state::<crate::shell_state::ShellState>()
             .cluster_write_environment(cluster)
-            .is_some_and(|env| env.is_main())
     });
+    let read_only = environment.as_ref().is_some_and(Environment::is_main);
+    let app_cache = app
+        .path()
+        .app_local_data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir().join("veistra"));
     let services = Services {
         config: config(app),
         jobs: &app.state::<Jobs>(),
         versions: &app.state::<VersionCache>(),
         host: &RealHost,
+        environment,
         read_only,
+        app_cache,
+        embedder: crate::embed::SUPPORTED,
     };
     dispatch(context, &services, method, params)
 }
@@ -95,10 +130,10 @@ pub fn dispatch(
 
     match method {
         "blender-viewer/state" => state(context, services, params.as_ref()),
-        "blender-viewer/image" => image(context, params.as_ref()),
-        "blender-viewer/glb" => glb(context, params.as_ref()),
-        "blender-viewer/markup-save" => markup_save(context, params.as_ref()),
-        "blender-viewer/markup" => markup_load(context, params.as_ref()),
+        "blender-viewer/image" => image(context, services, params.as_ref()),
+        "blender-viewer/glb" => glb(context, services, params.as_ref()),
+        "blender-viewer/markup-save" => markup_save(context, services, params.as_ref()),
+        "blender-viewer/markup" => markup_load(context, services, params.as_ref()),
         "blender-viewer/detect" => {
             services.versions.forget();
             Ok(json!(detected(services)))
@@ -106,6 +141,7 @@ pub fn dispatch(
         "blender-viewer/export-start" => export_start(context, services, params.as_ref()),
         "blender-viewer/export-status" => Ok(json!(services.jobs.snapshot())),
         "blender-viewer/export-cancel" => Ok(json!({ "cancelled": services.jobs.cancel() })),
+        // On main `apps::WRITE_METHODS` refuses this before it gets here.
         "blender-viewer/open" => {
             let blend = required_str(params.as_ref(), "blend")?;
             open(
@@ -142,11 +178,36 @@ fn detected(services: &Services) -> Detected {
     )
 }
 
-fn project_of(context: &CallContext) -> Result<&Path, RpcError> {
+fn project_of<'a>(context: &'a CallContext, services: &Services) -> Result<&'a Path, RpcError> {
     context
         .project
         .as_deref()
-        .ok_or_else(|| invalid("this cluster has no environment — open a project first"))
+        .ok_or_else(|| {
+            match services.environment {
+        Some(Environment::Cloud { .. }) => invalid(
+            "this is a cloud session: its files are on the VM, not on this computer, so there is \
+             nothing here to open",
+        ),
+        _ => invalid("this cluster has no environment — open a project first"),
+    }
+        })
+}
+
+/// `editor`: the surface Blender's Editor mode shows (`crate::editor_surface`).
+fn surface(services: &Services, blender: &Detected) -> editor_surface::Surface {
+    let problem = blender
+        .configured_missing
+        .then_some("The path set under Settings, Blender, is not there.");
+    editor_surface::decide(
+        Tool::Blender,
+        Facts {
+            environment: services.environment.as_ref(),
+            editor_found: blender.found,
+            editor_problem: problem,
+            platform: editor_surface::current(),
+            embedder: services.embedder,
+        },
+    )
 }
 
 /// The `.blend` a request names, as an absolute path inside the project plus
@@ -173,10 +234,16 @@ fn state(
 ) -> Result<Value, RpcError> {
     let blender = detected(services);
     let job = services.jobs.snapshot();
+    let editor = surface(services, &blender);
+    let environment = json!({
+        "kind": services.environment.as_ref().map(Environment::kind),
+        "branch": services.environment.as_ref().and_then(Environment::branch),
+    });
 
     let Some(project) = context.project.as_deref() else {
         return Ok(json!({
             "blender": blender, "project": false, "readOnly": services.read_only,
+            "editor": editor, "environment": environment,
             "blends": [], "blend": null, "rel": null,
             "model": null, "parts": [], "renders": [], "job": job,
         }));
@@ -196,6 +263,7 @@ fn state(
 
     let mut value = json!({
         "blender": blender, "project": true, "readOnly": services.read_only,
+        "editor": editor, "environment": environment,
         "blends": blends, "blend": null, "rel": null,
         "model": null, "parts": [], "renders": [], "job": job,
     });
@@ -203,7 +271,7 @@ fn state(
         return Ok(value);
     };
 
-    let cache = blender::cache_dir(project, &rel);
+    let cache = services.cache(project, &rel);
     let current_mtime = blender::mtime_ms(&path);
     value["blend"] = json!(path.display().to_string());
     value["rel"] = json!(rel);
@@ -231,11 +299,15 @@ fn state(
 
 /// One render's PNG, base64. Looked up by id in the manifest rather than by a
 /// caller-supplied file name, so a request cannot name any other file.
-fn image(context: &CallContext, params: Option<&Value>) -> Result<Value, RpcError> {
-    let project = project_of(context)?;
+fn image(
+    context: &CallContext,
+    services: &Services,
+    params: Option<&Value>,
+) -> Result<Value, RpcError> {
+    let project = project_of(context, services)?;
     let (_, rel) = resolve_blend(project, &required_str(params, "blend")?)?;
     let id = required_str(params, "id")?;
-    let cache = blender::cache_dir(project, &rel);
+    let cache = services.cache(project, &rel);
     let manifest: Manifest = blender::read_manifest(&cache)
         .ok_or_else(|| invalid("this file has not been exported yet"))?;
     let render = manifest
@@ -255,10 +327,14 @@ fn image(context: &CallContext, params: Option<&Value>) -> Result<Value, RpcErro
 
 /// The exported `.glb`, base64, for the 3D preview. Reads the file the last
 /// export's manifest names, never a caller-supplied path.
-fn glb(context: &CallContext, params: Option<&Value>) -> Result<Value, RpcError> {
-    let project = project_of(context)?;
+fn glb(
+    context: &CallContext,
+    services: &Services,
+    params: Option<&Value>,
+) -> Result<Value, RpcError> {
+    let project = project_of(context, services)?;
     let (_, rel) = resolve_blend(project, &required_str(params, "blend")?)?;
-    let cache = blender::cache_dir(project, &rel);
+    let cache = services.cache(project, &rel);
     let manifest: Manifest = blender::read_manifest(&cache)
         .ok_or_else(|| invalid("this file has not been exported yet"))?;
     let file = manifest
@@ -270,32 +346,38 @@ fn glb(context: &CallContext, params: Option<&Value>) -> Result<Value, RpcError>
 }
 
 /// Keeps the markup picture and JSON for a `.blend`, beside its export cache.
-fn markup_save(context: &CallContext, params: Option<&Value>) -> Result<Value, RpcError> {
-    let project = project_of(context)?;
+fn markup_save(
+    context: &CallContext,
+    services: &Services,
+    params: Option<&Value>,
+) -> Result<Value, RpcError> {
+    let project = project_of(context, services)?;
     let (_, rel) = resolve_blend(project, &required_str(params, "blend")?)?;
     let png = BASE64
         .decode(required_str(params, "pngBase64")?)
         .map_err(|e| invalid(format!("pngBase64 is not base64: {e}")))?;
     let json = required_str(params, "json")?;
-    let saved_at = blender::write_markup(&blender::cache_dir(project, &rel), &png, &json)
+    let saved_at = blender::write_markup(&services.cache(project, &rel), &png, &json)
         .map_err(|e| RpcError::new(INTERNAL_ERROR, e))?;
     Ok(json!({ "savedAt": saved_at }))
 }
 
 /// `null` when nothing has been marked up on this `.blend` yet.
-fn markup_load(context: &CallContext, params: Option<&Value>) -> Result<Value, RpcError> {
-    let project = project_of(context)?;
+fn markup_load(
+    context: &CallContext,
+    services: &Services,
+    params: Option<&Value>,
+) -> Result<Value, RpcError> {
+    let project = project_of(context, services)?;
     let (_, rel) = resolve_blend(project, &required_str(params, "blend")?)?;
-    Ok(
-        match blender::read_markup(&blender::cache_dir(project, &rel)) {
-            Some(m) => json!({
-                "png": BASE64.encode(m.png),
-                "json": m.json,
-                "savedAt": m.saved_at,
-            }),
-            None => Value::Null,
-        },
-    )
+    Ok(match blender::read_markup(&services.cache(project, &rel)) {
+        Some(m) => json!({
+            "png": BASE64.encode(m.png),
+            "json": m.json,
+            "savedAt": m.saved_at,
+        }),
+        None => Value::Null,
+    })
 }
 
 const KNOWN_VIEWS: &[&str] = &["front", "three-quarter", "side", "wire"];
@@ -305,7 +387,7 @@ fn export_start(
     services: &Services,
     params: Option<&Value>,
 ) -> Result<Value, RpcError> {
-    let project = project_of(context)?;
+    let project = project_of(context, services)?;
     let (blend, rel) = resolve_blend(project, &required_str(params, "blend")?)?;
 
     let exe = match detect::find(services.host, &services.config.executable).hit {
@@ -317,10 +399,11 @@ fn export_start(
         }
     };
 
-    let cache = blender::cache_dir(project, &rel);
+    let cache = services.cache(project, &rel);
     let export_dir = services.config.export_dir.trim();
-    // The cache is Veistra state and always allowed. A .glb written into the
-    // checkout is a write to it, which main refuses (docs/VEISTRA-UX-REWORK.md §2.3).
+    // The cache is Veistra state and always allowed: on main it is kept under
+    // the app's data, not in the checkout. A .glb written into the checkout is
+    // a write to it, which main refuses (docs/VEISTRA-UX-REWORK.md §2.3).
     if !export_dir.is_empty() && services.read_only {
         return Err(RpcError::new(
             crate::apps::READ_ONLY,
@@ -343,7 +426,7 @@ fn export_start(
         None => KNOWN_VIEWS.iter().map(|v| v.to_string()).collect(),
     };
 
-    let root = blender::cache_root(project);
+    let root = services.cache_root(project);
     std::fs::create_dir_all(&root).map_err(|e| {
         RpcError::new(
             INTERNAL_ERROR,
@@ -473,6 +556,7 @@ mod tests {
         jobs: Jobs,
         versions: VersionCache,
         host: FakeHost,
+        app_cache: TempDir,
     }
 
     impl Fixture {
@@ -481,6 +565,7 @@ mod tests {
                 jobs: Jobs::default(),
                 versions: VersionCache::default(),
                 host: FakeHost::default(),
+                app_cache: TempDir::new().expect("tempdir"),
             }
         }
         fn services(&self, config: Config, read_only: bool) -> Services<'_> {
@@ -489,7 +574,10 @@ mod tests {
                 jobs: &self.jobs,
                 versions: &self.versions,
                 host: &self.host,
+                environment: read_only.then_some(Environment::Main),
                 read_only,
+                app_cache: self.app_cache.path().to_path_buf(),
+                embedder: false,
             }
         }
     }
@@ -660,15 +748,103 @@ mod tests {
         assert_eq!(err.code, crate::apps::READ_ONLY);
         assert!(!env.path().join("assets").exists());
 
-        // Same main, no export folder: the cache is Veistra state and is allowed.
+        // Same main, no export folder: the cache is Veistra state and is
+        // allowed, but it is kept under the app's data, not in the checkout.
+        let services = fx.services(config_with(&exe), true);
         let started = dispatch(
             &context(env.path()),
-            &fx.services(config_with(&exe), true),
+            &services,
             "blender-viewer/export-start",
             Some(json!({ "blend": "bed.blend" })),
         );
         assert!(started.is_ok(), "{started:?}");
         wait(&fx.jobs);
+        let status = dispatch(
+            &context(env.path()),
+            &services,
+            "blender-viewer/export-status",
+            None,
+        )
+        .unwrap();
+        assert_eq!(status["outcome"], "ok", "{status}");
+        assert!(!env.path().join(".veistra").exists(), "main was written");
+        let state = dispatch(
+            &context(env.path()),
+            &services,
+            "blender-viewer/state",
+            None,
+        )
+        .unwrap();
+        let model = state["model"].as_str().expect("the export shows in state");
+        assert!(Path::new(model).starts_with(fx.app_cache.path()), "{model}");
+    }
+
+    #[test]
+    fn state_on_main_answers_the_viewer_and_why() {
+        let env = TempDir::new().unwrap();
+        let tools = TempDir::new().unwrap();
+        let exe = fake_blender(tools.path(), "ok");
+        let mut fx = Fixture::new();
+        fx.host.files.insert(exe.clone());
+        let state = dispatch(
+            &context(env.path()),
+            &fx.services(config_with(&exe), true),
+            "blender-viewer/state",
+            None,
+        )
+        .unwrap();
+        assert_eq!(state["editor"]["surface"], "viewer");
+        assert_eq!(state["editor"]["code"], "main");
+        let reason = state["editor"]["reason"].as_str().unwrap();
+        assert!(
+            reason.contains("main checkout") && reason.contains("Blender"),
+            "{reason}"
+        );
+        assert_eq!(state["environment"]["kind"], "main");
+    }
+
+    #[test]
+    fn state_without_blender_answers_no_editor_and_where_to_set_it() {
+        let env = TempDir::new().unwrap();
+        let fx = Fixture::new();
+        let config = Config {
+            executable: "/nowhere/blender".into(),
+            ..Config::default()
+        };
+        let state = dispatch(
+            &context(env.path()),
+            &fx.services(config, false),
+            "blender-viewer/state",
+            None,
+        )
+        .unwrap();
+        assert_eq!(state["editor"]["surface"], "viewer");
+        assert_eq!(state["editor"]["code"], "noEditor");
+        let reason = state["editor"]["reason"].as_str().unwrap();
+        assert!(reason.contains("is not there"), "{reason}");
+        assert!(
+            reason.ends_with("Set its path under Settings, Blender."),
+            "{reason}"
+        );
+        assert_eq!(state["environment"]["kind"], Value::Null);
+    }
+
+    #[test]
+    fn state_with_blender_and_no_embedder_pops_out() {
+        let env = TempDir::new().unwrap();
+        let tools = TempDir::new().unwrap();
+        let exe = fake_blender(tools.path(), "ok");
+        let mut fx = Fixture::new();
+        fx.host.files.insert(exe.clone());
+        let state = dispatch(
+            &context(env.path()),
+            &fx.services(config_with(&exe), false),
+            "blender-viewer/state",
+            None,
+        )
+        .unwrap();
+        assert_eq!(state["editor"]["surface"], "popOut", "{state}");
+        assert_eq!(state["editor"]["code"], "noEmbedder");
     }
 
     #[test]
@@ -902,7 +1078,10 @@ bpy.ops.wm.save_as_mainfile(filepath=sys.argv[-1])
             jobs: &fx.jobs,
             versions: &fx.versions,
             host: &RealHost,
+            environment: None,
             read_only: false,
+            app_cache: fx.app_cache.path().to_path_buf(),
+            embedder: false,
         }
     }
 

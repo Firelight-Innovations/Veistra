@@ -21,6 +21,7 @@ mod design_comments;
 mod devtools;
 mod diagnostics;
 mod discovery;
+mod editor_surface;
 mod embed;
 mod environments;
 mod error;

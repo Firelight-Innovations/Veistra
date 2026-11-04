@@ -588,6 +588,7 @@ mod tests {
             godot: &w.godot,
             key: "c1".into(),
             root: Some(w.dir.path().to_path_buf()),
+            environment: None,
             read_only: false,
             probe: super::super::detect::Probe::default(),
             check: &|_| Err("no engine here".into()),
