@@ -7,11 +7,17 @@
  *
  * The header is the shared viewer toolbar: mode, scene picker, a freshness
  * chip, the scene actions with Play scene, and Open in Godot to leave.
+ *
+ * This is the Godot app in Editor mode, which is the scene view until the
+ * editor can open in the pane, rendered through the app's shell as a pane
+ * opens it.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 const bridge = vi.hoisted(() => ({ invoke: vi.fn() }));
+
+const events = vi.hoisted(() => new Map<string, (payload: unknown) => void>());
 
 // `openIn` sends `veistra/open` exactly as the real client does
 // (`packages/bridge/src/client.ts`), so a test can assert the wire request.
@@ -19,9 +25,19 @@ vi.mock("@veistra/bridge", () => ({
   invoke: bridge.invoke,
   reportPainted: vi.fn(),
   openIn: (appId: string, payload?: unknown) => bridge.invoke("veistra/open", { appId, payload }),
+  OPENED_EVENT: "veistra:opened",
+  on: (event: string, cb: (payload: unknown) => void) => {
+    events.set(event, cb);
+    return () => events.delete(event);
+  },
+  session: () => Promise.resolve({ projectPath: null, instanceId: "i1" }),
 }));
 
 import App from "./App";
+// The shell loads both modes lazily; loading them here keeps those imports
+// inside a test's first wait.
+import "./SceneMode";
+import "./play/PlayMode";
 
 const STATE = {
   project: ".",
@@ -41,7 +57,12 @@ const STATE = {
 
 function backend(
   put: () => unknown = () => ({ key: "k" }),
-  opts: { state?: object; comments?: unknown[]; godotFound?: string | null } = {},
+  opts: {
+    state?: object;
+    comments?: unknown[];
+    godotFound?: string | null;
+    readOnly?: () => boolean;
+  } = {},
 ) {
   bridge.invoke.mockImplementation((method: string) => {
     switch (method) {
@@ -51,12 +72,13 @@ function backend(
         return Promise.resolve({ png: "AAAA" });
       case "godot/status":
         return Promise.resolve({
-          environment: { root: "C:/p", readOnly: false },
+          environment: { root: "C:/p", readOnly: opts.readOnly?.() ?? false },
           executable: { found: opts.godotFound ?? null, problems: [], setting: "" },
           projects: [],
         });
       case "comments/list":
-        return Promise.resolve(opts.comments ?? []);
+        // A new array each time, as the bridge's decoded answer is.
+        return Promise.resolve([...(opts.comments ?? [])]);
       case "context/put":
         return Promise.resolve(put());
       default:
@@ -72,7 +94,20 @@ function comment(id: string, anchor: object, status = "open") {
   return { id, anchor, author: "user", body: id, status, created: 1, updated: 1 };
 }
 
-beforeEach(() => bridge.invoke.mockReset());
+beforeEach(() => {
+  bridge.invoke.mockReset();
+  events.clear();
+  localStorage.clear();
+  history.replaceState({}, "", "/");
+  // Play's game box needs a ResizeObserver to exist and its log pane calls
+  // scrollIntoView; jsdom has neither.
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+  Element.prototype.scrollIntoView = vi.fn();
+});
 afterEach(cleanup);
 
 describe("Godot Viewer send footer", () => {
@@ -116,7 +151,7 @@ describe("Godot Viewer toolbar", () => {
     const { container } = render(<App />);
     const bar = await screen.findByRole("toolbar", { name: "Godot" });
     const inBar = within(bar);
-    expect(inBar.getByRole("tab", { name: "Scene" }).getAttribute("aria-selected")).toBe("true");
+    expect(inBar.getByRole("tab", { name: "Editor" }).getAttribute("aria-selected")).toBe("true");
     expect(inBar.getByRole("tab", { name: "Play" })).toBeTruthy();
     const picker = (await inBar.findByRole("combobox", { name: "Scene" })) as HTMLSelectElement;
     expect(picker.value).toBe("res://main.tscn");
@@ -126,6 +161,24 @@ describe("Godot Viewer toolbar", () => {
     const open = inBar.getByRole("button", { name: "Open in Godot" });
     expect(container.querySelector(".k-send-footer")?.contains(open)).toBe(false);
     expect(screen.getAllByRole("button", { name: /Open in Godot/ })).toHaveLength(1);
+  });
+
+  // Read once at mount, the status kept the main checkout's read-only answer
+  // after the cluster moved to a worktree, and Open in Godot stayed disabled.
+  it("enables Open in Godot once the cluster moves to a worktree", async () => {
+    let readOnly = true;
+    backend(undefined, { godotFound: "C:/godot.exe", readOnly: () => readOnly });
+    render(<App />);
+    const open = (await screen.findByRole("button", {
+      name: "Open in Godot",
+    })) as HTMLButtonElement;
+    await waitFor(() => expect(open.title).toMatch(/read-only/));
+    expect(open.disabled).toBe(true);
+    readOnly = false;
+    events.get("project:changed")?.({ clusterId: "c1" });
+    await waitFor(() => expect(open.disabled).toBe(false));
+    expect(open.title).not.toMatch(/read-only/);
+    expect(calls("godot-viewer/state").length).toBeGreaterThan(1);
   });
 
   it("says when the tree was read in the chip", async () => {
@@ -140,19 +193,54 @@ describe("Godot Viewer toolbar", () => {
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Not read yet"));
   });
 
-  it("opens Play on the selected scene, in this viewer's project, with veistra/open", async () => {
-    // A project other than the environment root, so the payload cannot be
-    // right by Play falling back to the first project it finds.
+  // Play scene opened the separate Play app with `veistra/open` while there
+  // were two apps; with one (owner decision 1), this pane turns to Play.
+  it("plays the selected scene, in this pane's project, by turning to Play", async () => {
+    // A project other than the environment root, so the run cannot be right
+    // by Play falling back to the first project it finds.
     backend(undefined, { state: { project: "games/hall" } });
     render(<App />);
     const play = await screen.findByRole("button", { name: "Play scene" });
     await waitFor(() => expect((play as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(play);
-    await waitFor(() => expect(calls("veistra/open")).toHaveLength(1));
-    expect(calls("veistra/open")[0]![1]).toEqual({
-      appId: "play",
-      payload: { scene: "res://main.tscn", project: "games/hall" },
+    await waitFor(() => expect(calls("play/run")).toHaveLength(1));
+    expect(calls("play/run")[0]![1]).toMatchObject({
+      scene: "res://main.tscn",
+      project: "games/hall",
     });
+    const bar = await screen.findByRole("toolbar", { name: "Godot" });
+    expect(within(bar).getByRole("tab", { name: "Play" }).getAttribute("aria-selected")).toBe(
+      "true",
+    );
+    expect(calls("veistra/open")).toHaveLength(0);
+  });
+
+  // F5 is WebView2's reload, which unloaded the pane; Shift F5 a hard one,
+  // and Ctrl R a reload too.
+  it("turns to Play and runs the project on F5, and keeps the reload keys from the page", async () => {
+    backend(undefined, { state: { project: "games/hall" } });
+    const { container } = render(<App />);
+    await screen.findByRole("combobox", { name: "Scene" });
+    const root = container.querySelector(".gv") as HTMLElement;
+    expect(fireEvent.keyDown(root, { key: "F5", shiftKey: true })).toBe(false);
+    expect(fireEvent.keyDown(root, { key: "r", ctrlKey: true })).toBe(false);
+    expect(calls("play/run")).toHaveLength(0);
+    expect(calls("play/record")).toHaveLength(0);
+    expect(fireEvent.keyDown(root, { key: "F5" })).toBe(false);
+    await waitFor(() => expect(calls("play/run")).toHaveLength(1));
+    expect(calls("play/run")[0]![1]).toMatchObject({ project: "games/hall" });
+    const bar = await screen.findByRole("toolbar", { name: "Godot" });
+    expect(within(bar).getByRole("tab", { name: "Play" }).getAttribute("aria-selected")).toBe(
+      "true",
+    );
+  });
+
+  it("says the editor opens in its own window until it is embedded", async () => {
+    backend();
+    render(<App />);
+    expect(
+      await screen.findByText(/The Godot editor opens in its own window for now/),
+    ).toBeTruthy();
   });
 
   it("will not play sample data", async () => {
@@ -193,6 +281,21 @@ describe("Godot Viewer toolbar", () => {
     });
     render(<App />);
     await screen.findByRole("button", { name: "Comments · 3 open" });
+  });
+
+  // The list was read when the pane opened and after its own writes, so a fix
+  // an agent made over MCP left the count where it was until a reload.
+  it("counts again when a comment change is pushed", async () => {
+    const list = [
+      comment("a", { kind: "node", path: "Main" }, "fixed"),
+      comment("b", { kind: "node", path: "Main" }),
+    ];
+    backend(undefined, { comments: list });
+    render(<App />);
+    await screen.findByRole("button", { name: "Comments · 2 open" });
+    list[0] = comment("a", { kind: "node", path: "Main" }, "resolved");
+    events.get("comments:changed")?.({ id: "a", kind: "node", status: "resolved", from: "fixed" });
+    await screen.findByRole("button", { name: "Comments · 1 open" });
   });
 
   it("draws no badge on a node with nothing open", async () => {

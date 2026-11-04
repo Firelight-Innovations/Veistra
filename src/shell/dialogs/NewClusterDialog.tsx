@@ -59,7 +59,7 @@ interface LayoutOption {
 // Change one side, change the other.
 const LAYOUTS: LayoutOption[] = [
   { value: "code", title: "Code", panes: "Explorer · editor · terminal" },
-  { value: "godot", title: "Godot", panes: "Explorer · Godot viewer · Play · terminal" },
+  { value: "godot", title: "Godot", panes: "Explorer · Godot Editor · Godot Play · terminal" },
   { value: "blender", title: "Blender", panes: "Explorer · Blender viewer · terminal" },
   { value: "watchAgent", title: "Watch an agent", panes: "Streamed terminal · explorer · viewer" },
 ];

@@ -238,6 +238,22 @@
   white-space: nowrap;
 }
 
+/* Slot 2 in live Play: the project, when there are several, then the scene.
+   Two pickers at the toolbar's usual width would push the chip onto a second
+   row in a 1024 px window, so each gives way and the path is cut instead. */
+.pl-pickers {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pl-pickers .k-vtb__select {
+  min-width: 0;
+  max-width: 200px;
+  text-overflow: ellipsis;
+}
+
 /* --- the Record button's dot ------------------------------------------- */
 
 .pl-rec-ring {
@@ -374,8 +390,22 @@
   background: var(--danger);
 }
 
-.pl-strip__counts {
+.pl-strip__counts,
+.pl-strip__hint {
   white-space: nowrap;
+}
+
+/* While the game holds the mouse, the one way out: read first, not muted. */
+.pl-strip__hint {
+  color: var(--txt-primary);
+}
+
+/* The key on Stop and review, as the toolbar shows its keys, on the primary fill. */
+.pl-strip__kbd {
+  margin-left: 6px;
+  font: 400 11px/1 var(--mono);
+  color: inherit;
+  opacity: 0.75;
 }
 
 .pl-strip__message {
@@ -673,17 +703,26 @@
 }
 
 .pl-tl__frames {
+  position: relative;
   height: 40px;
-  display: flex;
-  gap: 2px;
   border-radius: 4px;
   overflow: hidden;
   background: var(--bg-layer-1);
 }
 
-.pl-tl__frames img {
-  flex: 1 1 0;
-  min-width: 0;
+/* One slot per 2 s, placed on the time axis like every other lane. */
+.pl-tl__thumb {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  box-sizing: border-box;
+  border-right: 2px solid transparent;
+  overflow: hidden;
+}
+
+.pl-tl__thumb img {
+  display: block;
+  width: 100%;
   height: 40px;
   object-fit: cover;
 }
@@ -835,6 +874,17 @@
   background: color-mix(in srgb, var(--txt-warning) 6%, transparent);
   border-left: 1px dashed color-mix(in srgb, var(--txt-warning) 50%, transparent);
   border-right: 1px dashed color-mix(in srgb, var(--txt-warning) 50%, transparent);
+}
+
+/* A range with one end set so far. */
+.pl-tl__in,
+.pl-tl__out {
+  position: absolute;
+  top: 22px;
+  bottom: 0;
+  width: 0;
+  pointer-events: none;
+  border-left: 1px dashed var(--txt-warning);
 }
 
 .pl-tl__playhead {

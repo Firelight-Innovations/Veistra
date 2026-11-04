@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 // `?raw` rather than node:fs: the app tsconfig carries no Node types.
-import play from "./App.css?raw";
-import footer from "../../../shared/send-footer.css?raw";
-import toolbar from "../../../shared/viewer-toolbar.css?raw";
+import play from "./play.css?raw";
+import footer from "../../../../shared/send-footer.css?raw";
+import toolbar from "../../../../shared/viewer-toolbar.css?raw";
 
 /**
  * Structure checks for the narrow-pane layout. jsdom does no layout, so these
@@ -20,6 +20,14 @@ describe("narrow panes", () => {
     expect(rule(toolbar, ".k-vtb")).toContain("flex-wrap: wrap");
     expect(rule(toolbar, ".k-vtb__chip")).toContain("white-space: nowrap");
     expect(rule(toolbar, ".k-vtb__btn")).toContain("white-space: nowrap");
+  });
+
+  it("Play's project and scene pickers give way rather than push the chip down", () => {
+    expect(rule(play, ".pl-pickers")).toContain("min-width: 0");
+    const picker = rule(play, ".pl-pickers .k-vtb__select");
+    expect(picker).toContain("min-width: 0");
+    expect(picker).toMatch(/max-width: (\d+)px/);
+    expect(Number(/max-width: (\d+)px/.exec(picker)?.[1])).toBeLessThan(260);
   });
 
   it("the live strip and the review wrap rather than overlap", () => {

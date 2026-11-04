@@ -14,8 +14,8 @@
  */
 import { lazy, Suspense, useEffect, useRef } from "react";
 import type { MarkupExport } from "@veistra/markup/layer";
-import type { WindowRect } from "../../../shared/nativeBox";
-import { useNativeBox } from "../../../shared/useNativeBox";
+import type { WindowRect } from "../../../../shared/nativeBox";
+import { useNativeBox } from "../../../../shared/useNativeBox";
 import { clock } from "./frames";
 import { embedRect, still, type LogLine, type Session } from "./rpc";
 
@@ -127,6 +127,9 @@ export function LiveStrip(props: LiveStripProps) {
   const marks = session?.marks ?? [];
   const errors = props.errors.filter((l) => l.at >= zero);
   const where = session?.embed;
+  // A game holding the mouse leaves nothing here to click, and the addon
+  // forwards F7 from inside the game (spec §4.4), so the strip names the key.
+  const captured = running && session?.mouseCaptured === true;
 
   if (running && recording) {
     return (
@@ -158,13 +161,14 @@ export function LiveStrip(props: LiveStripProps) {
           {marks.length} {marks.length === 1 ? "mark" : "marks"} · {errors.length}{" "}
           {errors.length === 1 ? "error" : "errors"}
         </span>
+        {captured && <span className="pl-strip__hint">F7 stops and opens the take</span>}
         <button
           type="button"
           className="k-btn k-btn--primary k-btn--sm"
           title="Stop the game and open this take for review (F7)"
           onClick={props.onStopAndReview}
         >
-          Stop and review
+          Stop and review <kbd className="pl-strip__kbd">F7</kbd>
         </button>
       </div>
     );
@@ -172,19 +176,21 @@ export function LiveStrip(props: LiveStripProps) {
 
   const message = !running
     ? "Not running."
-    : where?.kind === "ownWindow"
-      ? where.reason
-      : where?.kind === "poppedOut"
-        ? "Popped out into its own window. Dock brings it back."
-        : take?.state === "failed"
-          ? take.reason
-          : take?.state === "starting"
-            ? "Waiting for the game's window to start recording."
-            : props.recordBlocked
-              ? props.recordBlocked
-              : props.recordOn
-                ? "Record is on; the next run is recorded."
-                : "Turn on Record to keep this run and mark it up afterwards. Mark up still works on the live frame.";
+    : captured
+      ? "F7 stops the game."
+      : where?.kind === "ownWindow"
+        ? where.reason
+        : where?.kind === "poppedOut"
+          ? "Popped out into its own window. Dock brings it back."
+          : take?.state === "failed"
+            ? take.reason
+            : take?.state === "starting"
+              ? "Waiting for the game's window to start recording."
+              : props.recordBlocked
+                ? props.recordBlocked
+                : props.recordOn
+                  ? "Record is on; the next run is recorded."
+                  : "Turn on Record to keep this run and mark it up afterwards. Mark up still works on the live frame.";
   return (
     <div className="pl-strip">
       <span className="pl-strip__off">
@@ -192,9 +198,10 @@ export function LiveStrip(props: LiveStripProps) {
         {take?.state === "saving" ? "Saving take…" : "Not recording"}
       </span>
       <span className="pl-strip__message">{message}</span>
-      {running && marks.length > 0 && (
+      {running && (marks.length > 0 || errors.length > 0) && (
         <span className="pl-strip__counts">
-          {marks.length} {marks.length === 1 ? "mark" : "marks"}
+          {marks.length} {marks.length === 1 ? "mark" : "marks"} · {errors.length}{" "}
+          {errors.length === 1 ? "error" : "errors"}
         </span>
       )}
       <button

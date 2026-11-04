@@ -8,10 +8,18 @@
  * an error shows that line, because the error is the first lead for a note.
  */
 import { useState } from "react";
-import type { Comment, Status, Verdict } from "../../../shared/comments";
-import { statusView } from "../../../shared/comments";
+import type { Comment, Status, Verdict } from "../../../../shared/comments";
+import { statusView } from "../../../../shared/comments";
 import { clock } from "./frames";
-import { commentOf, errorsNear, noteStatus, span, type LogRow, type NoteDraft } from "./notes";
+import {
+  commentOf,
+  errorsNear,
+  nearWords,
+  noteStatus,
+  span,
+  type LogRow,
+  type NoteDraft,
+} from "./notes";
 
 /** Errors this close to a mark are shown on it (design §6). */
 const MARK_ERROR_MS = 2_000;
@@ -66,9 +74,9 @@ function NoteCard(props: {
   note: NoteDraft;
   comment: Comment | undefined;
   status: Status | "draft";
-  near: number;
+  /** The errors and warnings within 10 s, which Send attaches to the note. */
+  near: LogRow[];
   selected: boolean;
-  readOnly: boolean;
   onSelect: () => void;
   onChange: (patch: Partial<NoteDraft>) => void;
   onDelete: () => void;
@@ -80,6 +88,7 @@ function NoteCard(props: {
   const [reply, setReply] = useState("");
   const draft = status === "draft";
   const scene = comment?.anchor.kind === "take" ? comment.anchor.scene : undefined;
+  const near = nearWords(props.near);
   return (
     <div
       className={`pl-note${selected ? " pl-note--selected" : ""} pl-note--${status}`}
@@ -136,13 +145,16 @@ function NoteCard(props: {
           </span>
         )}
         {note.markupPng && <span className="pl-chip">marked up</span>}
-        {props.near > 0 && (
-          <span className="pl-chip pl-chip--danger">
-            {props.near} {props.near === 1 ? "error" : "errors"} near
+        {near && (
+          <span
+            className="pl-chip pl-chip--danger"
+            title={props.near.map((r) => `${clock(r.ms)} ${r.text}`).join("\n")}
+          >
+            {near} near
           </span>
         )}
       </div>
-      {draft && selected && !props.readOnly && (
+      {draft && selected && (
         <div className="pl-note__actions">
           <button type="button" className="k-btn k-btn--ghost k-btn--sm" onClick={props.onDelete}>
             Delete
@@ -225,9 +237,8 @@ export function NotesPanel(props: NotesPanelProps) {
         note={r.note}
         comment={r.comment}
         status={r.status}
-        near={errorsNear(props.log, from, to, NOTE_ERROR_MS).length}
+        near={errorsNear(props.log, from, to, NOTE_ERROR_MS)}
         selected={props.selected === r.note.n}
-        readOnly={props.readOnly}
         onSelect={() => props.onSelect(r.note.n)}
         onChange={(patch) => props.onChange(r.note.n, patch)}
         onDelete={() => props.onDelete(r.note.n)}

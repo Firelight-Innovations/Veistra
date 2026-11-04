@@ -137,16 +137,23 @@ export async function contactSheet(
   return canvasBlob(canvas);
 }
 
-/** Small frames every `everyMs`, for the timeline's filmstrip. `onFrame` sees each as it lands. */
+/** How far apart the filmstrip's frames are (design §8.2.3). */
+export const STRIP_EVERY_MS = 2000;
+
+/**
+ * Small frames every `everyMs`, for the timeline's filmstrip, at the video's
+ * own shape (`aspect`, width over height). `onFrame` sees each as it lands.
+ */
 export async function filmstrip(
   video: HTMLVideoElement,
   durationMs: number,
   onFrame: (index: number, url: string) => void,
-  everyMs = 2000,
+  everyMs = STRIP_EVERY_MS,
   width = 96,
   cancelled: () => boolean = () => false,
+  aspect = 16 / 9,
 ): Promise<void> {
-  const height = Math.round((width * 9) / 16);
+  const height = Math.max(1, Math.round(width / (aspect > 0 ? aspect : 16 / 9)));
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;

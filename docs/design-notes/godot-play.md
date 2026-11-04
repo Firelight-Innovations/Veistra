@@ -1,11 +1,14 @@
-# Godot: Play, the Godot Viewer, and Open in Godot
+# Godot: one app with Editor and Play, and Open in Godot
 
-Code: `src-tauri/src/godot/` (`detect`, `runner`, `addon`, `scene`, `rpc`), routed from
-`apps/play.rs` and `apps/godot_viewer.rs`. Frontends: `apps/play/ui`, `apps/godot-viewer/ui`,
-shared types in `apps/shared/godot.ts`.
+Code: `src-tauri/src/godot/` (`detect`, `runner`, `addon`, `scene`, `rpc`, `live`), one entry
+(`godot::rpc::godot`) routed from `apps/godot_viewer.rs` for the Godot app's id, `godot-viewer`,
+and its `play` alias. Frontend: `apps/godot-viewer/ui`, where `App.tsx` is the mode shell,
+`SceneMode.tsx` is Editor mode and `play/` is Play mode. Shared types are in
+`apps/shared/godot.ts`.
 
-The rule everything obeys is `VEISTRA-UX-REWORK.md` section 3.1: Godot is never embedded in the
-webview. It is a native process Veistra starts, watches and stops.
+Godot is never drawn by the webview. It is a native process Veistra starts, watches and stops,
+and Play places the game's window over its pane (owner decision 6 and spec section 11 replace
+`VEISTRA-UX-REWORK.md` section 3.1's "never embedded"; the editor joins it there with C1).
 
 ## Section 9.2, decided: a native run
 
@@ -118,18 +121,49 @@ script, or an earlier v2, whose game keeps its channel until the update). Stop s
 `tickUsP95` and `tickNodes` count only the take's own ticks. `examples/godot-demo` is the game
 the acceptance runs use, and its README is the procedure (#312).
 
+**Review** (`play/Review.tsx`, `Timeline.tsx`, `NotesPanel.tsx`) plays `take.mp4` through the
+asset protocol. Under it are six lanes, top to bottom: Frames, Notes, Marks, Log, Scenes and
+Frame time. The filmstrip is drawn from a video of its own, one frame every 2 s at the video's
+shape, each over the 2 s it stands for. It starts once the player can play, so its seeks never
+compete with the first frame. The keys are Space, Left and Right (one frame, 1/fps), I and O
+(an end set on the wrong side of the other drops it), N, and Ctrl Enter to send. On read-only
+main notes are written and edited as anywhere; only Send is refused. The toolbar has the take
+menu and Play again (F5),
+which runs the reviewed take's project. Notes follow §8.3: `n` is never reused, and a mark's
+note goes at the mark, leaving a pending range alone. A pin's target is the smallest tracked
+box under it in the tick nearest the note, lifted to the nearest tracked physics body or area
+above it whose box also holds the pin. `markup.json` is the existing format, with `source.path`
+the take's video at `#t=<seconds>`. Errors and warnings within 10 s of a note go with it and
+are counted on its card; an error within 2 s of a mark shows beside the mark. The page fires
+`note_created` `{kind, from}` and `mark_dropped` `{source, recording}` (#314).
+
+Opening review from F7 waits for, in order: Stop's telemetry flush (600 ms at most), `take.json`,
+the encoder closing the MP4 (its index grows with the take), `play/take`, and the player's first
+frame. The telemetry, the log and the filmstrip load after that. The time from the F7 press,
+taken from the addon's key event, to that first frame is on the review's root as
+`data-open-ms`, and logged as `review of take … opened in N ms`. Read it with
+`pnpm probe --agent --server agent eval` inside the Play frame:
+`document.querySelector('.pl-review').dataset.openMs`.
+
 **Send** (`feedback.rs`) writes `.veistra/feedback/<take>-<n>/` with `packet.md` and per note
 `markup.png`, `markup.json`, `contact.png`, `frames/` and `context.json`, files each note as a
 comment with a `take` anchor, and the page attaches `packet.md` at the agent's prompt. Agents
 use `list_play_notes`, `start_play_note` and `resolve_play_note` on the workspace server, or
 on the context server from an agent tab.
 
+**Note status reaches panes by push** (#311). Every comment write is announced as
+`comments:changed` (`comment_events.rs`), relayed by each window's shell to the app frames of
+the clusters on that environment, and an app re-lists through `apps/shared/commentEvents.ts`.
+An agent's resolve is a Rust call no frame sees, so this is what turns an open card to "Fixed,
+check it". The same chokepoint reports `godot:note_fixed` and `godot:note_resolved` through
+`telemetry::track`, which hands the event to the main window's shell to check and send.
+
 ### Decisions
 
 | Decision | Chosen | Why, and what was rejected |
 |---|---|---|
 | R1 child window or R2 owned popup | R2, pending the Day 1 spike | Graphics Capture records the game window alone, never Veistra's UI. R1 (`SetParent`) is not built; the spike is where `CreateForWindow` on a child window gets tried. |
-| One Godot app or two | Two, with the shared toolbar | Scene · Play switches between the apps (`veistra/open`). Folding Play into the Godot app (open decision 1) is left for the owner; it is a move, not a rewrite. |
+| One Godot app or two (#313) | One app, two modes: Editor · Play (owner decision 1) | Play's UI moved into `apps/godot-viewer/ui/src/play/`, and one Rust entry answers both modes. The two apps that switched with `veistra/open` were rejected by the owner: a pane is the Godot app, and the mode is what it shows. |
 | Record default | Off | Takes cost disk (open decision 2's recommendation). |
 | Tracked nodes | The design's default, with geometry for its "VisualInstance3D" | `veistra_track` when it has members, else bodies, plus the geometry and sprites not inside one, in view by their box's centre, nearest 64. VisualInstance3D also takes in lights, probes and decals; a body's own mesh tracked beside it could take a pin that should name the body; and a character's origin is at its feet, below a frame that shows the rest of it (#312). |
 | Video clip in the packet | Not built | The agent reads the contact sheet; the checkbox is shown disabled with why. |
@@ -145,6 +179,18 @@ on the context server from an agent tab.
 | `WS_EX_TOOLWINDOW` on a placed window (#309) | Kept | `windows-capture` 2.0.1 skips tool windows only in `Window::enumerate` (`is_valid`); the recorder and the still build the item from the handle (`from_raw_hwnd`, then `CreateForWindow`), which does not check. To confirm in the spike run. |
 | Input queues under R2 (#309) | Detached once the window is owned (`AttachThreadInput(.., FALSE)`), as Godot's own embedding does | The owner link joins the two queues, so a hung game or a long editor import would stall Veistra's focus changes. |
 | Where play_embedded and play_embed_failed fire (#309) | Rust, once per run when the outcome settles, through `telemetry::track`: `{ms}` or `{cause}`; nothing for a game that closed first, or for Pop out. A run with no pane open settles when a pane first places it | The page sees the outcome only while a Play pane polls, so an agent's run would go uncounted. Counting "no pane" as a failure was rejected: nothing was tried, and agents' runs would swamp the failure rate. The shell forwards these once #311's `features/godot.ts` and `backendTrack.ts` are in. |
+| The `play` id (#313) | An alias in the registry: it serves the Godot app with `?mode=play`, shares its dispatch, keeps its own title and is left out of the Apps menu | Saved layouts, the Godot starting layout, presets, and agents' `veistra/open` and `app_call` name `play`, so deleting it would break them. An initial message to pick the mode was rejected: the bridge drops an event nobody listens for yet, and the mode must be known at first paint. |
+| Mode names and Editor before C1 (#313) | Editor · Play; `?mode=scene` still means Editor. Until C1, Editor is the read-only scene view, with one line saying the editor opens in its own window | The spec names the modes Editor · Play. C1 replaces Editor's content with the embedded editor, and C3 keeps the scene view as its fallback, so the view stays where it is. |
+| Which mode a pane opens in (#313) | The URL's first, then the pane's own choice, saved per pane instance in `localStorage` | A cluster switch unloads every frame and loads it afresh, and a Play pane must come back in Play over its game. Every Godot frame shares one origin, hence the instance in the key; with no instance nothing is kept. |
+| What the mode shell holds (#313) | The window rect, the overlays and an open's payload, caught from the first moment; the Godot status; Play's project and the live notes | The modes load lazily, the bridge keeps no event nobody listened for, and the shell sends an unchanged window rect only once, so a mode loaded later would never hear where it is. |
+| The status after a project move (#313) | Read again on every `project:changed`, and each mode reads what it took from the old root again | Read once at mount, the read-only banner and flag stayed on the main checkout's answer after the cluster moved to a worktree, which is where the banner sends people. |
+| Rec's disabled state (#313) | Off and blocked, Record is disabled with the reason as its title, and Ctrl R does nothing; on and blocked it stays clickable to turn Record off | §5.1 asks for a disabled state. Off and blocked opened the capture consent; Enable capture stays in the footer, where it always was, and the strip says why. |
+| Slot 5 (#313) | Pop out alone, always there, disabled with a reason when there is no game in the pane; Open in Godot is Editor's | A button that comes and goes shifts the toolbar as a run starts. Ctrl Shift O still opens the editor from Play until C1 embeds it. |
+| Slot 2 in Play (#313) | The project picker when there are several, then a scene picker from `godot-viewer/state`, the main scene first, disabled while running | There was no way to choose what F5 runs, though `play/run` takes a scene. Restart keeps the running scene, so a pick while running would not be honoured. |
+| The drawer's counts (#313) | Output counts every line; Errors counts what its tab lists, warnings with errors; the strip counts errors only | The Errors count was errors only while its tab listed warnings too. The strip says "errors", and counts those. |
+| Reload keys (#313) | F5 and Ctrl R are kept from WebView2 inside the Godot app, Shift F5 too; F5 in Editor turns to Play and runs, as Godot's Run Project does; each mode's root takes the focus back when it falls to the page | WebView2's reload unloads the pane and, in Play, the game's place in it. Ctrl R typed into a note reached the page. A focused button that left with its view dropped the focus where F5 is the reload. |
+| Comment pushes and the mark telemetry (#313) | Not wired here; #314 does both | The issue moves Play; the comment push (`useCommentsChanged`) and `mark_dropped` belong to review and its notes. |
+| The captured-mouse hint (#313) | The strip reads an optional `session.mouseCaptured`: "F7 stops and opens the take" while recording, "F7 stops the game." otherwise; absent reads as not captured | Spec §4.4. A game holding the mouse leaves nothing in the pane to click, and F7 is the key the addon forwards. #312's backend sends the field; this branch does not contain it, so the hint shows once the two meet. |
 | A game an agent started with no Play pane open (#309) | Its own window until a Play pane shows it; that pane places it when the window appears, or docks it at once if it is already up | Failing the pane's first box because the window had not shown yet left the game in its own frame for the whole run. The 10 s wait restarts when the pane opens: time with no pane had nothing to place the window in, and counting it kept a slow window out of a pane opened at 15 s while one opened at 25 s docked it. |
 | Where pick's physics query runs (#312) | `_physics_process`; the command poll only queues the pick | Godot makes the direct space state safe there alone: from `_process` it refuses with physics on its own thread, and Jolt refuses while it steps, so the pick fell back to boxes without saying why. The node runs while paused, so a pick still answers during Mark up. |
 | Exported builds (#312) | Inert whenever `OS.has_feature("template")` | Relying on a missing `--veistra-dir` alone was rejected: a shipped game started with the argument by hand would write telemetry and answer commands, against §5.5 rule 6 and the consent text. |
@@ -164,6 +210,15 @@ on the context server from an agent tab.
 | Takes that never finished (#310) | A folder with no `take.json`, untouched for an hour, goes at the next retention pass | Veistra closing mid-take left folders the list never shows. A recording take writes its video continuously, so an hour untouched is never one in progress. |
 | `take_recorded` (#310) | Fired in Rust once `take.json` is written: `durationS`, `marks`, `errors`, `warnings`, `width`, `height`, `dropped` | Decision X1. No file size: the video is still closing at that point. |
 | `recordOnce` (#310) | `play/run` and `play/restart` take it; it records that run and leaves the setting alone | Decision X9, for Play <scene> and Still broken. |
+| How note status reaches open panes (#311) | Pushed: `comments:changed` from the comment store's write chokepoint, relayed by the shell to the frames of every cluster on that environment | Polling in each pane was rejected: Review polls every 2 s and the other panes never saw an agent's fix. The file watcher was rejected: it watches only roots a Files frame asked for and fires on every write. Review's poll stays as the fallback. |
+| Where note_fixed and note_resolved fire (#311) | Rust, from the same chokepoint, through `telemetry::track` to the main window's shell, checked against the `godot` feature there | Tracking in a frame misses a fix made while no Play pane is open, and a broadcast is counted once per window. Capture stays in the webview (`docs/telemetry.md` §9). |
+| "Only the user sets resolved" (#311) | Enforced in `comments::resolve_with_commit`, with one write lock across read, edit and rename | Checks only in the MCP tools let a future caller undo a Looks good, and an agent's resolve racing a verdict lost one of them. |
+| Review's markup (#314) | `@veistra/markup`'s `MarkupLayer` over the paused frame, through `FrameMarkup.tsx`, which live mark up shares; not `useMarkup` | Decision X11. `useMarkup` owns the send to an agent, and a note's markup is kept in the note until Send. The layer gives the same `markup.json` and PNG, and `pick` names what a pin is on. |
+| A pin's recorded target (#314) | The smallest tracked box under the pin, lifted to the nearest tracked body or area above it whose box also holds the pin | Decision X11. The mesh's box is nearly always the smallest, so a pin on the enemy named `Enemy_02/Mesh` while a live pick, which hits the collider, names `Enemy_02`. A body whose box does not hold the pin is not lifted to. |
+| `note_created` and `mark_dropped` (#314) | Fired in the page through `apps/shared/telemetry.ts`: `{kind, from}` with `from` one of key, button, mark, markup or live; `{source, recording}` with `source` game, button or pane_key | Decision X1: short scalars, never a note's words. A live markup counts when it is kept, not when review folds it into the take. The game's F8 marks are counted by the poll from `f8Marks`, none from before the pane opened. |
+| Retention at Stop (#314) | On its own thread once the take is written; a note with no words and no markup is not a draft | Retention reads every take and can delete a video, which review was waiting behind. One N pressed and left empty kept a take past `keep` for good. |
+| Play again from review (#314) | The reviewed take's project, and the project picker follows | The take menu lists every project's takes, so Play again could run another game than the one reviewed. |
+| One `godot` telemetry feature (#311) | `features/godot.ts`, apps `godot-viewer` and `play`, all eight §13 events declared at once | One feature per app was rejected: `play` becomes a mode of the Godot app (#313), and an app may report for one feature only. Declared whole so later issues add calls, not list edits. |
 
 ### Not verified on a real machine
 
@@ -218,6 +273,47 @@ pass and the frame clock type-checked for Windows only:
 - A take whose machine has no hardware H.264 encoder (software fallback) keeps up at 30 fps;
   `dropped` in `take_recorded` says how many it did not.
 - `godot:take_recorded` reaching PostHog.
+
+From #313, tested in jsdom and type-checked for Windows only; no WebView2 or Godot ran:
+
+- The layout against the board at 1440 × 900 and at 1024 px wide: the five slots on one row,
+  the pickers giving way, the strip and drawer under the box, nothing of Veistra's inside it.
+  jsdom does no layout; only the CSS declarations are checked (`narrow.css.test.ts`).
+- F5, Shift F5, F6, F7, F8, Ctrl R and Ctrl Shift M with the pane focused in WebView2, and that
+  F5, Shift F5 and Ctrl R never reload the pane, in either mode. The focus returning to the
+  mode's root after Back to live or a mode switch was tested with `document.hasFocus` stubbed,
+  since jsdom forgets it when the focused element goes.
+- Switching a pane with an embedded game to Editor hides the game, and back to Play shows it in
+  the box; the scene picker's native dropdown hides the game while it is open.
+- A Play pane reloaded by a cluster switch comes back in Play, and an Editor pane in Editor
+  (`localStorage` per origin in WebView2).
+- The read-only banner going when the title bar's switcher or `set_project` moves the cluster
+  from the main checkout to a worktree.
+- The captured-mouse hint with a real game: it needs #312's backend, which sends
+  `mouseCaptured`, and a game that captures the mouse.
+
+From #314, tested in jsdom and type-checked only; no WebView2, video decoder or Godot ran:
+
+- Spec test 5: review within 2 s of F7 for a two-minute take of the demo (`data-open-ms`, above),
+  and in which step the time goes if not.
+- A pin on the enemy in a demo take naming `Hallway/Enemy_02`: the lift was tested on a tick
+  written by hand, not one the addon wrote.
+- The filmstrip drawn from a real take, through the asset protocol's CORS, with frames under
+  their times while it fills in; the player and Send's pictures not disturbed by it.
+- Arrow keys landing on the next decoded frame (WebView2 seeks to the nearest frame, which
+  may not be the next one when the video's timestamps are not on the 30 fps grid).
+- `godot:note_created` and `godot:mark_dropped` reaching PostHog.
+
+From #311, not yet run in a real Veistra (unit-tested only):
+
+- `comments:changed` reaching every window and being relayed into the right cluster's app
+  frames, including two clusters on one checkout and a cluster in a second window.
+- Spec test 7 end to end: an agent session calls `list_play_notes` and `resolve_play_note` and
+  an open card turns to "Fixed, check it" without a reload. The Blender Viewer and both modes
+  of the Godot app listen for the push (#314); Play's review keeps its 2 s poll as the fallback.
+- `telemetry:event` sent with `emit_to("main")` arriving once, in the main window's
+  window-targeted listener only, and `godot:note_fixed` / `godot:note_resolved` reaching
+  PostHog in a release build with a project key and consent on.
 
 ## The Godot Viewer
 

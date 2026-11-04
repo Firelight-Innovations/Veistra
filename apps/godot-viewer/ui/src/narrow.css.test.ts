@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 // `?raw` rather than node:fs: the app tsconfig carries no Node types.
-import godot from "./App.css?raw";
+import godot from "./SceneMode.css?raw";
 import toolbar from "../../../shared/viewer-toolbar.css?raw";
 
 /**

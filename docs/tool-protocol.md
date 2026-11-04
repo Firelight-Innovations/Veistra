@@ -402,8 +402,9 @@ dropped when its frame goes — a retained value from a surface that has closed
 would be replayed to the next one as though it were current.
 
 The `veistra:topic/` prefix is what keeps an app's topics from colliding with the
-shell's own push events (`project:changed`). A frame cannot publish under a name
-that would arrive looking like news the shell authored.
+shell's own push events (`project:changed`, `files:changed`, `comments:changed`). A
+frame cannot publish under a name that would arrive looking like news the shell
+authored.
 
 `value` is unvalidated, `undefined` included — publishing "there is nothing" is
 a real thing to say, and narrowing it to a refusal would leave the last real

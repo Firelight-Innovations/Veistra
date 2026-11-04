@@ -11,8 +11,9 @@ import type { Feature } from "../define";
 import { agentTab } from "./agentTab";
 import { feedback } from "./feedback";
 import { general } from "./general";
+import { godot } from "./godot";
 import { shell } from "./shell";
 
-export { agentTab, feedback, general, shell };
+export { agentTab, feedback, general, godot, shell };
 
-export const FEATURES: readonly Feature[] = [general, agentTab, shell, feedback];
+export const FEATURES: readonly Feature[] = [general, agentTab, godot, shell, feedback];
