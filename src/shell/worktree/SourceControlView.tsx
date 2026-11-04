@@ -18,7 +18,7 @@
  * motion section is explicit that this list stays at native scroll speed.
  */
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
-import { isTomlPath, TOML_LANGUAGE_ID } from "@veistra/monaco-languages";
+import { languageIdForPath } from "@veistra/monaco-languages";
 import type { GitControl, GitDiff, GitFileChange, ReviewControl, ReviewSend } from "../contract";
 import { GIT_KIND_LETTER, GIT_KIND_TOKEN } from "../contract";
 import { READ_ONLY_HINT } from "../environment";
@@ -290,7 +290,7 @@ export default function SourceControlView({
                 <AnnotatedDiff
                   original={diff.original}
                   modified={diff.modified}
-                  language={isTomlPath(selected.path) ? TOML_LANGUAGE_ID : undefined}
+                  language={languageIdForPath(selected.path)}
                   renderSideBySide={false}
                   path={selected.path}
                   scope={selected.staged ? "staged" : "unstaged"}

@@ -16,7 +16,7 @@
 import { useEffect, useRef, useState } from "react";
 import * as monaco from "monaco-editor/editor/editor.api";
 import EditorWorker from "monaco-editor/editor/editor.worker?worker";
-import { registerToml } from "@veistra/monaco-languages";
+import { registerLanguages } from "@veistra/monaco-languages";
 import { hexWithAlpha, monacoThemeData } from "@veistra/bridge/theme";
 import { onThemeChange } from "../themeBroadcast";
 import { anchorFor, countLabel, markAtLine, type LineDecoration } from "./reviewComments";
@@ -31,14 +31,15 @@ self.MonacoEnvironment = {
   getWorker: () => new EditorWorker(),
 };
 
-// TOML, the only language this editor can tokenize — see the file header for
-// why it is the only one and why that is deliberate rather than partial.
+// TOML, GDScript and Godot's resource format — the hand-written grammars, and
+// the only languages this editor can tokenize. See the file header for why
+// Monaco's bundled ones are deliberately absent.
 //
 // Idempotent: `search/previewMonaco.ts` calls this too and is shell-side like
 // this module, so both chunks can be live in one JS context and would
 // otherwise register the same id twice against one global registry. The guard
 // lives in `@veistra/monaco-languages` so neither caller has to remember.
-registerToml(monaco);
+registerLanguages(monaco);
 
 // Defined once at module scope, not per-mount — `defineTheme` writes into
 // Monaco's global theme registry, so redefining it on every DiffView mount
@@ -107,10 +108,11 @@ export interface DiffAnnotations {
 export interface DiffViewProps {
   original: string;
   modified: string;
-  /** Passed straight to Monaco's model, but only `"toml"` actually tokenizes
-   *  here; everything else renders as plain text until someone decides this
-   *  editor should carry Monaco's bundled grammars. `@veistra/monaco-languages`'s
-   *  `isTomlPath` is how a caller with a path and no Monaco import decides. */
+  /** Passed straight to Monaco's model, but only `@veistra/monaco-languages`'
+   *  grammars (TOML, GDScript, Godot resources) tokenize here; everything else
+   *  renders as plain text until someone decides this editor should carry
+   *  Monaco's bundled grammars. That package's `languageIdForPath` is how a
+   *  caller with a path and no Monaco import decides. */
   language?: string;
   /** Two columns, or one with removals and additions interleaved. Defaults to
    *  two because that is what a diff opened in the tool window wants. The

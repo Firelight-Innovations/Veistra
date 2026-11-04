@@ -27,7 +27,8 @@ import * as monaco from "monaco-editor/editor/editor.api";
  * Unlike Files' list there is no `features/register.all`: a read-only glance
  * pane needs no find widget, context menu, folding or multi-cursor.
  *
- * TOML is absent because it is not one of Monaco's — see `registerToml` below.
+ * TOML, GDScript and Godot's resource format are absent because they are not
+ * Monaco's — see `registerLanguages` below.
  */
 import "monaco-editor/languages/definitions/rust/register";
 import "monaco-editor/languages/definitions/typescript/register";
@@ -54,7 +55,7 @@ import "monaco-editor/languages/definitions/ini/register";
  */
 import { jsonDefaults } from "monaco-editor/languages/features/json/register";
 
-import { registerToml } from "@veistra/monaco-languages";
+import { registerLanguages } from "@veistra/monaco-languages";
 import { monacoThemeData } from "@veistra/bridge/theme";
 import { onThemeChange } from "../themeBroadcast";
 
@@ -85,18 +86,19 @@ jsonDefaults.setDiagnosticsOptions({
 });
 
 /**
- * TOML, the one language here that Monaco does not ship at all. It matters more
- * than its file count suggests: `veistra.toml` and `<project>.veistra` are the
- * format behind an entire quarter of the search filter — the Veistra kind in
+ * TOML, GDScript and Godot's `.tscn`/`.tres` format, which Monaco does not ship
+ * at all. TOML matters more than its file count suggests: `veistra.toml` and
+ * `<project>.veistra` are the format behind an entire quarter of the search
+ * filter — the Veistra kind in
  * `./kinds.ts` is, today, exactly these two files — so flat grey text would
  * have made the one file type this product names after itself the one file type
  * it could not colour.
  *
- * `registerToml` is idempotent by design; `@veistra/monaco-languages`'s header
+ * `registerLanguages` is idempotent by design; `@veistra/monaco-languages`'s header
  * explains why that guard exists rather than being belt-and-braces:
  * `diff/DiffView.tsx` calls it too, and shares this module's JS context.
  */
-registerToml(monaco);
+registerLanguages(monaco);
 
 /**
  * Extension → language id, restated from `LANGUAGE_BY_EXTENSION` in Files'
@@ -155,6 +157,12 @@ const LANGUAGE_BY_EXTENSION: Record<string, string> = {
    */
   toml: "toml",
   veistra: "toml",
+
+  gd: "gdscript",
+  tscn: "godot-resource",
+  tres: "godot-resource",
+  godot: "godot-resource",
+  import: "godot-resource",
 };
 
 /** The Monaco language id for a file, or `undefined` for plain text. */
