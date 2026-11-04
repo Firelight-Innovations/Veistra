@@ -14,8 +14,8 @@
  */
 import { lazy, Suspense, useEffect, useRef } from "react";
 import type { MarkupExport } from "@veistra/markup/layer";
-import type { WindowRect } from "../../../shared/nativeBox";
-import { useNativeBox } from "../../../shared/useNativeBox";
+import type { WindowRect } from "../../../../shared/nativeBox";
+import { useNativeBox } from "../../../../shared/useNativeBox";
 import { clock } from "./frames";
 import { embedRect, still, type LogLine, type Session } from "./rpc";
 

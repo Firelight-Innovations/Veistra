@@ -4,6 +4,9 @@
  * `context/put` the buttons used to: the log tail, and the captured frame.
  * Then the live view's own: Record, the keys the addon reports, and the
  * game box stepping aside for an overlay.
+ *
+ * Play is a mode of the Godot app now, so each test renders the app's shell
+ * the way the `play` id opens it, with `?mode=play`.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -21,9 +24,13 @@ vi.mock("@veistra/bridge", () => ({
     events.set(event, cb);
     return () => events.delete(event);
   },
+  session: () => Promise.resolve({ projectPath: null, instanceId: "i1" }),
 }));
 
-import App from "./App";
+import App from "../App";
+// The shell loads Play lazily; loading it here keeps that import inside a
+// test's first wait.
+import "./PlayMode";
 
 const RUN = {
   id: 1,
@@ -78,6 +85,8 @@ const puts = () => bridge.invoke.mock.calls.filter((c) => c[0] === "context/put"
 beforeEach(() => {
   bridge.invoke.mockReset();
   events.clear();
+  localStorage.clear();
+  history.replaceState({}, "", "?mode=play");
   // jsdom has no ResizeObserver; the game box only needs one to exist.
   globalThis.ResizeObserver = class {
     observe() {}
@@ -339,8 +348,19 @@ describe("Play live view", () => {
       take: { state: "off" },
       projects: [project("game"), project("demo")],
     });
+    // The shell reads the status now, often before Play has mounted, so it is
+    // held here to see the poll Play sends before it knows any project.
+    const answer = bridge.invoke.getMockImplementation()!;
+    let releaseStatus = () => undefined as void;
+    bridge.invoke.mockImplementation((method: string, params?: unknown) =>
+      method === "godot/status"
+        ? new Promise((r) => (releaseStatus = () => r(answer(method, params))))
+        : answer(method, params),
+    );
     render(<App />);
+    await waitFor(() => expect(calls("play/state").length).toBeGreaterThan(0));
     expect(calls("play/state")[0][1]).not.toHaveProperty("project", expect.anything());
+    releaseStatus();
     const picker = await screen.findByRole("combobox", { name: "Godot project" });
     await waitFor(() => expect(lastParams("play/state")?.project).toBe("game"), { timeout: 2000 });
     fireEvent.change(picker, { target: { value: "demo" } });

@@ -3,7 +3,7 @@
  * sheet's times and the keys. The game box's geometry is `apps/shared/nativeBox.ts`'s.
  */
 import { describe, expect, it } from "vitest";
-import type { Comment } from "../../../shared/comments";
+import type { Comment } from "../../../../shared/comments";
 import { CONTACT_MAX, clock, contactLayout, contactTimes } from "./frames";
 import { liveAction, reviewAction } from "./keys";
 import {

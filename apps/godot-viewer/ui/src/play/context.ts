@@ -5,11 +5,11 @@
  * called and what it becomes, so the buttons and the drag share one path.
  */
 import { invoke } from "@veistra/bridge";
-import { formatPlayTime } from "../../../shared/comments";
-import { contextKey, type ContextRef } from "../../../shared/context";
+import { formatPlayTime } from "../../../../shared/comments";
+import { contextKey, type ContextRef } from "../../../../shared/context";
 import type { Capture, LogLine } from "./rpc";
 
-export { dragContext } from "../../../shared/context";
+export { dragContext } from "../../../../shared/context";
 
 /** Lines of the log an agent gets; enough for a stack trace, not a session. */
 export const LOG_TAIL = 300;

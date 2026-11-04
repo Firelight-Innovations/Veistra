@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from "vitest";
 // `?raw` rather than node:fs: the app tsconfig carries no Node types.
-import script from "../../../../src-tauri/src/godot/veistra_capture.gd?raw";
+import script from "../../../../../src-tauri/src/godot/veistra_capture.gd?raw";
 
 /** One function, from its `func` line to the next line that starts at column zero. */
 function fn(name: string): string {

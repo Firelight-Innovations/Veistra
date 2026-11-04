@@ -6,7 +6,7 @@
  * lanes need no measuring and stay lined up at any width.
  */
 import { useRef } from "react";
-import type { Status } from "../../../shared/comments";
+import type { Status } from "../../../../shared/comments";
 import { clock } from "./frames";
 import type { LogRow } from "./notes";
 

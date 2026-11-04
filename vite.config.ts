@@ -119,7 +119,6 @@ export default defineConfig(async ({ mode }) => ({
         viewer: resolve(__dirname, "apps/viewer/ui/index.html"),
         "godot-viewer": resolve(__dirname, "apps/godot-viewer/ui/index.html"),
         "blender-viewer": resolve(__dirname, "apps/blender-viewer/ui/index.html"),
-        play: resolve(__dirname, "apps/play/ui/index.html"),
         canvas: resolve(__dirname, "apps/canvas/ui/index.html"),
         tutorial: resolve(__dirname, "apps/tutorial/ui/index.html"),
         agents: resolve(__dirname, "apps/agents/ui/index.html"),

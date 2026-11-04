@@ -1,7 +1,9 @@
 /**
- * Play: run the environment's game inside this pane, record runs as takes,
- * mark them, review them and send the notes to an agent (design "Play, Scene
- * and Blender views", §3 to §10).
+ * The Godot app's Play mode: run the environment's game inside this pane,
+ * record runs as takes, mark them, review them and send the notes to an agent
+ * (design "Play, Scene and Blender views", §3 to §10). The shell (`../App.tsx`)
+ * hands it where the frame is, the Godot status and what outlives a switch to
+ * Editor: the chosen project and the notes drawn on the live game.
  *
  * Two views share the toolbar: live, with the game over the pane and the live
  * strip under it, and review, of one take. Where the game cannot be placed
@@ -12,8 +14,16 @@
  * cursor for the log and one for the keys the addon handled (F7 stops and
  * opens review; Ctrl Shift M marks up the live frame).
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { OPENED_EVENT, on, openIn, reportPainted } from "@veistra/bridge";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
+import { reportPainted } from "@veistra/bridge";
 import {
   Camera,
   ExternalLink,
@@ -28,7 +38,7 @@ import {
   Square,
 } from "lucide-react";
 import type { MarkupExport } from "@veistra/markup/layer";
-import { CommentPanel } from "../../../shared/CommentPanel";
+import { CommentPanel } from "../../../../shared/CommentPanel";
 import {
   createComment,
   listComments,
@@ -36,17 +46,17 @@ import {
   verdictComment,
   formatPlayTime,
   type Comment,
-} from "../../../shared/comments";
-import { errorText, getStatus, openInGodot, type GodotStatus } from "../../../shared/godot";
-import { blobBase64, sendMarkup } from "../../../shared/markupFlow";
-import { SendButton, SendFooter, useSendAction } from "../../../shared/SendFooter";
-import { useShellPlacement } from "../../../shared/useNativeBox";
+} from "../../../../shared/comments";
+import { errorText, openInGodot } from "../../../../shared/godot";
+import type { WindowRect } from "../../../../shared/nativeBox";
+import { blobBase64, sendMarkup } from "../../../../shared/markupFlow";
+import { SendButton, SendFooter, useSendAction } from "../../../../shared/SendFooter";
 import {
   ToolbarButton,
   ToolbarChip,
   ViewerToolbar,
   type ToolbarStatus,
-} from "../../../shared/ViewerToolbar";
+} from "../../../../shared/ViewerToolbar";
 import { clock } from "./frames";
 import { isTyping, liveAction } from "./keys";
 import { LiveStrip, LiveView, LogView, type LiveMarking } from "./LiveView";
@@ -76,7 +86,9 @@ import {
   type RunInfo,
 } from "./rpc";
 import { dragContext, putLog, putShot } from "./context";
-import "./App.css";
+import type { RunRequest } from "../App";
+import type { ModeProps } from "../modes";
+import "./play.css";
 
 /** Lines kept in the pane; the backend keeps its own, larger, bound. */
 const LOG_KEEP = 2000;
@@ -112,9 +124,25 @@ function pinCentres(json: MarkupExport["json"]): { n: number; x: number; y: numb
   return out;
 }
 
-export default function App() {
-  const [status, setStatus] = useState<GodotStatus | null>(null);
-  const [project, setProject] = useState<string | undefined>(undefined);
+export interface PlayModeProps extends ModeProps {
+  /** Where this frame is in its window (`veistra/window-rect`); `null` until the shell says. */
+  frameRect: WindowRect | null;
+  /** The shell's open overlays (`veistra/overlays`). */
+  overlays: WindowRect[];
+  /** The project chosen in this pane, by its picker or by Play scene. */
+  project: string | undefined;
+  onProject: (rel: string) => void;
+  /** Live mark-up notes for the take being recorded, kept by the shell across a switch. */
+  liveNotes: LiveNote[];
+  setLiveNotes: Dispatch<SetStateAction<LiveNote[]>>;
+  /** A scene to run now, from Play scene or an open. */
+  runRequest: RunRequest | null;
+  onRunHandled: (n: number) => void;
+}
+
+export default function PlayMode(props: PlayModeProps) {
+  const { status, statusError, reloadStatus, frameRect, overlays, project, liveNotes } = props;
+  const { onProject: setProject, setLiveNotes, runRequest, onRunHandled } = props;
   const [info, setInfo] = useState<RunInfo | null>(null);
   const [live, setLive] = useState<Live | null>(null);
   const [lines, setLines] = useState<LogLine[]>([]);
@@ -131,13 +159,10 @@ export default function App() {
   const [posting, setPosting] = useState(false);
   const [view, setView] = useState<View>({ kind: "live" });
   const [takes, setTakes] = useState<ListedTake[]>([]);
-  // Where this iframe is in the window, and what the shell draws over it.
-  const { frameRect, overlays } = useShellPlacement();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [marking, setMarking] = useState<
     (LiveMarking & { atWall: number; wasPaused: boolean }) | null
   >(null);
-  const [liveNotes, setLiveNotes] = useState<LiveNote[]>([]);
   const [drawer, setDrawer] = useState<Drawer>("closed");
   const [now, setNow] = useState(() => Date.now());
   const cursor = useRef(0);
@@ -182,15 +207,6 @@ export default function App() {
     }
   }, []);
 
-  const loadStatus = useCallback(async (refresh: boolean) => {
-    try {
-      setStatus(await getStatus(refresh));
-      setProblem(null);
-    } catch (e) {
-      setProblem(errorText(e));
-    }
-  }, []);
-
   const loadAddon = useCallback(async (rel: string | undefined) => {
     try {
       setAddon(await addonStatus(rel));
@@ -208,11 +224,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    void loadStatus(false);
     void refreshComments();
     void loadTakes();
     reportPainted();
-  }, [loadStatus, refreshComments, loadTakes]);
+  }, [refreshComments, loadTakes]);
 
   useEffect(() => {
     if (chosenRel !== undefined) void loadAddon(chosenRel);
@@ -333,21 +348,17 @@ export default function App() {
     [chosenRel, guarded],
   );
 
-  // Play scene, from the Godot viewer: it opens this app with the scene and
-  // the project the viewer has chosen. A `res://` path means nothing without
-  // its project, so in an environment holding several, running it against
-  // whichever project this pane last picked would play the wrong game.
-  useEffect(
-    () =>
-      on(OPENED_EVENT, (p) => {
-        const { scene, project: rel } = (p ?? {}) as { scene?: unknown; project?: unknown };
-        if (typeof scene !== "string" || !scene.startsWith("res://")) return;
-        const projectRel = typeof rel === "string" && rel !== "" ? rel : undefined;
-        if (projectRel !== undefined) setProject(projectRel);
-        void start(scene, projectRel);
-      }),
-    [start],
-  );
+  // Play scene, from Editor mode or another pane, names its project: a
+  // `res://` path means nothing without one, so in an environment holding
+  // several, running it against whichever project this pane last picked would
+  // play the wrong game. Each request runs once, however often Play mounts.
+  const ranRequest = useRef(0);
+  useEffect(() => {
+    if (!runRequest || runRequest.n <= ranRequest.current) return;
+    ranRequest.current = runRequest.n;
+    onRunHandled(runRequest.n);
+    void start(runRequest.scene, runRequest.project);
+  }, [runRequest, onRunHandled, start]);
 
   const doRestart = useCallback(
     () =>
@@ -502,7 +513,7 @@ export default function App() {
       }
       await endLiveMarkup(false);
     },
-    [marking, take, session, guarded, info, endLiveMarkup],
+    [marking, take, session, guarded, info, endLiveMarkup, setLiveNotes],
   );
 
   actions.current = {
@@ -528,7 +539,7 @@ export default function App() {
 
   const onLiveNotesTaken = useCallback(
     (id: string) => setLiveNotes((notes) => notes.filter((n) => n.take !== id)),
-    [],
+    [setLiveNotes],
   );
 
   const doOpenEditor = useCallback(
@@ -539,7 +550,7 @@ export default function App() {
   const changeAddon = async (install: boolean) => {
     await guarded(async () => {
       setAddon(install ? await installAddon(chosenRel) : await removeAddon(chosenRel));
-      await loadStatus(false);
+      await reloadStatus(false);
     });
     setConsentOpen(false);
   };
@@ -854,6 +865,7 @@ export default function App() {
 
   const showNotices =
     problem !== null ||
+    statusError !== null ||
     notice !== null ||
     (status !== null && (!found || projects.length === 0 || readOnly));
 
@@ -867,16 +879,7 @@ export default function App() {
     <div className="pl" tabIndex={0} onKeyDown={onKeyDown}>
       <ViewerToolbar
         label="Godot"
-        mode={{
-          value: "play",
-          options: [
-            { value: "scene", label: "Scene" },
-            { value: "play", label: "Play" },
-          ],
-          onChange: (v) => {
-            if (v === "scene") void openIn("godot-viewer", { scene: info?.scene ?? undefined });
-          },
-        }}
+        mode={props.modeSwitch}
         subject={subject}
         controls={view.kind === "live" ? transport : undefined}
         status={chip}
@@ -887,6 +890,7 @@ export default function App() {
       {showNotices && (
         <div className="pl__notices">
           {problem && <p className="pl__notice pl__notice--error">{problem}</p>}
+          {statusError && <p className="pl__notice pl__notice--error">{statusError}</p>}
           {notice && (
             <p className="pl__notice">
               {notice}{" "}
@@ -900,7 +904,7 @@ export default function App() {
               Godot 4 was not found.
               {status.executable.problems.length > 0 && ` ${status.executable.problems[0]}`} Set its
               path under Settings, Godot, or put it on PATH.{" "}
-              <button type="button" className="pl__link" onClick={() => void loadStatus(true)}>
+              <button type="button" className="pl__link" onClick={() => void reloadStatus(true)}>
                 Check again
               </button>
             </p>

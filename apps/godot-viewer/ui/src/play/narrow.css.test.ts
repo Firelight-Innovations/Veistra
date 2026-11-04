@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 // `?raw` rather than node:fs: the app tsconfig carries no Node types.
-import play from "./App.css?raw";
-import footer from "../../../shared/send-footer.css?raw";
-import toolbar from "../../../shared/viewer-toolbar.css?raw";
+import play from "./play.css?raw";
+import footer from "../../../../shared/send-footer.css?raw";
+import toolbar from "../../../../shared/viewer-toolbar.css?raw";
 
 /**
  * Structure checks for the narrow-pane layout. jsdom does no layout, so these

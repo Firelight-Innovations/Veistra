@@ -7,11 +7,17 @@
  *
  * The header is the shared viewer toolbar: mode, scene picker, a freshness
  * chip, the scene actions with Play scene, and Open in Godot to leave.
+ *
+ * This is the Godot app in Editor mode, which is the scene view until the
+ * editor can open in the pane, rendered through the app's shell as a pane
+ * opens it.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 const bridge = vi.hoisted(() => ({ invoke: vi.fn() }));
+
+const events = vi.hoisted(() => new Map<string, (payload: unknown) => void>());
 
 // `openIn` sends `veistra/open` exactly as the real client does
 // (`packages/bridge/src/client.ts`), so a test can assert the wire request.
@@ -19,9 +25,19 @@ vi.mock("@veistra/bridge", () => ({
   invoke: bridge.invoke,
   reportPainted: vi.fn(),
   openIn: (appId: string, payload?: unknown) => bridge.invoke("veistra/open", { appId, payload }),
+  OPENED_EVENT: "veistra:opened",
+  on: (event: string, cb: (payload: unknown) => void) => {
+    events.set(event, cb);
+    return () => events.delete(event);
+  },
+  session: () => Promise.resolve({ projectPath: null, instanceId: "i1" }),
 }));
 
-import App from "./SceneMode";
+import App from "./App";
+// The shell loads both modes lazily; loading them here keeps those imports
+// inside a test's first wait.
+import "./SceneMode";
+import "./play/PlayMode";
 
 const STATE = {
   project: ".",
@@ -72,7 +88,20 @@ function comment(id: string, anchor: object, status = "open") {
   return { id, anchor, author: "user", body: id, status, created: 1, updated: 1 };
 }
 
-beforeEach(() => bridge.invoke.mockReset());
+beforeEach(() => {
+  bridge.invoke.mockReset();
+  events.clear();
+  localStorage.clear();
+  history.replaceState({}, "", "/");
+  // Play's game box needs a ResizeObserver to exist and its log pane calls
+  // scrollIntoView; jsdom has neither.
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+  Element.prototype.scrollIntoView = vi.fn();
+});
 afterEach(cleanup);
 
 describe("Godot Viewer send footer", () => {
@@ -116,7 +145,7 @@ describe("Godot Viewer toolbar", () => {
     const { container } = render(<App />);
     const bar = await screen.findByRole("toolbar", { name: "Godot" });
     const inBar = within(bar);
-    expect(inBar.getByRole("tab", { name: "Scene" }).getAttribute("aria-selected")).toBe("true");
+    expect(inBar.getByRole("tab", { name: "Editor" }).getAttribute("aria-selected")).toBe("true");
     expect(inBar.getByRole("tab", { name: "Play" })).toBeTruthy();
     const picker = (await inBar.findByRole("combobox", { name: "Scene" })) as HTMLSelectElement;
     expect(picker.value).toBe("res://main.tscn");
@@ -140,19 +169,26 @@ describe("Godot Viewer toolbar", () => {
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Not read yet"));
   });
 
-  it("opens Play on the selected scene, in this viewer's project, with veistra/open", async () => {
-    // A project other than the environment root, so the payload cannot be
-    // right by Play falling back to the first project it finds.
+  // Play scene opened the separate Play app with `veistra/open` while there
+  // were two apps; with one (owner decision 1), this pane turns to Play.
+  it("plays the selected scene, in this pane's project, by turning to Play", async () => {
+    // A project other than the environment root, so the run cannot be right
+    // by Play falling back to the first project it finds.
     backend(undefined, { state: { project: "games/hall" } });
     render(<App />);
     const play = await screen.findByRole("button", { name: "Play scene" });
     await waitFor(() => expect((play as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(play);
-    await waitFor(() => expect(calls("veistra/open")).toHaveLength(1));
-    expect(calls("veistra/open")[0]![1]).toEqual({
-      appId: "play",
-      payload: { scene: "res://main.tscn", project: "games/hall" },
+    await waitFor(() => expect(calls("play/run")).toHaveLength(1));
+    expect(calls("play/run")[0]![1]).toMatchObject({
+      scene: "res://main.tscn",
+      project: "games/hall",
     });
+    const bar = await screen.findByRole("toolbar", { name: "Godot" });
+    expect(within(bar).getByRole("tab", { name: "Play" }).getAttribute("aria-selected")).toBe(
+      "true",
+    );
+    expect(calls("veistra/open")).toHaveLength(0);
   });
 
   it("will not play sample data", async () => {

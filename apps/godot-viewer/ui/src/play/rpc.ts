@@ -6,10 +6,10 @@
  * (`apps/shared/nativeWindow.ts`), with take side effects of their own.
  */
 import { invoke } from "@veistra/bridge";
-import type { AddonState } from "../../../shared/godot";
-import type { Comment } from "../../../shared/comments";
-import type { Rect } from "../../../shared/nativeBox";
-import type { EmbedState } from "../../../shared/nativeWindow";
+import type { AddonState } from "../../../../shared/godot";
+import type { Comment } from "../../../../shared/comments";
+import type { Rect } from "../../../../shared/nativeBox";
+import type { EmbedState } from "../../../../shared/nativeWindow";
 import type { NotesDoc } from "./notes";
 
 export type RunState =
@@ -47,7 +47,7 @@ export interface LogSlice {
 }
 
 /** Where the game's window is (`embed::State`), with the same causes as an editor's. */
-export type { EmbedCause, EmbedState } from "../../../shared/nativeWindow";
+export type { EmbedCause, EmbedState } from "../../../../shared/nativeWindow";
 
 /** Where this run's take is (`session::TakeState`). */
 export type TakeState =
@@ -152,7 +152,7 @@ export interface Sent {
   comments: [number, string][];
 }
 
-export type { Rect } from "../../../shared/nativeBox";
+export type { Rect } from "../../../../shared/nativeBox";
 
 /**
  * `project` is the pane's chosen project as `godot/status` names it, undefined

@@ -21,10 +21,10 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { invoke } from "@veistra/bridge";
 import { Pause, Play as PlayIcon, SkipBack, SkipForward, PenLine } from "lucide-react";
 import type { MarkupExport } from "@veistra/markup/layer";
-import { verdictComment, type Comment, type Verdict } from "../../../shared/comments";
-import { contextKey, type ContextRef } from "../../../shared/context";
-import { blobBase64 } from "../../../shared/markupFlow";
-import { errorText } from "../../../shared/godot";
+import { verdictComment, type Comment, type Verdict } from "../../../../shared/comments";
+import { contextKey, type ContextRef } from "../../../../shared/context";
+import { blobBase64 } from "../../../../shared/markupFlow";
+import { errorText } from "../../../../shared/godot";
 import { clock, contactSheet, contactTimes, filmstrip, grab } from "./frames";
 import { reviewAction, isTyping } from "./keys";
 import {
