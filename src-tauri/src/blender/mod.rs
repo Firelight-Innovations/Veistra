@@ -1,22 +1,30 @@
-//! Blender, as far as Veistra goes: find it, launch it, and run it headless.
+//! Blender, as far as Veistra goes: find it, run it in a pane, and run it
+//! headless.
 //!
-//! `docs/VEISTRA-UX-REWORK.md` §3.1: Blender is never embedded. Two things are
-//! done with it. "Open in Blender" starts the real editor, detached, so closing
-//! Veistra never closes a scene someone is editing. And an *export* runs
-//! `blender -b` on a `.blend` with the bundled `export.py`, which writes a
-//! `.glb`, a few preview renders and a parts list into a cache under
-//! `<environment>/.veistra/blender/`. The viewer shows that cache and how old it
-//! is; it never reads the live scene.
+//! The person works in their own Blender inside the Blender app's pane
+//! ([`editor`], #317; owner decision 6 replaces `docs/VEISTRA-UX-REWORK.md`
+//! §3.1's "never embedded"): started on the file with the boot script, its
+//! window placed over the pane, released and never killed. While it has a
+//! file open, [`lock`] says so, and nothing Veistra runs saves over that file.
 //!
-//! The cache is Veistra state, so it is written even on a read-only `main`. A
-//! `.glb` *into the checkout* (the `blender.exportDir` setting) is not, and is
-//! refused there.
+//! An *export* runs `blender -b` on a `.blend` with the bundled `export.py`,
+//! which writes a `.glb`, a few preview renders and a parts list. Each one,
+//! the person's or an agent's, is kept as a numbered version ([`versions`]),
+//! so an agent can export while the person edits: it only reads the saved
+//! file. Renders shows the newest; it never reads the live scene.
+//!
+//! The versions are Veistra state, so they are written even on a read-only
+//! `main`, under the app's data. A `.glb` *into the checkout* (the
+//! `blender.exportDir` setting) is not, and is refused there.
 
 pub mod detect;
+pub mod editor;
 pub mod job;
+pub mod lock;
+pub mod versions;
 
 use crate::settings::{Applies, Control, Group, SelectOption, Setting};
-use job::{PartEntry, RenderEntry, ScriptResult};
+use job::{PartEntry, RenderEntry};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -27,6 +35,11 @@ use std::time::UNIX_EPOCH;
 /// The script `blender -b` runs. Compiled in and written next to the cache on
 /// every export, so the file on disk can never be older than the build.
 pub const EXPORT_SCRIPT: &str = include_str!("export.py");
+
+/// The script Blender in a pane starts with (`--python`): it answers Veistra
+/// over the channel folder and installs nothing. Written into the channel at
+/// each launch, so it is always this build's.
+pub const BOOT_SCRIPT: &str = include_str!("veistra_boot.py");
 
 pub mod keys {
     pub const EXECUTABLE: &str = "blender.executable";
@@ -168,12 +181,15 @@ pub fn cache_root(project: &Path) -> PathBuf {
 pub fn cache_root_in(project: &Path, outside: Option<&Path>) -> PathBuf {
     match outside {
         None => cache_root(project),
-        Some(dir) => {
-            let digest = Sha256::digest(project.to_string_lossy().as_bytes());
-            let hex: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
-            dir.join("blender").join(hex)
-        }
+        Some(dir) => dir.join("blender").join(project_hash(project)),
     }
+}
+
+/// Twelve hex digits of a hash of the project's path: the key for anything
+/// Veistra keeps about the read-only main outside it.
+pub fn project_hash(project: &Path) -> String {
+    let digest = Sha256::digest(project.to_string_lossy().as_bytes());
+    digest.iter().take(6).map(|b| format!("{b:02x}")).collect()
 }
 
 /// The `.blend` path as written relative to the project, with forward slashes,
@@ -289,17 +305,13 @@ pub fn read_markup(cache: &Path) -> Option<Markup> {
     })
 }
 
-/// Where the `.glb` goes: `exportDir/<stem>.glb` when configured, otherwise the
-/// cache. `exportDir` must stay inside the project.
-pub fn glb_target(
-    project: &Path,
-    cache: &Path,
-    rel: &str,
-    export_dir: &str,
-) -> Result<PathBuf, String> {
+/// Where a copy of the `.glb` goes besides its version folder:
+/// `exportDir/<stem>.glb` when that setting names a folder, `None` when it is
+/// empty. `exportDir` must stay inside the project.
+pub fn export_copy(project: &Path, rel: &str, export_dir: &str) -> Result<Option<PathBuf>, String> {
     let export_dir = export_dir.trim().trim_matches(['/', '\\']);
     if export_dir.is_empty() {
-        return Ok(cache.join("model.glb"));
+        return Ok(None);
     }
     let dir = Path::new(export_dir);
     let escapes = dir.is_absolute()
@@ -318,74 +330,11 @@ pub fn glb_target(
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "model".into());
-    Ok(project.join(dir).join(format!("{stem}.glb")))
-}
-
-/// Move a finished run's scratch output into place and write the manifest last,
-/// so a reader never sees a manifest pointing at half-moved files.
-pub fn commit(
-    cache: &Path,
-    pending: &Path,
-    glb_target: &Path,
-    result: &ScriptResult,
-    manifest_base: Manifest,
-) -> Result<Manifest, String> {
-    let io = |what: &str, e: std::io::Error| format!("{what}: {e}");
-    let renders_dir = cache.join("renders");
-    std::fs::create_dir_all(&renders_dir).map_err(|e| io("could not create the cache", e))?;
-    // Keeps the cache out of the environment's git history without touching
-    // the environment's own .gitignore.
-    let _ = std::fs::write(cache_root_of(cache).join(".gitignore"), "*\n");
-
-    if let Ok(old) = std::fs::read_dir(&renders_dir) {
-        for entry in old.flatten() {
-            let _ = std::fs::remove_file(entry.path());
-        }
-    }
-    for render in &result.renders {
-        move_file(&pending.join(&render.file), &renders_dir.join(&render.file))
-            .map_err(|e| io("could not keep a render", e))?;
-    }
-
-    let (glb, glb_bytes) = match &result.glb {
-        Some(name) => {
-            if let Some(dir) = glb_target.parent() {
-                std::fs::create_dir_all(dir)
-                    .map_err(|e| io("could not create the export folder", e))?;
-            }
-            move_file(&pending.join(name), glb_target)
-                .map_err(|e| io("could not keep the .glb", e))?;
-            let bytes = std::fs::metadata(glb_target).ok().map(|m| m.len());
-            (Some(glb_target.display().to_string()), bytes)
-        }
-        None => (None, None),
-    };
-
-    let manifest = Manifest {
-        glb,
-        glb_bytes,
-        renders: result.renders.clone(),
-        parts: result.parts.clone(),
-        stats: result.stats.clone(),
-        warnings: result.warnings.clone(),
-        blender_version: result.blender_version.clone(),
-        exported_at: job::now_ms(),
-        ..manifest_base
-    };
-    let json = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;
-    let tmp = cache.join("export.json.tmp");
-    std::fs::write(&tmp, json).map_err(|e| io("could not write the manifest", e))?;
-    std::fs::rename(&tmp, cache.join("export.json"))
-        .map_err(|e| io("could not write the manifest", e))?;
-    Ok(manifest)
-}
-
-fn cache_root_of(cache: &Path) -> &Path {
-    cache.parent().unwrap_or(cache)
+    Ok(Some(project.join(dir).join(format!("{stem}.glb"))))
 }
 
 /// `rename`, falling back to copy + remove across volumes.
-fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
+pub(crate) fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
     if std::fs::rename(from, to).is_ok() {
         return Ok(());
     }
@@ -527,76 +476,22 @@ mod tests {
     }
 
     #[test]
-    fn the_glb_lands_in_the_cache_unless_an_export_folder_is_set() {
+    fn the_glb_is_copied_out_only_when_an_export_folder_is_set() {
         let project = Path::new("/p");
-        let cache = Path::new("/p/.veistra/blender/bed-1");
+        assert_eq!(export_copy(project, "art/bed.blend", "").unwrap(), None);
         assert_eq!(
-            glb_target(project, cache, "art/bed.blend", "").unwrap(),
-            cache.join("model.glb")
-        );
-        assert_eq!(
-            glb_target(project, cache, "art/bed.blend", "assets/models/").unwrap(),
-            project.join("assets/models").join("bed.glb")
+            export_copy(project, "art/bed.blend", "assets/models/").unwrap(),
+            Some(project.join("assets/models").join("bed.glb"))
         );
     }
 
     #[test]
     fn an_export_folder_cannot_leave_the_environment() {
         let project = Path::new("/p");
-        let cache = Path::new("/p/c");
-        assert!(glb_target(project, cache, "a.blend", "../outside").is_err());
-        assert!(glb_target(project, cache, "a.blend", "a/../../b").is_err());
+        assert!(export_copy(project, "a.blend", "../outside").is_err());
+        assert!(export_copy(project, "a.blend", "a/../../b").is_err());
         #[cfg(windows)]
-        assert!(glb_target(project, cache, "a.blend", "C:\\elsewhere").is_err());
-    }
-
-    #[test]
-    fn commit_moves_files_into_place_and_writes_the_manifest_last() {
-        let project = TempDir::new().unwrap();
-        let cache = cache_dir_in(project.path(), "bed.blend", None);
-        let pending = cache.join("pending");
-        std::fs::create_dir_all(&pending).unwrap();
-        std::fs::write(pending.join("model.glb"), b"glb").unwrap();
-        std::fs::write(pending.join("front.png"), b"png").unwrap();
-        std::fs::create_dir_all(cache.join("renders")).unwrap();
-        std::fs::write(cache.join("renders/stale.png"), b"old").unwrap();
-
-        let result = ScriptResult {
-            glb: Some("model.glb".into()),
-            renders: vec![RenderEntry {
-                id: "front".into(),
-                label: "front".into(),
-                file: "front.png".into(),
-            }],
-            blender_version: "4.2.1".into(),
-            ..ScriptResult::default()
-        };
-        let base = Manifest {
-            blend: "bed.blend".into(),
-            blend_mtime: 42,
-            exported_at: 0,
-            engine: "workbench".into(),
-            resolution: 256,
-            blender_version: String::new(),
-            glb: None,
-            glb_bytes: None,
-            renders: vec![],
-            parts: vec![],
-            stats: Value::Null,
-            warnings: vec![],
-        };
-        let target = cache.join("model.glb");
-        let manifest = commit(&cache, &pending, &target, &result, base).unwrap();
-
-        assert_eq!(manifest.blend_mtime, 42);
-        assert_eq!(manifest.glb_bytes, Some(3));
-        assert!(cache.join("renders/front.png").is_file());
-        assert!(!cache.join("renders/stale.png").exists());
-        assert_eq!(read_manifest(&cache), Some(manifest));
-        assert_eq!(
-            std::fs::read_to_string(cache_root(project.path()).join(".gitignore")).unwrap(),
-            "*\n"
-        );
+        assert!(export_copy(project, "a.blend", "C:\\elsewhere").is_err());
     }
 
     #[test]
@@ -619,5 +514,73 @@ mod tests {
         // `Material.use_nodes` warns once per material on 5.x and goes in 6.0;
         // found by running export.py in a real Blender 5.2.
         assert!(!EXPORT_SCRIPT.contains("use_nodes"));
+    }
+
+    #[test]
+    fn the_export_script_never_saves_the_blend() {
+        // An export may run while the same file is open in Blender in a pane;
+        // the one-writer lock (DECISIONS X6) holds only if this never writes it.
+        for call in [
+            "save_mainfile",
+            "save_as_mainfile",
+            "save_userpref",
+            "save_copy",
+        ] {
+            assert!(!EXPORT_SCRIPT.contains(call), "export.py calls {call}");
+        }
+    }
+
+    #[test]
+    fn the_boot_script_installs_nothing() {
+        // Spec §11.2: the person's Blender is theirs. Nothing is enabled,
+        // saved or written outside the channel folder.
+        for call in [
+            "addon_utils",
+            "addon_enable",
+            "preferences.addons.new",
+            "save_userpref",
+            "save_mainfile",
+            "save_as_mainfile",
+        ] {
+            assert!(!BOOT_SCRIPT.contains(call), "veistra_boot.py uses {call}");
+        }
+        assert!(
+            BOOT_SCRIPT.contains("if not CHANNEL:\n        return False"),
+            "without VEISTRA_BLENDER_CHANNEL the script must do nothing"
+        );
+    }
+
+    #[test]
+    fn the_boot_script_polls_with_a_persistent_timer() {
+        // A plain timer is dropped by File > Open, and the channel would go
+        // quiet the first time someone opens another file.
+        assert!(BOOT_SCRIPT.contains("persistent=True"));
+        assert!(BOOT_SCRIPT.contains("@bpy.app.handlers.persistent"));
+        assert!(
+            BOOT_SCRIPT.contains("COMMANDS = {"),
+            "one command table, for #320 to extend"
+        );
+    }
+
+    #[test]
+    fn the_scripts_pass_in_a_real_bpy() {
+        // bpy_test.py renders and exports for real, so it needs a Python with
+        // the bpy module (or a Blender); without one it is skipped, not failed.
+        let Some(python) = std::env::var_os("VEISTRA_TEST_BPY_PYTHON") else {
+            eprintln!("skipped: set VEISTRA_TEST_BPY_PYTHON to a Python with bpy");
+            return;
+        };
+        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/blender/bpy_test.py");
+        let out = Command::new(python)
+            .arg("-I")
+            .arg(&script)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 }

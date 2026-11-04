@@ -40,11 +40,12 @@ apps/
   agent-tab/ui/           Agent's frontend: one Claude session in this cluster's worktree
   agents/ui/              Agents' frontend: Veistra Cloud's agent machines and sessions
   costs/ui/               Cost Tracker's frontend: this month's Google Cloud spend and forecast
+  usage/ui/               Usage's frontend: the Veistra account's spend, runs and monthly limit
   projects/ui/            Projects' frontend: the project switcher and its embedded Plane workspace
   design/ui/              Design Mode's frontend
   schematify/ui/          Schematify's frontend
   godot-viewer/ui/        The Godot app's frontend: Editor mode (the scene view) and, under src/play/, Play mode
-  blender-viewer/ui/      Blender Viewer's frontend: the .glb an agent's headless Blender export last produced
+  blender-viewer/ui/      The Blender app's frontend: Editor mode (Blender in the pane) under src/editor/, Renders, Compare
   canvas/ui/              Canvas's frontend: Excalidraw design canvases, one JSON file each in the checkout
 ```
 
@@ -462,15 +463,45 @@ view or a rendered frame, read from the scene file or by a headless Godot.
 Selecting a node offers a comment. Play scene, or F5, turns the pane to Play
 and runs the game there.
 
-**Blender Viewer** (`blender-viewer/state`) — read-only, the same shape for
-Blender: a Model/Renders/Wire switch, an honest placeholder in place of a real
-3D viewport (deliberately not three.js — see
-`docs/VEISTRA-UX-REWORK.md` §3.2), a parts list, a renders strip. Same story as
-the Godot Viewer on emptiness and "Open in Blender". Its state answers the same
-`editor` as Godot's status, so main and a cloud session get the same line under
-the toolbar and a disabled Open in Blender; `blender-viewer/open` and
+**Blender** (`blender-viewer/state`) has three modes, Editor, Renders and
+Compare, on the same five-slot bar (`ui/src/modes.ts`). Its state answers the
+same `editor` as Godot's status, so main, a cloud session and a missing Blender
+get the same line under the bar.
+
+*Editor* is Blender itself in the pane (`ui/src/editor/`, #317):
+`blender <file> --python veistra_boot.py`, started by a press and never on
+mount, with nothing installed into Blender. Its window is placed over the pane's
+box through `embed/*` as `blender`. The bar has the environment chip and the
+file; Not open, Starting, Editing, Popped out, Own window or Closing; Viewport
+only, Mark up and Send selection; Pop out and Close, which asks Blender to quit
+and lets it ask about unsaved work. The boot script reports the selection, the
+file and the view, and answers `select`, `viewport-only`, `capture`, `pick` and
+`quit` through a folder of JSON files (`src-tauri/src/blender/editor.rs`). While Blender has
+the file it holds `.veistra/locks/<file>.lock`; a banner says the agent's next
+export goes to the next version beside it and never overwrites the file, and a
+second open of the file (another pane, `blender-viewer/open`,
+`files/open-in-blender`) is refused while the lock is live. The pane polls
+`blender-viewer/editor-state`. On main, a cloud session or no Blender, Editor is
+the read-only viewer of the last export instead: the `.glb` in 3D and the
+wireframe pass.
+
+*Renders* is what an export made: the preview stills, the `.glb` in an orbitable
+3D view with the markup layer, Blender's wireframe pass and the parts list, with
+comments. Every export is kept as `.veistra/exports/<asset>/v<n>/`, the last
+ten of them (`blender-viewer/export-versions`). `blender-viewer/open` and
 `files/open-in-blender` are refused on main, and the export cache for main is
 kept under app-local data, not in the checkout.
+
+*Compare* (`ui/src/compare/`, #319) is what changed between two of those
+versions, and can be chosen once a file has two. A and B are picked from the
+kept versions; the diff runs in a worker (`packages/scene-view/src/compare/`)
+and is drawn as Added, Changed, Removed and Unchanged, each with a toggle, a
+count, a pattern and a colour, under one camera in Changes or Split. N frames
+the next change. The side list is each part's counts and material changes, then
+the notes made on A with Looks good and Still broken. Keep vB pins B against
+pruning (`blender-viewer/version-keep`, the person only, never on main); Go back
+to vA opens A's own copy of the `.blend` in Editor mode where the version kept
+one, and says why not where it did not.
 
 *Play* (`ui/src/play/`) runs the environment's game in the pane: on Windows
 the game's own window is placed over the pane's game box, elsewhere it keeps
@@ -523,13 +554,14 @@ which is why it lives under `apps/shared/` rather than in whichever app needed
 it first — see that directory's note above on why the isolation rule excludes
 it.
 
-A comment anchors to a Godot node path, a Blender part plus material, a Play
-scene plus a playhead time (`docs/VEISTRA-UX-REWORK.md` §3.4), or a note on a
-recorded take (`take`: the take, the note's number, its time or range, the
-feedback packet, and the scene and node when known). It is a file — one per
-comment — under `.veistra/comments/` inside the calling cluster's environment,
-not a database row, for the same reason the rest of this repo's structured state
-is files: it travels with the branch and merges the way git already merges text.
+A comment anchors to a Godot node path, a Blender part plus material (and the
+file and version it was made on, for Compare), a Play scene plus a playhead time
+(`docs/VEISTRA-UX-REWORK.md` §3.4), or a note on a recorded take (`take`: the
+take, the note's number, its time or range, the feedback packet, and the scene
+and node when known). It is a file — one per comment — under `.veistra/comments/`
+inside the calling cluster's environment, not a database row, for the same
+reason the rest of this repo's structured state is files: it travels with the
+branch and merges the way git already merges text.
 `src-tauri/src/comments.rs`'s doc comment has the ID scheme and the merge
 reasoning in full.
 

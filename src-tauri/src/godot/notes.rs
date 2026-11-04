@@ -271,6 +271,8 @@ mod tests {
                 anchor: Anchor::Mesh {
                     part: "p".into(),
                     material: "m".into(),
+                    blend: None,
+                    version: None,
                 },
                 body: "b".into(),
                 screenshot_png: None,

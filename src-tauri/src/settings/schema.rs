@@ -29,6 +29,8 @@ pub mod keys {
     pub const GITHUB_ITEM_LIMIT: &str = "github.itemLimit";
     pub const CLOUD_GOOGLE_CLIENT_ID: &str = "cloud.googleClientId";
     pub const CLOUD_GATEWAY_URL: &str = "cloud.gatewayUrl";
+    pub const ACCOUNT_API_URL: &str = "account.apiUrl";
+    pub const ACCOUNT_WEB_URL: &str = "account.webUrl";
     pub const MCP_WRITE_PROJECT_CONFIG: &str = "mcp.writeProjectConfig";
     pub const UPDATES_CHECK_AUTOMATICALLY: &str = "updates.checkAutomatically";
     pub const DEVELOPER_MODE: &str = "developer.mode";
@@ -53,6 +55,7 @@ static GROUPS: &[&Group] = &[
     &super::markup::GROUP,
     &GITHUB,
     &CLOUD,
+    &ACCOUNT,
     &UPDATES,
     &TELEMETRY,
     &MCP,
@@ -673,6 +676,49 @@ static CLOUD: Group = Group {
     settings: CLOUD_SETTINGS,
 };
 
+// --- account ----------------------------------------------------------------
+//
+// The Veistra account (`crate::account`): sign-in, usage and limits. The
+// addresses are settings because neither is a secret; the sign-in itself is a
+// credential and goes to the OS credential store.
+
+static ACCOUNT_SETTINGS: &[Setting] = &[
+    Setting {
+        key: keys::ACCOUNT_API_URL,
+        title: "Account service URL",
+        description: "The Veistra account service the app signs in and reads usage through: the \
+                      `api` service's run.app address, everything before /v1. Empty until it is \
+                      deployed, and the app skips the sign-in screen until it is set.",
+        control: Control::Text {
+            default: "",
+            placeholder: "https://api-….us-central1.run.app",
+        },
+        applies: Applies::Next {
+            what: "the next sign-in or usage read",
+        },
+    },
+    Setting {
+        key: keys::ACCOUNT_WEB_URL,
+        title: "Website",
+        description: "Where Open on veistra.com and Manage account go.",
+        control: Control::Text {
+            default: "https://veistra.com",
+            placeholder: "https://veistra.com",
+        },
+        applies: Applies::Next {
+            what: "the next link opened",
+        },
+    },
+];
+
+static ACCOUNT: Group = Group {
+    id: "account",
+    title: "Account",
+    description: "Your Veistra account. Signing in and out is on Home's account panel.",
+    order: 48,
+    settings: ACCOUNT_SETTINGS,
+};
+
 // --- updates ----------------------------------------------------------------
 //
 // Read once, in `lib.rs`'s setup, by `updater::start`. The one thing this
@@ -967,6 +1013,8 @@ mod tests {
             (keys::GITHUB_ITEM_LIMIT, "number"),
             (keys::CLOUD_GOOGLE_CLIENT_ID, "string"),
             (keys::CLOUD_GATEWAY_URL, "string"),
+            (keys::ACCOUNT_API_URL, "string"),
+            (keys::ACCOUNT_WEB_URL, "string"),
             (keys::MCP_WRITE_PROJECT_CONFIG, "bool"),
             (keys::UPDATES_CHECK_AUTOMATICALLY, "bool"),
             (keys::DEVELOPER_MODE, "bool"),

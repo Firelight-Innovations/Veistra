@@ -111,6 +111,8 @@ pub struct ScriptResult {
     pub glb: Option<String>,
     pub renders: Vec<RenderEntry>,
     pub parts: Vec<PartEntry>,
+    /// Each material's name, colour and scalar values, as Compare reads them.
+    pub materials: Vec<Value>,
     pub stats: Value,
     pub warnings: Vec<String>,
 }

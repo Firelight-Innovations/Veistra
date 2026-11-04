@@ -2,7 +2,8 @@
  * The wire shapes `blender-viewer/*` answers with, restated for the same reason
  * `apps/godot-viewer/ui/src/rpc.ts` restates Godot's: an app's frontend calls
  * the bridge, not the Rust module. The Rust side is
- * `src-tauri/src/apps/blender_viewer.rs`.
+ * `src-tauri/src/apps/blender_viewer.rs`; Blender in the pane is
+ * `editor/rpc.ts`.
  */
 import { invoke } from "@veistra/bridge";
 import type { EditorSurface, SurfaceEnvironment } from "../../../shared/editorSurface";
@@ -103,6 +104,33 @@ export interface BlenderViewerState {
   parts: BlenderPart[];
   renders: BlenderRender[];
   job: ExportJob;
+  /** The version shown, the newest kept; `null` before any, or for an export from before versions. */
+  version: ExportVersion | null;
+  /** Every kept version's number, newest first. */
+  versions: number[];
+  /** Blender in a pane has this file open (`.veistra/locks/`); `null` when nobody does. */
+  locked: BlendLockInfo | null;
+}
+
+/** One kept export, as `export.json` in its `v<n>/` folder says. */
+export interface ExportVersion {
+  n: number;
+  author: "human" | "agent";
+  /** Milliseconds since the Unix epoch. */
+  time: number;
+  commit: string | null;
+  branch: string | null;
+  triangles: number | null;
+  /** The file was open in Blender in a pane when this export read it. */
+  sourceLocked: boolean;
+}
+
+export interface BlendLockInfo {
+  file: string;
+  pid: number;
+  since: number;
+  /** The cluster whose Blender holds it. */
+  cluster: string | null;
 }
 
 export const getState = (blend?: string | null) =>
@@ -111,8 +139,12 @@ export const getState = (blend?: string | null) =>
 export const getImage = (blend: string, id: string) =>
   invoke<{ mime: string; base64: string }>("blender-viewer/image", { blend, id });
 
+/** An export the person started: it lands as the next version, made by `human`. */
 export const startExport = (blend: string) =>
-  invoke<{ started: boolean }>("blender-viewer/export-start", { blend });
+  invoke<{ started: boolean; version: number; locked: boolean }>("blender-viewer/export-start", {
+    blend,
+    actor: "human",
+  });
 
 export const cancelExport = () => invoke<{ cancelled: boolean }>("blender-viewer/export-cancel");
 
@@ -127,6 +159,52 @@ export const setExecutable = (path: string) =>
 /** The exported `.glb` as standard base64, for the 3D preview. */
 export const getGlb = (blend: string) =>
   invoke<{ base64: string; size: number }>("blender-viewer/glb", { blend });
+
+/** One material's values as the export read them (`collect_materials` in `export.py`). */
+export interface VersionMaterial {
+  name: string;
+  /** RGBA, 0 to 1. */
+  color?: number[];
+  metallic?: number;
+  roughness?: number;
+  alpha?: number;
+}
+
+/** A kept version as `blender-viewer/export-versions` lists it: `export.json`, plus where it is. */
+export interface VersionEntry extends ExportVersion {
+  parts: BlenderPart[];
+  materials: VersionMaterial[];
+  /** The version's `.glb` (absolute), or `null` when the export made none. */
+  model: string | null;
+  /** The version's own copy of the `.blend`, which Go back to A opens; `null` when it kept none. */
+  blendCopy: string | null;
+}
+
+export interface VersionList {
+  rel: string;
+  /** How many versions are kept before the oldest is pruned. */
+  keep: number;
+  /** The version the person kept in Compare, which pruning never takes; `null` for none. */
+  kept: number | null;
+  locked: BlendLockInfo | null;
+  /** Newest first. */
+  versions: VersionEntry[];
+}
+
+export const listVersions = (blend: string) =>
+  invoke<VersionList>("blender-viewer/export-versions", { blend });
+
+/** One kept version's `.glb`, as standard base64. */
+export const getVersionGlb = (blend: string, version: number) =>
+  invoke<{ base64: string; size: number }>("blender-viewer/glb", { blend, version });
+
+/** Compare's Keep B: pins the version. The `.blend` is not touched. The person's call only. */
+export const keepVersion = (blend: string, version: number) =>
+  invoke<{ rel: string; kept: number }>("blender-viewer/version-keep", {
+    blend,
+    version,
+    actor: "human",
+  });
 
 /** Replaces this `.blend`'s kept markup; one pair per file, so it never accumulates. */
 export const saveMarkup = (blend: string, pngBase64: string, json: string) =>

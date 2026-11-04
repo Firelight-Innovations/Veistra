@@ -5,6 +5,7 @@
 //! against the pinned versions. The web frontend is a pure view over the
 //! `StackSnapshot` this produces.
 
+mod account;
 mod agent_activity;
 mod agent_saw;
 mod apps;
@@ -192,6 +193,8 @@ pub fn run() {
         // Empty until a cloud app first asks; nothing here calls Google at
         // startup (`docs/cloud-services.md` §8).
         .manage(cloud::Cloud::default())
+        // The Veistra account's sign-in and tokens; see `account`.
+        .manage(account::Account::default())
         // The IAP tunnel to `plane-vm`, for the Projects app. Not started here —
         // only `projects/plane-*` and `projects/wake-start` call `Tunnel::start`,
         // and only against a `Source::Live` — so nothing opens a tunnel before a
@@ -210,6 +213,7 @@ pub fn run() {
         .manage(apps::projects::WakeManager::default())
         .manage(blender::job::Jobs::default())
         .manage(blender::detect::VersionCache::default())
+        .manage(blender::editor::Editors::default())
         // The New Project page's step-runner snapshot, for `home/create-
         // project-status` to poll — the same shape as `WakeManager` above.
         // See `apps::home_create`.

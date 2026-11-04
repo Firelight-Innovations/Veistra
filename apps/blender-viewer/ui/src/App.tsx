@@ -1,13 +1,27 @@
 /**
- * The Blender Viewer: a headless export of a `.blend` (the `.glb` in 3D, its
- * renders, its parts) with comments and markup. It is Blender's read-only
- * surface: what main, a cloud session or a missing Blender get
- * (`blender-viewer/state`'s `editor`, `editorSurface.ts`), and, until Blender
- * can open in the pane (C2), every other time too. The header is the shared
- * `ViewerToolbar`, so it reads like Godot Editor and Play: the environment and
- * file, freshness, actions, leave; the backend's reason is one line under it.
+ * The Blender app, in three modes (`modes.ts`). Editor is Blender itself in the
+ * pane (`editor/EditorMode.tsx`, #317) wherever the backend says it can open
+ * (`blender-viewer/state`'s `editor`, `editorSurface.ts`); on main, in a cloud
+ * session or with no Blender it is the read-only viewer of the last export.
+ * Renders is what an export made: the preview renders, the `.glb` in 3D, the
+ * wireframe pass and the parts list, with comments and markup. Compare is what
+ * changed between two kept versions (`compare/CompareMode.tsx`, #319), loaded
+ * lazily; it cannot be chosen until the file has two.
+ *
+ * The header is the shared `ViewerToolbar`, so it reads like Godot Editor and
+ * Play: the environment and file, freshness, actions, leave; the backend's
+ * reason is one line under it.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { reportPainted } from "@veistra/bridge";
 import {
   Box,
@@ -21,7 +35,7 @@ import {
   Square,
 } from "lucide-react";
 import { EditorReason } from "../../../shared/EditorReason";
-import { canLaunch } from "../../../shared/editorSurface";
+import { canLaunch, editorBody, type EditorBuilt } from "../../../shared/editorSurface";
 import { MarkupButton, type MarkupTrigger } from "../../../shared/MarkupTrigger";
 import { CommentPanel } from "../../../shared/CommentPanel";
 import {
@@ -35,19 +49,22 @@ import { useCommentsChanged } from "../../../shared/commentEvents";
 import { SegmentedControl } from "../../../shared/SegmentedControl";
 import { SendButton, SendFooter, useSendAction } from "../../../shared/SendFooter";
 import { ToolbarButton, ToolbarEnvChip, ViewerToolbar } from "../../../shared/ViewerToolbar";
+import { useShellPlacement } from "../../../shared/useNativeBox";
+import { openEditor } from "./editor/rpc";
 import {
   cancelExport,
   detectBlender,
   getImage,
   getState,
   loadMarkup,
-  openInBlender,
   setExecutable,
   startExport,
   type BlenderPart,
   type BlenderViewerState,
 } from "./rpc";
 import ModelPreview from "./ModelPreview";
+import EditorMode from "./editor/EditorMode";
+import { EXPORT_VIEWS, modesFor, viewFor, type BlenderMode, type ExportView } from "./modes";
 import { exportChip, hasExport } from "./chip";
 import { footerIsCompact } from "./layout";
 import { reconcileBlend, selectionWasDropped } from "./selection";
@@ -65,33 +82,16 @@ import { AUTO_SEND_KEY, BLENDER_TARGET, TIP_KEY } from "../../../shared/markupFl
 import { MarkupBar, MarkupTip, PreviousMarkup } from "../../../shared/MarkupPanels";
 import "./App.css";
 
-/**
- * The Components board draws Model · Renders · Compare. Compare is left out
- * rather than drawn dead: it compares export versions, and versions are not
- * kept yet (P1). It arrives with them.
- */
-type Mode = "model" | "renders";
-
-const MODES: readonly { value: Mode; label: string }[] = [
-  { value: "model", label: "Model" },
-  { value: "renders", label: "Renders" },
-];
+const CompareMode = lazy(() => import("./compare/CompareMode"));
 
 /**
- * How Model mode looks at the model, in the Actions slot. The board draws
- * Solid · Material · Wire as shadings of one live view. What exists is the
- * live glTF view, drawn with its materials, and Blender's wireframe pass, a
- * still from the export. Wire was a third mode, but it was always a way of
- * looking at the model (the parts list stayed beside it), so it moves here,
- * and the switch names what each option shows, as Godot's 3D · Render does.
- * Solid needs a shading override in the 3D view and arrives with one.
+ * Which Editor surfaces this app draws besides the viewer. Both are
+ * `EditorMode`: Blender in the pane, or the same Blender in its own window.
  */
-type ModelView = "3d" | "wire";
+const EDITOR_BUILT: EditorBuilt = { embedded: true, popOut: true };
 
-const MODEL_VIEWS: readonly { value: ModelView; label: string }[] = [
-  { value: "3d", label: "3D" },
-  { value: "wire", label: "Wire" },
-];
+/** The viewer in Editor mode keeps to the model; Renders adds the stills. */
+const VIEWER_VIEWS = EXPORT_VIEWS.filter((v) => v.value !== "stills");
 
 const AUTO_KEY = "blender-viewer.auto-export";
 const POLL_IDLE_MS = 3000;
@@ -147,8 +147,9 @@ function message(err: unknown): string {
 }
 
 export default function App() {
-  const [mode, setMode] = useState<Mode>("model");
-  const [modelView, setModelView] = useState<ModelView>("3d");
+  const [mode, setMode] = useState<BlenderMode>("editor");
+  const [view, setView] = useState<ExportView>(viewFor("editor"));
+  const { frameRect, overlays } = useShellPlacement();
   const [state, setState] = useState<BlenderViewerState | null>(null);
   const [blend, setBlend] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -164,6 +165,8 @@ export default function App() {
   const [posting, setPosting] = useState(false);
   const [copied, setCopied] = useState(false);
   const [trigger, setTrigger] = useState<MarkupTrigger | null>(null);
+  /** B as the Editor banner's "Compare with v<n>" asked for it. */
+  const [compareB, setCompareB] = useState<number | null>(null);
   const autoStartedFor = useRef<number | null>(null);
   const lastSeenMtime = useRef<number | null>(null);
   const [root, setRoot] = useState<HTMLDivElement | null>(null);
@@ -317,7 +320,15 @@ export default function App() {
     setPosting(true);
     try {
       await createComment({
-        anchor: { kind: "mesh", part: selected.name, material: selected.materials[0] ?? "none" },
+        // The file and the version it was made on, so Compare can find the
+        // notes from A (#319).
+        anchor: {
+          kind: "mesh",
+          part: selected.name,
+          material: selected.materials[0] ?? "none",
+          ...(state?.rel ? { blend: state.rel } : {}),
+          ...(state?.version ? { version: state.version.n } : {}),
+        },
         body: draft.trim(),
       });
       setDraft("");
@@ -385,6 +396,16 @@ export default function App() {
     }
   };
 
+  // Each mode opens on its own view; a mode drawn disabled is never chosen.
+  const modes = modesFor(state?.versions.length ?? 0);
+  const switchMode = (next: BlenderMode) => {
+    if (modes.find((m) => m.value === next)?.disabled) return;
+    if (next === "compare") setCompareB(null);
+    setMode(next);
+    setView(viewFor(next));
+  };
+  const modeSwitch = { value: mode, options: modes, onChange: switchMode };
+
   if (!state) {
     return (
       <div className="bv" ref={setRoot}>
@@ -392,6 +413,52 @@ export default function App() {
       </div>
     );
   }
+
+  if (mode === "compare") {
+    return (
+      <Suspense fallback={<p className="bv__hint">Loading Compare…</p>}>
+        <CompareMode
+          modeSwitch={modeSwitch}
+          viewer={state}
+          initialB={compareB}
+          comments={comments}
+          onCommentsChanged={refreshComments}
+          onOpenBlend={async (path) => {
+            await openEditor(path);
+            switchMode("editor");
+          }}
+        />
+      </Suspense>
+    );
+  }
+
+  // Editor mode is Blender wherever the backend says it can open; the viewer
+  // below is what it falls back to, and what Renders always is.
+  if (mode === "editor" && editorBody(state.editor, EDITOR_BUILT) !== "viewer") {
+    return (
+      <EditorMode
+        modeSwitch={modeSwitch}
+        viewer={state}
+        onPick={setBlend}
+        frameRect={frameRect}
+        overlays={overlays}
+        onCompare={(n) => {
+          setCompareB(n);
+          setMode("compare");
+        }}
+      />
+    );
+  }
+
+  // Open is a press here too: it starts Blender on this file, holding its
+  // lock, and Editor mode then shows it.
+  const openHere = () => {
+    if (!state.rel) return;
+    setError(null);
+    openEditor(state.rel)
+      .then(() => switchMode("editor"))
+      .catch((err: unknown) => setError(message(err)));
+  };
 
   const job = state.job;
   const exported = hasExport(state);
@@ -403,7 +470,7 @@ export default function App() {
   const jobIsForThis = job.blend !== null && job.blend === state.rel;
   const surface = state.editor ?? null;
   const launchable = canLaunch(surface);
-  const showModel = mode === "model" && exported && modelView === "3d";
+  const showModel = exported && view === "3d";
   const showJob = job.running || (jobIsForThis && job.outcome !== null && job.outcome !== "ok");
 
   return (
@@ -413,7 +480,7 @@ export default function App() {
           start drawing, and why not when the export is stale. */}
       <ViewerToolbar
         label="Blender"
-        mode={{ value: mode, options: MODES, onChange: setMode }}
+        mode={modeSwitch}
         subject={
           <>
             <ToolbarEnvChip kind={state.environment?.kind} branch={state.environment?.branch} />
@@ -440,14 +507,14 @@ export default function App() {
         }
         status={exportChip(state)}
         actions={
-          mode === "model" && exported ? (
+          exported ? (
             <>
-              {modelView === "3d" && <MarkupButton trigger={showModel ? trigger : null} />}
+              {view === "3d" && <MarkupButton trigger={showModel ? trigger : null} />}
               <SegmentedControl
-                aria-label="Model view"
-                value={modelView}
-                onChange={setModelView}
-                options={MODEL_VIEWS}
+                aria-label="Export view"
+                value={view}
+                onChange={setView}
+                options={mode === "renders" ? EXPORT_VIEWS : VIEWER_VIEWS}
               />
             </>
           ) : null
@@ -456,17 +523,13 @@ export default function App() {
           <ToolbarButton
             icon={<ExternalLink size={14} strokeWidth={1.5} aria-hidden="true" />}
             label="Open in Blender"
-            disabled={!blend || !launchable}
+            disabled={!state.rel || !launchable}
             title={
               launchable
-                ? `Open ${state.rel ?? "the file"} in Blender ${state.blender.version ?? ""}`
+                ? `Open ${state.rel ?? "the file"} in Blender ${state.blender.version ?? ""}, in Editor mode`
                 : (surface?.reason ?? "Blender was not found — set it up first")
             }
-            onClick={() => {
-              if (!blend) return;
-              setError(null);
-              openInBlender(blend).catch((err: unknown) => setError(message(err)));
-            }}
+            onClick={openHere}
           />
         }
       />
@@ -579,7 +642,7 @@ export default function App() {
               Export
             </button>
           </div>
-        ) : mode === "renders" ? (
+        ) : view === "stills" ? (
           <main className="bv__renders">
             <div className="bv__renders-strip">
               {state.renders.map((r) => (
@@ -611,7 +674,7 @@ export default function App() {
               ))}
             </div>
           </main>
-        ) : modelView === "wire" ? (
+        ) : view === "wire" ? (
           <main className="bv__viewport">
             {wire && images.wire ? (
               <figure className="bv__hero">
@@ -700,7 +763,7 @@ export default function App() {
           </main>
         )}
 
-        {state.project && state.blends.length > 0 && exported && mode !== "renders" && (
+        {state.project && state.blends.length > 0 && exported && view !== "stills" && (
           <aside className="bv__parts">
             <div className="bv__parts-heading">
               <Package size={13} strokeWidth={1.5} aria-hidden="true" />
@@ -858,7 +921,7 @@ export default function App() {
             onClick={() => void send("parts", "parts", () => putParts(state))}
           />
         )}
-        {mode === "model" && modelView === "3d" && markup && (
+        {view === "3d" && markup && (
           <SendButton
             label="Send markup"
             sent={sent === "markup"}

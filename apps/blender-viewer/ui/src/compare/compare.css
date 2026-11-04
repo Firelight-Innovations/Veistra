@@ -1,0 +1,187 @@
+/*
+ * Compare mode, over App.css's .bv frame: the A and B pickers under the
+ * toolbar, the change view beside the parts and notes, and Keep and Go back in
+ * a footer. The legend's swatches are the change view's own patterns in CSS:
+ * solid blue, an amber hatch, a dashed coral outline and grey.
+ */
+
+.cmp__pickers {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-wrap: wrap;
+}
+
+.cmp__pick {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.cmp__pick-side {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--txt-secondary);
+}
+
+.cmp__swap {
+  background: none;
+  border: 1px solid var(--border-subtle);
+  color: var(--txt-secondary);
+}
+
+.cmp__body {
+  grid-template-columns: 1fr 260px;
+}
+
+.cmp__view {
+  position: relative;
+  min-height: 0;
+  min-width: 0;
+}
+
+.cmp__legend {
+  position: absolute;
+  top: var(--space-2, 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
+  pointer-events: auto;
+}
+
+.cmp__class {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--border-subtle-1, var(--border-subtle));
+  border-radius: var(--radius-md, 6px);
+  background: var(--bg-layer-2);
+  color: var(--txt-primary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.cmp__class[aria-pressed="false"] {
+  color: var(--txt-tertiary, var(--txt-secondary));
+}
+
+.cmp__class[aria-pressed="false"] .cmp__swatch {
+  opacity: 0.35;
+}
+
+.cmp__class:disabled {
+  cursor: default;
+  color: var(--txt-tertiary, var(--txt-secondary));
+}
+
+.cmp__swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  flex: none;
+}
+
+.cmp__class--added .cmp__swatch {
+  background: var(--accent-blue);
+}
+
+.cmp__class--changed .cmp__swatch {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--accent-amber) 0 3px,
+    color-mix(in srgb, var(--accent-amber) 45%, black) 3px 6px
+  );
+}
+
+.cmp__class--removed .cmp__swatch {
+  border: 1.5px dashed var(--accent-coral);
+  background: color-mix(in srgb, var(--accent-coral) 12%, transparent);
+}
+
+.cmp__class--unchanged .cmp__swatch {
+  background: var(--txt-tertiary, var(--txt-secondary));
+}
+
+.cmp__next kbd {
+  font-family: inherit;
+  font-size: 10px;
+  padding: 0 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  color: var(--txt-secondary);
+}
+
+.cmp__of {
+  color: var(--txt-secondary);
+}
+
+.cmp__side {
+  display: flex;
+  flex-direction: column;
+}
+
+.cmp__part--added .bv__part-name {
+  color: var(--accent-blue);
+}
+
+.cmp__part--removed .bv__part-name {
+  color: var(--accent-coral);
+}
+
+.cmp__material {
+  color: var(--accent-amber);
+}
+
+.cmp__notes-heading {
+  margin-top: 12px;
+}
+
+.cmp__notes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.cmp__note {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.cmp__note-body {
+  font-size: 12px;
+  color: var(--txt-primary);
+  overflow-wrap: anywhere;
+}
+
+.cmp__note-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.cmp__footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.cmp__timing {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--txt-tertiary, var(--txt-secondary));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

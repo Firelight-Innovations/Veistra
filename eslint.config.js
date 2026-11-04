@@ -128,6 +128,7 @@ const APPS = [
   "projects",
   "schematify",
   "tutorial",
+  "usage",
   "viewer",
 ];
 

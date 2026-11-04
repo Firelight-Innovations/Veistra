@@ -19,7 +19,7 @@
  * the bar, `ToolbarReason`, not a slot.
  */
 import type { ReactNode } from "react";
-import { SegmentedControl } from "./SegmentedControl";
+import { SegmentedControl, type SegmentedOption } from "./SegmentedControl";
 import "./viewer-toolbar.css";
 
 /** The chip's colour, from the design system's status set. */
@@ -34,7 +34,7 @@ export interface ToolbarStatus {
 
 export interface ToolbarMode<T extends string> {
   value: T;
-  options: readonly { value: T; label: string }[];
+  options: readonly SegmentedOption<T>[];
   onChange: (value: T) => void;
 }
 

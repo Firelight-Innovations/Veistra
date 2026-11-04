@@ -38,6 +38,7 @@
     "setup:codex": "npm install --prefix node_modules/.agent-adapters/codex --omit=optional --no-save --package-lock=false @agentclientprotocol/codex-acp@2.2.2",
     "ui": "node scripts/veistra-ui.mjs",
     "ui:build": "tauri build --no-bundle --config {\\\"identifier\\\":\\\"com.firelightinnovations.veistra.agent\\\"}",
+    "spike:embed": "cargo test -p veistra-orchestrator --features embed-spike --lib -- godot::spike::r1_against_r2 --exact --ignored --nocapture",
     "lint:fix": "eslint . --fix",
     "test": "pnpm run test:js && pnpm run test:rust",
     "test:js": "vitest run && pnpm --filter \"./packages/**\" --filter \"./examples/**\" --if-present test",

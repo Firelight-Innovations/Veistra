@@ -722,7 +722,7 @@ fn anchor_line(anchor: &crate::comments::Anchor) -> String {
     use crate::comments::Anchor;
     match anchor {
         Anchor::Node { path } => format!("Godot node {path}"),
-        Anchor::Mesh { part, material } => format!("Blender mesh {part} · {material}"),
+        Anchor::Mesh { part, material, .. } => format!("Blender mesh {part} · {material}"),
         Anchor::Scene { scene, time, .. } => format!("Play · {scene} at {time:.1}s"),
         Anchor::Take {
             take, n, node_path, ..

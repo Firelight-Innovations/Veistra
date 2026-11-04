@@ -178,7 +178,7 @@ check it". The same chokepoint reports `godot:note_fixed` and `godot:note_resolv
 
 | Decision | Chosen | Why, and what was rejected |
 |---|---|---|
-| R1 child window or R2 owned popup | R2, pending the Day 1 spike | Graphics Capture records the game window alone, never Veistra's UI. R1 (`SetParent`) is not built; the spike is where `CreateForWindow` on a child window gets tried. |
+| R1 child window or R2 owned popup | R2, provisional: the owner chooses from the embed spike's Windows 11 run (#308, below) | Graphics Capture records the game window alone, never Veistra's UI, and R2 is what `crate::embed` builds. R1 (`SetParent`) exists only in the spike, which also tries `CreateForWindow` on a child window. |
 | One Godot app or two (#313) | One app, two modes: Editor · Play (owner decision 1) | Play's UI moved into `apps/godot-viewer/ui/src/play/`, and one Rust entry answers both modes. The two apps that switched with `veistra/open` were rejected by the owner: a pane is the Godot app, and the mode is what it shows. |
 | Record default | Off | Takes cost disk (open decision 2's recommendation). |
 | Tracked nodes | The design's default, with geometry for its "VisualInstance3D" | `veistra_track` when it has members, else bodies, plus the geometry and sprites not inside one, in view by their box's centre, nearest 64. VisualInstance3D also takes in lights, probes and decals; a body's own mesh tracked beside it could take a pin that should name the body; and a character's origin is at its feet, below a frame that shows the rest of it (#312). |
@@ -231,6 +231,36 @@ check it". The same chokepoint reports `godot:note_fixed` and `godot:note_resolv
 | The editor's floor size (#316) | The plugin lowers the window's minimum to 480 × 320 after the editor sets its own; without the plugin, nothing checks a pane smaller than 1024 × 600 | The editor holds its window at 1024 × 600, larger than many panes, and the embedder cannot shrink it below that. A size warning without the plugin was left out until a real pane shows how it looks cut off. |
 | What an agent may call on the editor (#316) | `godot/editor-state`, `godot/editor-selection`, `godot/editor-capture`, `godot/editor-pick`, and the plugin's status, install and remove as for the capture addon; `app_call` refuses open, close, save, select, open scene and Viewport only | The editor in the pane is the person's: an agent reading what it shows is the point, an agent closing or steering it under the person is not. Agents edit the project on disk and run Godot headless. |
 | `editor_opened` (#316) | Rust, once per open, `{plugin}` through `telemetry::track` | Whether people use the editor with the plugin is the question the plugin's cost rests on. A4's `features/godot.ts` must declare the event for the shell to forward it. |
+| Embedded editors, Blender (#317) | Editor mode is the person's own Blender, started as `blender <file.blend> --python veistra_boot.py` and placed over the box as kind `blender`; nothing is installed or enabled in Blender, and the script does nothing without `VEISTRA_BLENDER_CHANNEL`. Owner decision 6 replaces `VEISTRA-UX-REWORK.md` §3.1's "never embedded"; agents still run Blender headless | An add-on enabled in the person's Blender would outlive Veistra and load in every Blender they open. `--python` runs once the file has loaded, in this Blender only. Not `--disable-autoexec`: it is the person's file, and their preference decides. |
+| Opening Blender (#317) | Only on a press, never on mount: Open in Blender in Editor mode, or Renders' Open in Blender, which now goes through `blender-viewer/editor-open`. Refused on main, while this cluster's Blender has another file, and while another cluster or another Blender holds the file | A cluster switch reloads every frame, and Blender is too heavy to start for a glance. Renders' button started the detached `blender-viewer/open`, which takes no lock, so the person could have had two Blenders on one file. |
+| Where Blender's window starts (#317) | No `-p`: Blender opens where it would, and the embedder places the window over the box when it appears | `-p` measures from the lower-left corner in Blender's own screen coordinates, which nothing here could check. To revisit if the first frame shows at Blender's default place on a real machine. |
+| The boot script's channel (#317) | The capture addon's folder protocol (X5) in `temp_dir()/veistra-blender/blender-editor/<cluster>-<pid>-<n>`: `hello.json` once (with Blender's own pid), `state.json` on change (the file, unsaved, the selection, the 3D view), `cmd.json` in, `res-<id>.json` and `cap-<id>.png` out, every file written to a `.tmp` and renamed. One persistent `bpy.app.timers` callback every 250 ms | No socket and no port, as for the addon. A timer is the one way to run on Blender's main thread without a modal operator, and a persistent one survives File > Open. Commands are a table (`COMMANDS`), so #320's N-panel adds entries beside `select`, `viewport-only`, `capture`, `pick` and `quit`. |
+| The one-writer lock (#317) | `.veistra/locks/<file>.lock`, mirroring the file's folders, written and removed by Rust only, naming Blender's pid and that process's start time; a lock whose process is gone or whose pid now names a later process is stale, and the first reader removes it. A watcher thread follows the file Blender reports every 500 ms, so File > Open moves the lock, an unsaved new file holds none, and Blender exiting removes it with no pane polling | Blender has no quit hook to clean up, and Veistra may exit first and leave Blender running, so the lock cannot depend on either writing it last. The pid alone was rejected: Windows reuses pids. `hello.json`'s pid is the one locked, so a launcher that exits does not read as Blender gone. |
+| A Blender left running at exit (#317) | Its lock stays, correctly, until that Blender exits; Veistra does not adopt it into a pane after a restart | The lock still names a live Blender with the file open. Adopting it needs the window found from the pid with no channel to say which file it has; not built. |
+| Closing Blender (#317) | `WM_CLOSE` to its window, what its close button sends; with no window to post to, the boot script's `quit`, which runs Blender's own quit with its save prompt; otherwise the pane says to close it from Blender. Never a kill. The pane closing or Veistra exiting hands the window back (`Orphan::Release`) | An unsaved scene is the person's work (X2). |
+| Exports as versions (#317) | Every export, the person's or an agent's, lands as `.veistra/exports/<asset>/v<n>/` (`model.glb`, `renders/`, `export.log`, then `export.json` last), with `asset.json`'s `next` so a number is never handed out twice; the last ten are kept. Every export names its actor, `human` or `agent`; `system` is refused. `blender-viewer/export-versions` lists them newest first | Spec §11.3 and X6. Overwriting the one cached export would lose what Compare (#319) compares. A version is the folder with `export.json`, so an export that died midway is never listed. |
+| The export never writes the `.blend` (#317) | It reads the saved file in a headless Blender and writes only the new version; a live lock is recorded in the version (`sourceLocked`) and left alone | Spec §13 test 12. The person's unsaved changes are not on disk, so the agent exports what was last saved; the banner says the export never overwrites their file. |
+| The agent's export tools (#317) | `export_blend` and `list_blend_exports` on the workspace and context servers; `export_blend` answers as soon as the export starts, and `list_blend_exports` shows the version once it lands | A tool call runs inline on the server's worker, and an export can take minutes. |
+| What an agent may call on Blender in the pane (#317) | `blender-viewer/editor-state`, `editor-capture` and `editor-pick` read it; `app_call` refuses `editor-open`, `editor-close`, `editor-select` and `editor-viewport-only` | Blender in the pane is the person's: an agent reading what it shows is the point, an agent opening, closing or steering it under the person is not. |
+| Send selection and Mark up in Blender (#317) | One `capture` answer holds the picture, the view and the selection of the same moment; Send selection files it as two Context items (for `props/bed.blend`, `blender/props/bed/selection` text and `blender/props/bed/editor-viewport` image, each replacing the last send's) and types both references in one `context/insert`, never Enter (X8). Mark up draws on that capture and asks Blender what is under each pin (`pick`) after Done | Two round trips could pair a selection with a view the person had already moved. |
+| The markup host and pin naming in Blender (#317) | Blender-local copies of the Godot editor's (`editor/ViewportMarkup.tsx`, `editor/pins.ts`); `useTheme` moved to `apps/shared` | An app may not import another app's source (`eslint.config.js`). The copies can move to `apps/shared` once #316 and this have both landed. |
+| Compare before #319 (#317) | Drawn in the mode switch, `aria-disabled`, with a tooltip saying it is not built; the banner's Compare with v<n> waits for it the same way | A mode that appears later moves the switch under the person. `aria-disabled` keeps the tooltip and the tab stop, which `disabled` would drop. |
+| Opening a file Blender in a pane holds (#317) | `blender-viewer/open` and `files/open-in-blender` look for a live lock in every folder above the file (`lock::live_above`) and refuse it, naming the process | Files' Open in Blender gets an absolute path with no environment, and two Blenders on one file save over each other. The detached opens still take no lock of their own. |
+| Two bugs (#317) | `blender-viewer/open` resolves a project-relative path inside the environment, as `export-start` does; the wire render is SOLID with temporary Wireframe modifiers, dark lines on a light world, undone afterwards, and the `.glb` is exported with modifiers applied | The open refused `props/bed.blend`, the only kind the viewer and agents send. Workbench ignores WIREFRAME shading in a final render, so the wire pass was a blank white PNG. |
+| Agents editing a `.blend` (#317) | Not built: an agent exports and reads, and never saves a `.blend`, locked or not | Whether an agent may change a `.blend` while nobody has it open is the owner's question (X12). |
+| Compare's δ rule (#319) | Spec §12.1 with both δ searches limited to what the ε pass left on the other side: a B triangle is Changed only when the centroid of an A triangle with no Unchanged match is within δ, and an A triangle is Removed only when no left-over B centroid is within δ. The ε match ignores corner order and is one to one. ε = 1 mm, δ = 5 cm (`packages/scene-view/src/compare/types.ts`) | As written, the spec searches all of A and all of B, so a knob on an untouched face reads as Changed and the faces around a hole hide what was cut from it. The refined rule keeps test 13 at 8 added, 2 changed, 0 removed and 10 unchanged (`compare.fixture.test.ts`) and makes the knob Added and the hole Removed (`diff.test.ts`). A normal-angle test was rejected: it fixes a dense extrude but splits a steep deformation into Added and Removed. |
+| Test 13's pair (#319) | `packages/scene-view/fixtures/cube-a.glb` and `cube-b.glb`, made by Blender 5.0.1 with the export's own settings (`scripts/make-compare-fixtures.py`) | The test is about what a real export holds: which diagonal each quad splits on and where the extruded strip's corners land. A pair written by hand would pin the triangulation guessed, not Blender's. |
+| The diff's grids (#319) | Centroids sorted by cell key in two typed arrays and found by binary search; cells of 2ε for the ε pass and δ for the δ passes, counted from the part's box and grown when the box is over 100,000 cells across, so a key stays exact in a float64; every search covers one cell each way | The spec's single 5 cm grid tests thousands of candidates a triangle in a dense mesh during the ε pass, and a Map of arrays took 1.3 to 1.5 s at the budget's size. This takes about 0.3 s for 200,000 triangles a side here (`budget.test.ts`, median of five under 2 s). Parsing is not in that number; the footer shows both. |
+| Where the diff runs (#319) | A module worker per diff (`diff.worker.ts`, started with `new URL(…, import.meta.url)` so Vite bundles it), handed both `.glb`s and answering with the classes as transferable buffers; a newer pick ends the running worker. It parses with three's GLTFLoader and a plugin that drops every material first, in world space, with parts by glTF node name. Where there is no `Worker` (jsdom, Node) the same handler runs on the calling thread and the footer says so | Spec §12.1 item 1. Textures are the expensive part of a parse, and a worker has no DOM to decode them with. `export_apply` was already on in #317's export, so a part's modifiers are in its triangles. |
+| Parts in Compare (#319) | Matched by name; a part only in B is all Added and a part only in A all Removed, which is also how a rename reads | Blender keeps no record of an object's old name, and guessing one from the geometry is wrong exactly when it matters, for a part renamed and edited. |
+| The four classes (#319) | Added solid blue; Changed amber with a screen-space hatch, so it reads the same at any zoom; Removed A's triangles as a faint coral fill with a dashed outline of their sharp edges, drawn through B; Unchanged grey. Each has a toggle with its count. One camera and one set of controls for Changes and Split; Split draws A and B either side of a divider in one frame, by scissor | Spec §12 item 3 asks for a pattern as well as a colour, so a class never depends on telling blue from coral. A second camera for Split would have to be kept in step. |
+| Next change (#319) | N and Shift N, on the mode's root, step through places: the changed triangles' corner and centroid cells joined by union-find across touching δ cells, biggest first, each framed by its box. The side list frames a part's box on a click | A face and the strip around it share corners, so they are one stop however large the triangles; a change on the far side of the model is another. |
+| What a version holds (#319) | #317's `export.json` (`commit`, `time`, `author`, `triangles`, the parts and each material's colour, metallic, roughness and alpha) and `model.glb`; `blender-viewer/export-versions` adds `kept` and each version's `blendCopy`, the path of `v<n>/source.blend` when it has one | Spec §12.1 item 6: material changes come from that metadata, not from the `.glb`, and are named per part in the side list (tolerance 1e-3). |
+| Keep B and Go back to A (#319) | DECISIONS X12's minimum, flagged to the owner. Keep vB pins B in `asset.json` (`kept`) so pruning to ten never removes it, and changes no other file; only the person keeps a version (`blender-viewer/version-keep` refuses an agent and `system`, and is a write, refused on main). Go back to vA opens A's `source.blend` in Editor mode through `editor-open` when the version has one, and is otherwise disabled with the reason. Versions are append-only | Writing A over the person's file, or exporting A again as a new version, are decisions about the person's work that X12 leaves to the owner. Nothing writes `source.blend` yet: agents never save a `.blend` (#317's row), so Go back is disabled everywhere today. |
+| The version a Blender note was made on (#319) | A mesh anchor also carries the file (`blend`, environment-relative) and the version shown when it was written (`version`); both optional, so a note from before reads and writes back unchanged | Notes from A needs both, and #320's N-panel should reuse them, not add its own. |
+| Notes from A (#319) | The file's mesh notes, not resolved, made on A or an earlier version; a note with no version counts when its part is in A and it was written before B was exported. Looks good and Still broken are `comments/verdict`, as everywhere else | Spec §12 item 5. Still broken here is a reply and a reopen, not Play's new-take loop. |
+| Compare and the embedded Blender (#319) | Compare draws in the page; the Editor mode unmounts while it shows, which hides Blender's window as Renders does, and it is not closed | A native window paints over the page, and Blender in the pane is the person's: leaving Compare finds it as it was. |
+| Compare with one version (#319) | Still drawn in the mode switch and not chosen (`aria-disabled`, as #317 drew it), its tooltip saying Compare needs two exports; the banner's Compare with v<n> is disabled with the same reason, and with two it opens Compare with that version as B | A file's first export has nothing to compare it with, and the switch keeps its place either way. |
 | Where pick's physics query runs (#312) | `_physics_process`; the command poll only queues the pick | Godot makes the direct space state safe there alone: from `_process` it refuses with physics on its own thread, and Jolt refuses while it steps, so the pick fell back to boxes without saying why. The node runs while paused, so a pick still answers during Mark up. |
 | Exported builds (#312) | Inert whenever `OS.has_feature("template")` | Relying on a missing `--veistra-dir` alone was rejected: a shipped game started with the argument by hand would write telemetry and answer commands, against §5.5 rule 6 and the consent text. |
 | When Update capture is offered (#312) | Whenever the installed script's text is not this build's, CRLF read as LF; an earlier v2 goes out as `partial` but keeps its channel | The marker alone called every earlier v2 current, so no fix to the script ever reached a project that had one. Treating an earlier v2 as a broken install was rejected: its game would lose capture and Rec until updated. |
@@ -281,6 +311,63 @@ check it". The same chokepoint reports `godot:note_fixed` and `godot:note_resolv
 | `list_play_notes` for a follow-up (#321) | `packet` and `packetMd` are the newest take's; `takes` lists each `{take, number, n, when, packet}`, oldest first | An agent given the first packet would work from the take that no longer shows the problem. |
 | Play <scene> from review (#321) | Runs the scene with `recordOnce` | Decision X9: Play <scene> records that run, so its take can be reviewed against this one. |
 | `followUp` on `notes_sent` (#321) | `followUp: true`, only on a Send with a Still broken note in it | Decision X1. Absent otherwise, so earlier Sends read as they did. |
+| What the spike measures as R2 (#308) | `crate::embed` itself, an `Embed` of the target's kind on `embed::native()`, unchanged, with the game launched at the box as `embed::launch_rect` says; `--wid` through the same `Embed` with a window system that finds the window Godot made owned and places it with the native one | A copy of the R2 code inside the spike could pass while Play's own code fails. |
+| R2 with `--wid` as a third way (#308) | Measured on the demo game with Godot 4.4 or later; if it wins, the editor and Blender run plain R2 | It is how Godot's own editor embeds a game: Godot makes the owned popup itself, detaches its input from the owner's thread and skips its off-screen clamp. Only Godot takes the argument. |
+| How the spike sees a menu over the game (#308) | Screen pixels: a stand-in menu the page paints, read over the game reporter's green patch and beside the box | veistra-ui's screenshot is WebView2's own frame, which never shows another program's window, so it cannot see airspace. A real Veistra menu over a real game stays a by-eye check, listed in the report. The menu ranks no way: §4.3's still swap shows menus whichever wins. |
+| A hung game and Veistra's input (#308) | Measured: the report times Veistra's click while the game busy-waits for five seconds, then again after `AttachThreadInput(.., FALSE)`. R2 already detaches once it owns the window (#309, above), so its first pass is the shipped detach; R1's is the joined queue | Windows joins the input queues of a child and its parent, and of an owned window and its owner, across threads. #309 settled R2 with the detach `--wid` does; the run says whether it holds, and whether R1 would need it too. |
+| Where the spike lives (#308) | `src-tauri/src/godot/spike.rs` and `spike/`, an ignored test compiled only with the `embed-spike` feature | Nothing ships it: no build without the feature has it, and the feature only adds two `windows-sys` modules to test builds. |
+
+### The embed spike (#308)
+
+`pnpm spike:embed`, on a Windows 11 desktop, fills in the R1/R2 row's evidence. It opens a
+stand-in Veistra window (a top-level window with a child "page" where WebView2 would be),
+starts the demo game from a temporary copy of `examples/godot-demo` with the reporters in
+`src-tauri/src/godot/spike/` added, and puts its window over a fixed box three ways: R1
+(`SetParent`, written in the spike), R2 (`crate::embed` as Play ships it) and R2 with
+`--wid`. Each way gets the four checks below; the way it suggests then runs the Godot editor
+(`--editor --single-window`) and Blender (`--factory-startup`).
+
+It takes a few minutes and drives the real mouse and keyboard (clicks, F13, screen reads), so
+leave both alone until the report prints. The report goes to
+`%TEMP%\veistra-embed-spike\report.md` (or `VEISTRA_SPIKE_REPORT`): the suggested way, the two
+tables below filled in, rows of what else it saw (how long the window took and where it first
+showed, frames recorded while hidden, a native popup over the game, the foreground window,
+whether the frame and parent held, DPI awareness, Veistra's click while the game hangs), and
+what is left to check by eye. `VEISTRA_SPIKE_GODOT` names the executable, as the Godot setting
+does; `VEISTRA_SPIKE_WAYS` (`r1,r2,r2wid`) and `VEISTRA_SPIKE_TARGETS` (`game,editor,blender`)
+narrow the run; `VEISTRA_SPIKE_CHOSEN` runs the editor and Blender with another way. The editor
+opens the copy with your own Godot editor settings; Blender saves nothing.
+
+A check passes when:
+
+- **Follows**: after twelve 15 px steps and after a resize, the window sits exactly on the box
+  within 100 ms, the program reports the new size within a second, and it is back on the box
+  after Veistra is minimised and restored.
+- **Graphics Capture**: `CreateForWindow` accepts the window, and two seconds through Play's
+  recorder hold 30 frames (one for the editor and Blender, which redraw only on change) at the
+  box's size, which the default 720p quality leaves as it is.
+- **Input**: a real click at the box's centre lands there (within 2 px, the game) and F13
+  arrives, and none of it reaches Veistra's window.
+- **Menu**: the menu shows over the window as it is, or, with the window hidden while the menu
+  is open, the menu shows within 100 ms and the window is back within 100 ms of it closing.
+
+It suggests R2, then R2 with `--wid`, then R1: the first to pass the first three on the demo
+game, and R2 when none does. The choice is the owner's. Paste the report's tables over these
+and record it in the R1/R2 row.
+
+| Check | R1 child window | R2 owned popup | R2 with --wid |
+|---|---|---|---|
+| Follows a Veistra move and resize | pending | pending | pending |
+| Graphics Capture accepts the window | pending | pending | pending |
+| Keyboard and mouse reach the game | pending | pending | pending |
+| A Veistra menu draws over it | pending | pending | pending |
+
+| Check | Demo game | Godot editor | Blender |
+|---|---|---|---|
+| Follows a Veistra move and resize | pending | pending | pending |
+| Graphics Capture accepts the window | pending | pending | pending |
+| Keyboard and mouse reach the game | pending | pending | pending |
+| A Veistra menu draws over it | pending | pending | pending |
 
 ### Not verified on a real machine
 
@@ -321,6 +408,15 @@ From #312, not yet run in a real Godot (gdparse, gdlint and Rust tests only):
 - Stop's `flush`: the take's telemetry runs to its last 100 ms.
 - With the addon removed, Play runs, Rec says why it is off, and nothing throws; an exported
   build with the addon writes nothing to the folder it is given.
+
+From #308, not yet run (unit tests, a Windows type-check and clippy only):
+
+- `pnpm spike:embed` as a whole: nothing in `spike.rs`'s Win32 half has run, so the R1/R2 row
+  waits on its first run. A failure of the harness itself shows as a "Harness error" row, not as
+  a failed check; fix the harness and run it again before reading the tables.
+- The reporters: `reporter.gd` and `editor_reporter.gd` in a real Godot 4.3 or later (gdparse
+  and gdlint only), and `blender_reporter.py`'s listener in a Blender with a window (its tests
+  run in background `bpy`, which has no window and no events).
 
 From #310, the take's timing and files tested through a fake capture; the encoder, the scaling
 pass and the frame clock type-checked for Windows only:
@@ -387,6 +483,53 @@ window or Godot ran:
 - The banner with a real agent tab and with Claude Code, Codex and Gemini in a terminal tab, on
   this root and on another worktree's.
 - `godot:editor_opened` reaching PostHog, which needs A4's `features/godot.ts` to declare it.
+
+From #317, unit-tested in Rust through fakes (a fake Blender that writes the boot script's files,
+a fake window system) and in jsdom, `export.py` and `veistra_boot.py` run headless in `bpy` 5.0.1
+(`bpy_test.py`; `cargo test` runs it where `VEISTRA_TEST_BPY_PYTHON` names a Python with `bpy`,
+and it skips without one), and type-checked and linted for Windows; no WebView2, Win32 window or
+Blender with a window ran:
+
+- Spec §13 test 12 on a real machine: with `bed.blend` open in Blender in a pane and v1 to v5
+  kept, an agent's `export_blend` writes v6 and `bed.blend`'s bytes are unchanged; closing Blender
+  removes `.veistra/locks/bed.blend.lock`. The Rust test runs the same steps with a fake Blender.
+- Blender's window found by its class (`GHOST_WindowClass`) and placed over the box, after a
+  splitter drag, a maximise and a cluster switch; Pop out and Dock; the still under a menu or the
+  palette; the window handed back when its pane closes and when Veistra exits. Where the window
+  first shows before the embedder places it, with no `-p`.
+- Close: `WM_CLOSE` reaching Blender, its save prompt, and Cancel leaving it open; the boot
+  script's `quit` with no window to post to. File dialogs and Preferences opening above Veistra.
+- The boot script in a windowed Blender 4.2 and 4.5: `hello.json` and `state.json`, `select`,
+  `viewport-only` (and back), `capture` with the view and selection, `pick` on a mesh, `quit`, and
+  the timer surviving File > Open. The headless `bpy` run covers only what needs no window.
+- The lock's process start time on Windows (`sysinfo`), and a Blender found through a launcher or a
+  Steam install, where the pid Veistra starts is not Blender's: `hello.json`'s pid is locked.
+- Paths on Windows: a `.blend` named with different case or with `\` reaching
+  `relative_blend`, `lock::live_above` from Files' Open in Blender, and `canonicalize`'s `\\?\`
+  prefix.
+- The wire render fix with a real Blender's Workbench: dark lines on a light world, then the
+  scene restored. The headless `bpy` test checks the PNG is not blank.
+- Send selection reaching an agent's prompt with the text and the image; Mark up's pins named
+  through `pick`.
+- The Editor bar and banner against the Components and BlenderModel boards at 1440 and 1024 px
+  wide; Compare's tooltip.
+
+From #319, the diff is unit-tested in Node on Blender 5.0.1's own export of test 13's pair and on
+generated meshes, the worker's handler and its fallback run in Node, Compare mode runs in jsdom
+with the real diff and a stand-in view, and the Rust half runs here and is type-checked and linted
+for Windows; no WebView2, WebGL or Blender with a window ran:
+
+- The worker bundled by `vite build` starting in WebView2 (`type: "module"`), and the footer
+  saying "in a worker" rather than "on this thread".
+- The budget on the owner's laptop: 200,000 triangles a side in 2 s or less, with the parse on top.
+- The change view drawn: the amber hatch's width at 100, 150 and 200 % scaling, the removed ghost's
+  dashes under ANGLE, Split's divider and its one camera, N framing each place, and a part framed
+  from the side list.
+- The embedded Blender hidden while Compare shows and back, unmoved, when Editor mode returns.
+- Go back to A opening a version's `source.blend` in Blender in the pane. Nothing writes one yet,
+  so this has only run against a fake editor.
+- Compare's pickers, legend, side list and footer against the BlenderModel board at 1440 and
+  1024 px wide.
 
 From #314, tested in jsdom and type-checked only; no WebView2, video decoder or Godot ran:
 
@@ -513,8 +656,8 @@ appears briefly. The frame is cached beside the tree and stamped separately.
 
 Running and viewing read the project, so they work on main. Writing does not:
 `godot/open-editor`, `godot/editor-open`, `godot/editor-save`, `godot/plugin-install`,
-`godot/plugin-remove`, `blender-viewer/open`, `files/open-in-blender`, `play/addon-install`,
-`play/addon-remove`, `play/send`, `comments/create` and `comments/verdict` are in
+`godot/plugin-remove`, `blender-viewer/open`, `blender-viewer/editor-open`, `files/open-in-blender`,
+`play/addon-install`, `play/addon-remove`, `play/send`, `comments/create` and `comments/verdict` are in
 `WRITE_METHODS` and are refused on main before a handler runs. The Godot viewer's cache and the
 Blender viewer's export cache go under the app-local data folder for main (Blender's keyed by
 the checkout's path) and under `<env>/.veistra/` for a worktree; run channels are always in temp.
@@ -569,3 +712,73 @@ The JSON an agent receives is the format in `docs/markup-format.md`, with the so
   "annotations": []
 }
 ```
+
+## Blender in the pane (#317)
+
+`blender/editor.rs`, `blender/lock.rs`, `blender/versions.rs` and `blender/veistra_boot.py`; the
+methods are in `apps/blender_viewer.rs`, the agent's tools in `mcp/servers/blender_exports.rs`, and
+the pane is `apps/blender-viewer/ui/src/editor/`. One Blender per cluster, and one per file across
+clusters and across Blenders, through the lock.
+
+**Opening.** Editor mode shows the `.blend` picker and Open in Blender. The press sends
+`blender-viewer/editor-open {blend}`, which writes `veistra_boot.py` into a fresh channel folder,
+starts `blender <file.blend> --python <channel>/veistra_boot.py` detached with
+`VEISTRA_BLENDER_CHANNEL` naming the folder, takes the lock, and hands the window to the embedder
+as kind `blender` for that pane (`embed/*` with `kind: "blender"`). Where there is no embedder the
+same Blender opens in its own window and the bar says so. The pane polls
+`blender-viewer/editor-state` every 500 ms: the process, the embed report, the file and its lock,
+whether it has unsaved changes, and what the boot script last wrote. Refused on main, for a path
+outside the environment, and while the file is open in another Blender.
+
+**The bar.** Mode (Editor, Renders, Compare); the environment chip, the file, with a dot while
+Blender has unsaved changes; the state chip: Not open, Starting, Editing, Popped out, Own window,
+Closing; Viewport only, Mark up and Send selection; Pop out or Dock, and Close. Each tool is
+disabled with its reason until the boot script has said hello. The footer names the Blender and
+the boot script's version.
+
+**The boot script** answers `select`, `viewport-only`, `capture`, `pick` and `quit` from one
+persistent `bpy.app.timers` callback, and rewrites `state.json` when the file, its unsaved flag,
+the selection or the 3D view change. None of its commands edits the scene. #320's Veistra tab in
+the N-panel adds its commands to the same `COMMANDS` table and uses the two names kept for it,
+`events.jsonl` and `notes.json`.
+
+**One writer.** While Blender has the file open, `.veistra/locks/<file>.lock` holds Blender's pid
+and start time, the cluster and the channel. A banner under the bar says "You have bed.blend open.
+The agent's next export goes to v6 beside it and never overwrites your file.", with Compare with
+v5, which opens Compare on that version (#319). Opening the same file again, from another pane, `blender-viewer/open` or
+Files' Open in Blender, is refused with the holding process; a file Blender reaches through
+File > Open that another Blender holds gets the conflict banner and no lock, until that one
+closes.
+
+**Exports.** Every export, the person's Export or an agent's `export_blend`, reads the saved
+`.blend` headless and lands as the next `.veistra/exports/<asset>/v<n>/`; ten are kept. Renders
+shows the newest; `blender-viewer/export-versions` lists them all, with the lock, for Compare.
+On main the same tree is under app-local data.
+
+**Closing.** Close asks Blender to quit as its own close button does, so Blender asks about
+unsaved work and the person may cancel; the chip says Closing until the process ends, and the
+watcher removes the lock. The pane closing or Veistra exiting hands the window back, still
+running, and its lock stays until it exits.
+
+## Blender Compare (#319)
+
+`packages/scene-view/src/compare/` is the diff and the change view; `apps/blender-viewer/ui/src/compare/`
+is the mode; `blender/versions.rs` and `blender-viewer/version-keep` are the backend's part. It
+compares any two of a `.blend`'s kept versions, and only reads them, so it is there on main and
+wherever the editor cannot open, with Keep and the note buttons disabled on main.
+
+**Choosing.** The mode switch offers Compare once a file has two versions, and its tooltip says why
+before then; the Editor banner's Compare with v<n> opens it on that version. B defaults to the
+newest, A to the kept version when it is older, otherwise the one before B. The pickers name each
+version's number, who exported it, its commit, its age and its triangles, and Swap trades them.
+
+**The change view.** The two `.glb`s are fetched once each and diffed in a worker (spec §12.1, with
+the refined δ rule in the Decisions table). Changes is the default; Split shows A and B either side
+of a divider under the same camera. The legend over the view is the four classes, each a toggle
+with its count, and Next change (N, Shift N) steps through the places that changed. The side list is
+each part with its counts and its material changes, then the notes made on A with Looks good and
+Still broken.
+
+**Keeping.** Keep vB pins B so it outlives the ten-version window; Go back to vA opens A's own copy
+of the `.blend` in Editor mode where the version kept one. Both are X12's minimum and flagged to the
+owner; neither writes a version or the person's file.

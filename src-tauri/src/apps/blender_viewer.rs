@@ -1,23 +1,29 @@
-//! The Blender Viewer's Rust half.
+//! The Blender app's Rust half.
 //!
-//! `docs/VEISTRA-UX-REWORK.md` §3.1-3.2. This app finds a Blender install,
-//! opens a `.blend` in the real editor (detached), and runs `blender -b` with a
-//! bundled script to *export*: a `.glb`, preview renders and a parts list,
-//! cached under `.veistra/blender/` (under the app's data on main, so the
-//! checkout is never written). The viewer shows that export and its age, never
-//! the live scene. `state` also answers `editor`, where Blender's Editor mode
-//! shows ([`crate::editor_surface`]): the export viewer is the read-only
-//! surface. The machinery is in [`crate::blender`]; this file is the RPC
-//! surface over it.
+//! This app finds a Blender install, runs it in the pane on a `.blend`
+//! (`editor-*`, handed to [`crate::blender::editor`], #317), and runs
+//! `blender -b` with a bundled script to *export*: a `.glb`, preview renders
+//! and a parts list, each kept as a numbered version under
+//! `.veistra/exports/` (under the app's data on main, so the checkout is never
+//! written). Renders shows an export and its age, never the live scene.
+//! `state` also answers `editor`, where Editor mode shows
+//! ([`crate::editor_surface`]): Blender in the pane, in its own window, or the
+//! read-only export viewer. The machinery is in [`crate::blender`]; this file
+//! is the RPC surface over it.
 //!
-//! Methods: `state`, `image`, `detect`, `set-executable`, `export-start`,
-//! `export-status`, `export-cancel`, `open`. Comments anchored to a mesh part
-//! (§3.4) go through [`crate::comments`], shared with every other viewer.
+//! Methods: `state`, `image`, `glb`, `detect`, `set-executable`,
+//! `export-start`, `export-versions`, `version-keep` (Compare's Keep B, #319),
+//! `export-status`, `export-cancel`,
+//! `open` (detached, refused on a locked file), `markup`, `markup-save` and
+//! the `editor-*` seven. Comments anchored to a mesh part (§3.4) go through
+//! [`crate::comments`], shared with every other viewer.
 
 use crate::apps::CallContext;
 use crate::blender::detect::{self, Detected, RealHost, VersionCache};
+use crate::blender::editor::{self, Editors};
 use crate::blender::job::{Jobs, Spec};
-use crate::blender::{self, keys, Manifest};
+use crate::blender::versions::{self, Author, Version};
+use crate::blender::{self, keys, lock, Manifest};
 use crate::editor_surface::{self, Facts, Tool};
 use crate::environments::Environment;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -62,6 +68,9 @@ pub struct Services<'a> {
     pub app_cache: PathBuf,
     /// Whether this build can place Blender's window in a pane.
     pub embedder: bool,
+    /// Whether the Blender in a pane that has this `.blend` open has unsaved
+    /// changes, when one has it open and has said.
+    pub dirty: &'a dyn Fn(&str) -> Option<bool>,
 }
 
 impl Services<'_> {
@@ -78,6 +87,19 @@ impl Services<'_> {
     fn outside(&self) -> Option<&Path> {
         self.read_only.then_some(self.app_cache.as_path())
     }
+
+    /// One `.blend`'s versions ([`versions::asset_dir`]).
+    fn asset(&self, project: &Path, rel: &str) -> PathBuf {
+        versions::asset_dir(project, rel, self.outside())
+    }
+
+    /// The lock on `rel`, if a Blender in a pane has it open. Never on main:
+    /// nothing opens an editor there, and reading a stale lock removes it.
+    fn lock(&self, project: &Path, rel: &str) -> Option<lock::Lock> {
+        (!self.read_only)
+            .then(|| lock::live(project, rel))
+            .flatten()
+    }
 }
 
 pub fn call(
@@ -86,9 +108,43 @@ pub fn call(
     method: &str,
     params: Option<Value>,
 ) -> Result<Value, RpcError> {
+    call_for(app, context, None, method, params)
+}
+
+/// [`call`] with the pane instance that asked, which Blender in the pane is
+/// placed over (`blender-viewer/editor-*`, [`crate::blender::editor`]).
+pub fn call_for(
+    app: &AppHandle,
+    context: &CallContext,
+    instance: Option<&str>,
+    method: &str,
+    params: Option<Value>,
+) -> Result<Value, RpcError> {
     if method == "blender-viewer/set-executable" {
         return set_executable(app, params.as_ref());
     }
+    if method.starts_with("blender-viewer/editor-") {
+        return with_editor(app, context, instance, |ctx| {
+            editor::call(ctx, method, params.as_ref())
+        })
+        .unwrap_or_else(|| {
+            Err(RpcError::new(
+                METHOD_NOT_FOUND,
+                format!("no such method: {method}"),
+            ))
+        });
+    }
+    with_services(app, context, |services| {
+        dispatch(context, services, method, params)
+    })
+}
+
+/// [`Services`] for one call from the live app.
+pub fn with_services<R>(
+    app: &AppHandle,
+    context: &CallContext,
+    f: impl FnOnce(&Services) -> R,
+) -> R {
     let environment = context.cluster_id.as_deref().and_then(|cluster| {
         app.state::<crate::shell_state::ShellState>()
             .cluster_write_environment(cluster)
@@ -98,6 +154,11 @@ pub fn call(
         .path()
         .app_local_data_dir()
         .unwrap_or_else(|_| std::env::temp_dir().join("veistra"));
+    let editors = app.state::<Editors>();
+    let dirty = |rel: &str| {
+        let project = context.project.as_deref()?;
+        editors.dirty(project, rel)
+    };
     let services = Services {
         config: config(app),
         jobs: &app.state::<Jobs>(),
@@ -107,8 +168,50 @@ pub fn call(
         read_only,
         app_cache,
         embedder: crate::embed::SUPPORTED,
+        dirty: &dirty,
     };
-    dispatch(context, &services, method, params)
+    f(&services)
+}
+
+/// The editor's [`editor::Ctx`] for one call from the live app.
+fn with_editor<R>(
+    app: &AppHandle,
+    context: &CallContext,
+    instance: Option<&str>,
+    f: impl FnOnce(&editor::Ctx) -> R,
+) -> R {
+    let shell = app.state::<crate::shell_state::ShellState>();
+    let read_only = context
+        .cluster_id
+        .as_deref()
+        .and_then(|cluster| shell.cluster_write_environment(cluster))
+        .is_some_and(|e| e.is_main());
+    let cfg = config(app);
+    let versions = app.state::<VersionCache>();
+    let find = || {
+        let found = detect::detect(&RealHost, &cfg.executable, &versions);
+        match found.path {
+            Some(path) => Ok((PathBuf::from(path), found.version)),
+            None => Err(
+                "Blender was not found — set its path in Settings > Blender, or in this viewer"
+                    .to_string(),
+            ),
+        }
+    };
+    let shown = |i: &str| crate::embed::host::shown(&shell.snapshot(), i);
+    let ctx = editor::Ctx {
+        editors: &app.state::<Editors>(),
+        hosts: &app.state::<crate::embed::host::Hosts>(),
+        cluster: context.cluster_id.clone().unwrap_or_default(),
+        instance: instance.map(str::to_string),
+        project: context.project.clone(),
+        read_only,
+        find: &find,
+        scratch: std::env::temp_dir().join("veistra-blender"),
+        owner: crate::embed::host::owner_fn(app),
+        shown: &shown,
+    };
+    f(&ctx)
 }
 
 /// "Open in Blender" for a path the caller already has, from the Files app's
@@ -139,17 +242,15 @@ pub fn dispatch(
             Ok(json!(detected(services)))
         }
         "blender-viewer/export-start" => export_start(context, services, params.as_ref()),
+        "blender-viewer/export-versions" => export_versions(context, services, params.as_ref()),
+        "blender-viewer/version-keep" => version_keep(context, services, params.as_ref()),
         "blender-viewer/export-status" => Ok(json!(services.jobs.snapshot())),
         "blender-viewer/export-cancel" => Ok(json!({ "cancelled": services.jobs.cancel() })),
         // On main `apps::WRITE_METHODS` refuses this before it gets here.
         "blender-viewer/open" => {
-            let blend = required_str(params.as_ref(), "blend")?;
-            open(
-                &services.config,
-                services.host,
-                services.versions,
-                Path::new(&blend),
-            )
+            let project = project_of(context, services)?;
+            let (blend, _) = resolve_blend(project, &required_str(params.as_ref(), "blend")?)?;
+            open(&services.config, services.host, services.versions, &blend)
         }
         _ => Err(RpcError::new(
             METHOD_NOT_FOUND,
@@ -227,6 +328,56 @@ fn resolve_blend(project: &Path, raw: &str) -> Result<(PathBuf, String), RpcErro
     Ok((path, rel))
 }
 
+/// The export the viewer shows for a `.blend`: a version by number, or the
+/// newest, or, for a file last exported before versions existed, the old
+/// cache's. `renders` is the folder its render files are in.
+struct Shown {
+    manifest: Manifest,
+    renders: PathBuf,
+    version: Option<Version>,
+}
+
+fn shown(services: &Services, project: &Path, rel: &str, n: Option<u32>) -> Option<Shown> {
+    let asset = services.asset(project, rel);
+    let version = match n {
+        Some(n) => Some(versions::read(&asset, n)?),
+        None => versions::newest(&asset),
+    };
+    if let Some(v) = version {
+        let dir = versions::version_dir(&asset, v.n);
+        return Some(Shown {
+            manifest: v.as_manifest(&dir),
+            renders: dir.join("renders"),
+            version: Some(v),
+        });
+    }
+    let cache = services.cache(project, rel);
+    Some(Shown {
+        manifest: blender::read_manifest(&cache)?,
+        renders: cache.join("renders"),
+        version: None,
+    })
+}
+
+fn version_param(params: Option<&Value>) -> Result<Option<u32>, RpcError> {
+    match params.and_then(|p| p.get("version")) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .map(Some)
+            .ok_or_else(|| invalid("`version` must be a version number")),
+    }
+}
+
+/// The lock as the pane shows it: whose, and since when.
+fn lock_json(lock: Option<&lock::Lock>) -> Value {
+    lock.map_or(
+        Value::Null,
+        |l| json!({ "file": l.file, "pid": l.pid, "since": l.since, "cluster": l.cluster }),
+    )
+}
+
 fn state(
     context: &CallContext,
     services: &Services,
@@ -246,6 +397,7 @@ fn state(
             "editor": editor, "environment": environment,
             "blends": [], "blend": null, "rel": null,
             "model": null, "parts": [], "renders": [], "job": job,
+            "version": null, "versions": [], "locked": null,
         }));
     };
 
@@ -266,18 +418,28 @@ fn state(
         "editor": editor, "environment": environment,
         "blends": blends, "blend": null, "rel": null,
         "model": null, "parts": [], "renders": [], "job": job,
+        "version": null, "versions": [], "locked": null,
     });
     let Some((path, rel)) = selected else {
         return Ok(value);
     };
 
-    let cache = services.cache(project, &rel);
     let current_mtime = blender::mtime_ms(&path);
     value["blend"] = json!(path.display().to_string());
     value["rel"] = json!(rel);
     value["blendMtime"] = json!(current_mtime);
+    value["locked"] = lock_json(services.lock(project, &rel).as_ref());
+    value["versions"] = json!(versions::list(&services.asset(project, &rel))
+        .iter()
+        .map(|v| v.n)
+        .collect::<Vec<_>>());
 
-    if let Some(m) = blender::read_manifest(&cache) {
+    if let Some(Shown {
+        manifest: m,
+        version,
+        ..
+    }) = shown(services, project, &rel, None)
+    {
         value["model"] = json!(m.glb);
         value["glbBytes"] = json!(m.glb_bytes);
         value["exportedAt"] = json!(m.exported_at);
@@ -293,11 +455,18 @@ fn state(
             .iter()
             .map(|r| json!({ "id": r.id, "label": r.label, "createdAt": m.exported_at }))
             .collect::<Vec<_>>());
+        value["version"] = version.map_or(Value::Null, |v| {
+            json!({
+                "n": v.n, "author": v.author, "time": v.time, "commit": v.commit,
+                "branch": v.branch, "triangles": v.triangles, "sourceLocked": v.source_locked,
+            })
+        });
     }
     Ok(value)
 }
 
-/// One render's PNG, base64. Looked up by id in the manifest rather than by a
+/// One render's PNG, base64, from the newest version or the one `version`
+/// names. Looked up by id in that version's manifest rather than by a
 /// caller-supplied file name, so a request cannot name any other file.
 fn image(
     context: &CallContext,
@@ -307,15 +476,16 @@ fn image(
     let project = project_of(context, services)?;
     let (_, rel) = resolve_blend(project, &required_str(params, "blend")?)?;
     let id = required_str(params, "id")?;
-    let cache = services.cache(project, &rel);
-    let manifest: Manifest = blender::read_manifest(&cache)
-        .ok_or_else(|| invalid("this file has not been exported yet"))?;
+    let Shown {
+        manifest, renders, ..
+    } = shown(services, project, &rel, version_param(params)?)
+        .ok_or_else(|| invalid("this file has no such export"))?;
     let render = manifest
         .renders
         .iter()
         .find(|r| r.id == id)
         .ok_or_else(|| invalid(format!("no render `{id}` in this export")))?;
-    let file = cache.join("renders").join(&render.file);
+    let file = renders.join(&render.file);
     let bytes = std::fs::read(&file).map_err(|e| {
         RpcError::new(
             INTERNAL_ERROR,
@@ -325,8 +495,9 @@ fn image(
     Ok(json!({ "mime": "image/png", "base64": BASE64.encode(bytes) }))
 }
 
-/// The exported `.glb`, base64, for the 3D preview. Reads the file the last
-/// export's manifest names, never a caller-supplied path.
+/// The exported `.glb`, base64, for the 3D preview: the newest version's, or
+/// the one `version` names. Reads the file that version's manifest names,
+/// never a caller-supplied path.
 fn glb(
     context: &CallContext,
     services: &Services,
@@ -334,15 +505,75 @@ fn glb(
 ) -> Result<Value, RpcError> {
     let project = project_of(context, services)?;
     let (_, rel) = resolve_blend(project, &required_str(params, "blend")?)?;
-    let cache = services.cache(project, &rel);
-    let manifest: Manifest = blender::read_manifest(&cache)
-        .ok_or_else(|| invalid("this file has not been exported yet"))?;
+    let Shown { manifest, .. } = shown(services, project, &rel, version_param(params)?)
+        .ok_or_else(|| invalid("this file has no such export"))?;
     let file = manifest
         .glb
         .ok_or_else(|| invalid("this export has no .glb"))?;
     let bytes = std::fs::read(&file)
         .map_err(|e| RpcError::new(INTERNAL_ERROR, format!("could not read {file}: {e}")))?;
     Ok(json!({ "base64": BASE64.encode(&bytes), "size": bytes.len() }))
+}
+
+/// `export-versions`: every kept version of a `.blend`, newest first, each
+/// with its folder and its `.glb`'s path, for Compare (#319) and Renders.
+fn export_versions(
+    context: &CallContext,
+    services: &Services,
+    params: Option<&Value>,
+) -> Result<Value, RpcError> {
+    let project = project_of(context, services)?;
+    let (_, rel) = resolve_blend(project, &required_str(params, "blend")?)?;
+    let asset = services.asset(project, &rel);
+    let list: Vec<Value> = versions::list(&asset)
+        .into_iter()
+        .map(|v| {
+            let dir = versions::version_dir(&asset, v.n);
+            let model = v.glb.as_ref().map(|g| dir.join(g).display().to_string());
+            let copy = dir.join(versions::BLEND_COPY);
+            let mut entry = json!(v);
+            entry["dir"] = json!(dir.display().to_string());
+            entry["model"] = json!(model);
+            entry["blendCopy"] = json!(copy.is_file().then(|| copy.display().to_string()));
+            entry
+        })
+        .collect();
+    Ok(json!({
+        "rel": rel,
+        "keep": versions::KEEP,
+        "kept": versions::kept(&asset),
+        "locked": lock_json(services.lock(project, &rel).as_ref()),
+        "versions": list,
+    }))
+}
+
+/// `version-keep`: Compare's Keep B, the minimum X12 settles on. It pins the
+/// version so pruning never takes it and says so in the list; it does not
+/// touch the `.blend`, open or not, and it removes no version. The person's
+/// call, like a verdict on a note, so an agent is refused. Refused on main
+/// (`apps::WRITE_METHODS`), here as well as there.
+fn version_keep(
+    context: &CallContext,
+    services: &Services,
+    params: Option<&Value>,
+) -> Result<Value, RpcError> {
+    if services.read_only {
+        return Err(RpcError::new(
+            crate::apps::READ_ONLY,
+            "main is read-only: keep a version in a worktree",
+        ));
+    }
+    if actor(params)? != Author::Human {
+        return Err(invalid(
+            "only the person keeps a version: an agent can export one, not choose it",
+        ));
+    }
+    let project = project_of(context, services)?;
+    let (_, rel) = resolve_blend(project, &required_str(params, "blend")?)?;
+    let n = version_param(params)?.ok_or_else(|| invalid("`version` is required"))?;
+    let asset = services.asset(project, &rel);
+    versions::keep(&asset, n).map_err(invalid)?;
+    Ok(json!({ "rel": rel, "kept": n }))
 }
 
 /// Keeps the markup picture and JSON for a `.blend`, beside its export cache.
@@ -382,11 +613,90 @@ fn markup_load(
 
 const KNOWN_VIEWS: &[&str] = &["front", "three-quarter", "side", "wire"];
 
+/// `human` or `agent`; `system` is never accepted and a missing actor is an
+/// error, as in `godot::rpc` and Schematify. The version records it.
+fn actor(params: Option<&Value>) -> Result<Author, RpcError> {
+    match params.and_then(|p| p.get("actor")).and_then(Value::as_str) {
+        Some("human") => Ok(Author::Human),
+        Some("agent") => Ok(Author::Agent),
+        Some(other) => Err(invalid(format!(
+            "actor must be \"human\" or \"agent\", got {other:?}"
+        ))),
+        None => Err(invalid("actor is required")),
+    }
+}
+
+/// An export that has started: which file, whether Blender in a pane had it
+/// open, and the version it lands as. Exports run one at a time, so no other
+/// can take that number first.
+pub struct Started {
+    pub rel: String,
+    pub locked: bool,
+    pub version: u32,
+    pub dir: PathBuf,
+}
+
+impl Started {
+    fn to_json(&self) -> Value {
+        json!({
+            "started": true, "rel": self.rel, "locked": self.locked,
+            "version": self.version, "dir": self.dir.display().to_string(),
+        })
+    }
+}
+
 fn export_start(
     context: &CallContext,
     services: &Services,
     params: Option<&Value>,
 ) -> Result<Value, RpcError> {
+    Ok(start_export(context, services, params)?.to_json())
+}
+
+/// MCP `export_blend`: an export as the agent, answered as soon as it starts.
+/// The `.blend` is only read, whether or not the person has it open.
+pub fn agent_export(
+    context: &CallContext,
+    services: &Services,
+    blend: &str,
+) -> Result<Value, RpcError> {
+    let params = json!({ "blend": blend, "actor": "agent" });
+    let started = start_export(context, services, Some(&params))?;
+    let mut answer = started.to_json();
+    answer["note"] = json!(if started.locked {
+        "The person has this file open in Blender. The export reads it as last saved and \
+         writes only the new version; their file is not touched. list_blend_exports shows \
+         the version once it lands."
+    } else {
+        "Exporting in the background. list_blend_exports shows the version once it lands, \
+         usually within a minute. The .blend is only read."
+    });
+    Ok(answer)
+}
+
+/// MCP `list_blend_exports`: a file's versions, newest first, and the
+/// export running now.
+pub fn agent_exports(
+    context: &CallContext,
+    services: &Services,
+    blend: &str,
+) -> Result<Value, RpcError> {
+    let mut answer = export_versions(context, services, Some(&json!({ "blend": blend })))?;
+    answer["job"] = json!(services.jobs.snapshot());
+    Ok(answer)
+}
+
+/// Start an export of `params.blend` as `params.actor`. Every export becomes
+/// the next version of that file ([`versions`]) and none writes to the
+/// `.blend`: `export.py` never saves, and the version records the file's
+/// SHA-256 as it was read. A file Blender in a pane has open is exported as
+/// last saved, and the version says so.
+pub fn start_export(
+    context: &CallContext,
+    services: &Services,
+    params: Option<&Value>,
+) -> Result<Started, RpcError> {
+    let author = actor(params)?;
     let project = project_of(context, services)?;
     let (blend, rel) = resolve_blend(project, &required_str(params, "blend")?)?;
 
@@ -401,9 +711,9 @@ fn export_start(
 
     let cache = services.cache(project, &rel);
     let export_dir = services.config.export_dir.trim();
-    // The cache is Veistra state and always allowed: on main it is kept under
-    // the app's data, not in the checkout. A .glb written into the checkout is
-    // a write to it, which main refuses (docs/VEISTRA-UX-REWORK.md §2.3).
+    // The versions are Veistra state and always allowed: on main they are kept
+    // under the app's data, not in the checkout. A .glb written into the
+    // checkout is a write to it, which main refuses (docs/VEISTRA-UX-REWORK.md §2.3).
     if !export_dir.is_empty() && services.read_only {
         return Err(RpcError::new(
             crate::apps::READ_ONLY,
@@ -411,7 +721,7 @@ fn export_start(
              checkout. Open a worktree, or clear Settings > Blender > Export the .glb into.",
         ));
     }
-    let glb_target = blender::glb_target(project, &cache, &rel, export_dir).map_err(invalid)?;
+    let copy_to = blender::export_copy(project, &rel, export_dir).map_err(invalid)?;
 
     let views: Vec<String> = match params
         .and_then(|p| p.get("views"))
@@ -426,23 +736,19 @@ fn export_start(
         None => KNOWN_VIEWS.iter().map(|v| v.to_string()).collect(),
     };
 
+    let internal = |e: String| RpcError::new(INTERNAL_ERROR, e);
     let root = services.cache_root(project);
-    std::fs::create_dir_all(&root).map_err(|e| {
-        RpcError::new(
-            INTERNAL_ERROR,
-            format!("could not create {}: {e}", root.display()),
-        )
-    })?;
+    std::fs::create_dir_all(&root)
+        .map_err(|e| internal(format!("could not create {}: {e}", root.display())))?;
     let script = root.join("_export.py");
-    std::fs::write(&script, blender::EXPORT_SCRIPT).map_err(|e| {
-        RpcError::new(
-            INTERNAL_ERROR,
-            format!("could not write {}: {e}", script.display()),
-        )
-    })?;
+    std::fs::write(&script, blender::EXPORT_SCRIPT)
+        .map_err(|e| internal(format!("could not write {}: {e}", script.display())))?;
 
+    // The scratch folder and the running log stay in the cache; only a run
+    // that finished becomes a version.
     let pending = cache.join("pending");
     let _ = std::fs::remove_dir_all(&pending);
+    let log = cache.join("export.log");
     let spec = Spec {
         exe,
         blend: blend.clone(),
@@ -452,31 +758,44 @@ fn export_start(
         resolution: services.config.resolution,
         views,
         timeout: Duration::from_secs(15 * 60),
-        log_path: Some(cache.join("export.log")),
+        log_path: Some(log.clone()),
     };
 
-    let base = Manifest {
-        blend: rel.clone(),
-        blend_mtime: blender::mtime_ms(&blend).unwrap_or(0),
-        exported_at: 0,
-        engine: spec.engine.clone(),
-        resolution: spec.resolution,
-        blender_version: String::new(),
-        glb: None,
-        glb_bytes: None,
-        renders: vec![],
-        parts: vec![],
-        stats: Value::Null,
-        warnings: vec![],
-    };
-    let finish_cache = cache.clone();
+    // What the version says about its source, read before Blender starts.
+    let held = services.lock(project, &rel);
+    let env = crate::godot::session::env_info(project);
+    let mut template = Version::template(&rel, author, &spec.engine, spec.resolution);
+    template.blend_sha256 = versions::sha256_file(&blend).map_err(internal)?;
+    template.blend_mtime = blender::mtime_ms(&blend).unwrap_or(0);
+    template.commit = env.commit;
+    template.branch = env.branch;
+    template.source_locked = held.is_some();
+    template.source_dirty = held.as_ref().and_then(|_| (services.dirty)(&rel));
+
+    let asset = services.asset(project, &rel);
+    let version = versions::next_number(&asset);
+    let dir = versions::version_dir(&asset, version);
     services
         .jobs
-        .start(rel, spec, move |result| {
-            blender::commit(&finish_cache, &pending, &glb_target, result, base).map(|_| ())
+        .start(rel.clone(), spec, move |result| {
+            let version = versions::commit(&asset, &pending, result, Some(&log), template)?;
+            if let (Some(glb), Some(copy)) = (&version.glb, &copy_to) {
+                if let Some(dir) = copy.parent() {
+                    std::fs::create_dir_all(dir)
+                        .map_err(|e| format!("could not create the export folder: {e}"))?;
+                }
+                std::fs::copy(versions::version_dir(&asset, version.n).join(glb), copy)
+                    .map_err(|e| format!("could not copy the .glb to {}: {e}", copy.display()))?;
+            }
+            Ok(())
         })
-        .map_err(|e| RpcError::new(INTERNAL_ERROR, e))?;
-    Ok(json!({ "started": true }))
+        .map_err(internal)?;
+    Ok(Started {
+        rel,
+        locked: held.is_some(),
+        version,
+        dir,
+    })
 }
 
 fn open(
@@ -487,6 +806,14 @@ fn open(
 ) -> Result<Value, RpcError> {
     if !blend.is_file() {
         return Err(invalid(format!("{} does not exist", blend.display())));
+    }
+    // Here rather than in each caller: the Files app opens a bare path too.
+    if let Some(held) = lock::live_above(blend) {
+        return Err(invalid(format!(
+            "{} is open in Blender in a pane (process {}). Close it there first: two Blenders \
+             on one file save over each other.",
+            held.file, held.pid
+        )));
     }
     let found = detect::detect(host, &config.executable, versions);
     let Some(exe) = found.path else {
@@ -578,6 +905,7 @@ mod tests {
                 read_only,
                 app_cache: self.app_cache.path().to_path_buf(),
                 embedder: false,
+                dirty: &|_| None,
             }
         }
     }
@@ -706,7 +1034,7 @@ mod tests {
             &context(env.path()),
             &fx.services(Config::default(), false),
             "blender-viewer/export-start",
-            Some(json!({ "blend": elsewhere.path().join("x.blend").display().to_string() })),
+            Some(json!({ "actor": "human", "blend": elsewhere.path().join("x.blend").display().to_string() })),
         )
         .unwrap_err();
         assert_eq!(err.code, INVALID_PARAMS);
@@ -721,7 +1049,7 @@ mod tests {
             &context(env.path()),
             &fx.services(Config::default(), false),
             "blender-viewer/export-start",
-            Some(json!({ "blend": "bed.blend" })),
+            Some(json!({ "actor": "human", "blend": "bed.blend" })),
         )
         .unwrap_err();
         assert!(err.message.contains("Settings"), "{}", err.message);
@@ -742,7 +1070,7 @@ mod tests {
             &context(env.path()),
             &fx.services(config, true),
             "blender-viewer/export-start",
-            Some(json!({ "blend": "bed.blend" })),
+            Some(json!({ "actor": "human", "blend": "bed.blend" })),
         )
         .unwrap_err();
         assert_eq!(err.code, crate::apps::READ_ONLY);
@@ -755,7 +1083,7 @@ mod tests {
             &context(env.path()),
             &services,
             "blender-viewer/export-start",
-            Some(json!({ "blend": "bed.blend" })),
+            Some(json!({ "actor": "human", "blend": "bed.blend" })),
         );
         assert!(started.is_ok(), "{started:?}");
         wait(&fx.jobs);
@@ -848,7 +1176,7 @@ mod tests {
     }
 
     #[test]
-    fn an_export_end_to_end_lands_in_the_cache_and_shows_in_state() {
+    fn an_export_end_to_end_lands_as_a_version_and_shows_in_state() {
         let env = TempDir::new().unwrap();
         let tools = TempDir::new().unwrap();
         let exe = fake_blender(tools.path(), "ok");
@@ -863,7 +1191,7 @@ mod tests {
             &ctx,
             &services,
             "blender-viewer/export-start",
-            Some(json!({ "blend": "art/bed.blend" })),
+            Some(json!({ "actor": "human", "blend": "art/bed.blend" })),
         )
         .unwrap();
         wait(&fx.jobs);
@@ -873,6 +1201,13 @@ mod tests {
         let state = dispatch(&ctx, &services, "blender-viewer/state", None).unwrap();
         assert_eq!(state["rel"], "art/bed.blend");
         assert!(state["model"].as_str().unwrap().ends_with("model.glb"));
+        assert_eq!(state["version"]["n"], 1);
+        assert_eq!(state["version"]["author"], "human");
+        assert!(
+            !env.path().join(".veistra/blender/export.json").exists()
+                && blender::read_manifest(&services.cache(env.path(), "art/bed.blend")).is_none(),
+            "the old cache holds only scratch now"
+        );
         assert_eq!(state["parts"][0]["name"], "Frame");
         assert_eq!(state["parts"][0]["tris"], 12);
         assert_eq!(state["renders"][0]["id"], "front");
@@ -916,7 +1251,7 @@ mod tests {
         fx.host.files.insert(exe.clone());
         let ctx = context(env.path());
         let services = fx.services(config_with(&exe), false);
-        let bed = json!({ "blend": "bed.blend" });
+        let bed = json!({ "actor": "human", "blend": "bed.blend" });
 
         // Nothing exported yet: no glb, and no markup either.
         let none = dispatch(&ctx, &services, "blender-viewer/glb", Some(bed.clone()));
@@ -978,7 +1313,7 @@ mod tests {
         let mut fx = Fixture::new();
         fx.host.files.insert(ok.clone());
         let ctx = context(env.path());
-        let start = json!({ "blend": "bed.blend" });
+        let start = json!({ "actor": "human", "blend": "bed.blend" });
         {
             let services = fx.services(config_with(&ok), false);
             dispatch(
@@ -1015,6 +1350,499 @@ mod tests {
             state["parts"][0]["name"], "Frame",
             "the earlier export survives a cancel"
         );
+    }
+
+    /// Five earlier versions of `rel`, as five finished exports leave them.
+    fn seed_versions(services: &Services, project: &Path, rel: &str, count: u32) {
+        let asset = services.asset(project, rel);
+        for _ in 0..count {
+            let pending = project.join("seed-pending");
+            std::fs::create_dir_all(&pending).unwrap();
+            std::fs::write(pending.join("model.glb"), b"older").unwrap();
+            let result = crate::blender::job::ScriptResult {
+                glb: Some("model.glb".into()),
+                ..Default::default()
+            };
+            let template = Version::template(rel, Author::Human, "workbench", 128);
+            versions::commit(&asset, &pending, &result, None, template).unwrap();
+        }
+    }
+
+    /// Spec §13 test 12: with bed.blend open, an agent export writes v6 and
+    /// bed.blend's bytes stay as they were.
+    #[test]
+    fn an_agent_export_of_an_open_blend_writes_v6_and_leaves_the_blend_alone() {
+        let env = TempDir::new().unwrap();
+        let tools = TempDir::new().unwrap();
+        let exe = fake_blender(tools.path(), "ok");
+        std::fs::create_dir_all(env.path().join("props")).unwrap();
+        let bed = env.path().join("props/bed.blend");
+        std::fs::write(&bed, b"BLENDER-v402 the person's work").unwrap();
+        let before = versions::sha256_file(&bed).unwrap();
+        let mut fx = Fixture::new();
+        fx.host.files.insert(exe.clone());
+        let ctx = context(env.path());
+        let services = fx.services(config_with(&exe), false);
+        seed_versions(&services, env.path(), "props/bed.blend", 5);
+        // Blender in a pane has it open: this test process stands in for it.
+        let held = lock::acquire(
+            env.path(),
+            "props/bed.blend",
+            std::process::id(),
+            Some("c1"),
+            None,
+        )
+        .unwrap();
+
+        let started = dispatch(
+            &ctx,
+            &services,
+            "blender-viewer/export-start",
+            Some(json!({ "actor": "agent", "blend": "props/bed.blend" })),
+        )
+        .unwrap();
+        assert_eq!(started["locked"], true);
+        wait(&fx.jobs);
+        let status = dispatch(&ctx, &services, "blender-viewer/export-status", None).unwrap();
+        assert_eq!(status["outcome"], "ok", "{status}");
+
+        let asset = services.asset(env.path(), "props/bed.blend");
+        let v6 = versions::read(&asset, 6).expect("v6 was written");
+        assert_eq!(v6.author, Author::Agent);
+        assert!(v6.source_locked);
+        assert_eq!(v6.blend_sha256, before);
+        assert!(versions::version_dir(&asset, 6).join("model.glb").is_file());
+        assert_eq!(
+            versions::sha256_file(&bed).unwrap(),
+            before,
+            "bed.blend was written"
+        );
+        assert_eq!(
+            lock::live(env.path(), "props/bed.blend"),
+            Some(held),
+            "the export leaves the person's lock alone"
+        );
+
+        let listed = dispatch(
+            &ctx,
+            &services,
+            "blender-viewer/export-versions",
+            Some(json!({ "blend": "props/bed.blend" })),
+        )
+        .unwrap();
+        let ns: Vec<u64> = listed["versions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["n"].as_u64().unwrap())
+            .collect();
+        assert_eq!(ns, [6, 5, 4, 3, 2, 1]);
+        assert_eq!(listed["versions"][0]["author"], "agent");
+        assert!(listed["versions"][0]["model"]
+            .as_str()
+            .unwrap()
+            .ends_with("model.glb"));
+        assert_eq!(listed["locked"]["file"], "props/bed.blend");
+    }
+
+    #[test]
+    fn export_needs_an_actor_and_never_accepts_system() {
+        let env = TempDir::new().unwrap();
+        let tools = TempDir::new().unwrap();
+        let exe = fake_blender(tools.path(), "ok");
+        std::fs::write(env.path().join("bed.blend"), b"b").unwrap();
+        let mut fx = Fixture::new();
+        fx.host.files.insert(exe.clone());
+        let services = fx.services(config_with(&exe), false);
+        for params in [
+            json!({ "blend": "bed.blend" }),
+            json!({ "blend": "bed.blend", "actor": "system" }),
+        ] {
+            let err = dispatch(
+                &context(env.path()),
+                &services,
+                "blender-viewer/export-start",
+                Some(params),
+            )
+            .unwrap_err();
+            assert_eq!(err.code, INVALID_PARAMS);
+            assert!(err.message.contains("actor"), "{}", err.message);
+        }
+        assert!(!fx.jobs.snapshot().running, "nothing was started");
+    }
+
+    /// Compare's Keep B (X12's minimum): the version is pinned and listed as
+    /// kept, the `.blend` is not touched even while Blender holds it, and no
+    /// version is removed.
+    #[test]
+    fn keeping_a_version_pins_it_and_leaves_the_blend_and_the_other_versions_alone() {
+        let env = TempDir::new().unwrap();
+        let bed = env.path().join("bed.blend");
+        std::fs::write(&bed, b"BLENDER-v402 the person's work").unwrap();
+        let before = versions::sha256_file(&bed).unwrap();
+        let fx = Fixture::new();
+        let ctx = context(env.path());
+        let services = fx.services(Config::default(), false);
+        seed_versions(&services, env.path(), "bed.blend", 3);
+        let _held = lock::acquire(
+            env.path(),
+            "bed.blend",
+            std::process::id(),
+            Some("c1"),
+            None,
+        )
+        .unwrap();
+
+        let listed = |services: &Services| {
+            dispatch(
+                &ctx,
+                services,
+                "blender-viewer/export-versions",
+                Some(json!({ "blend": "bed.blend" })),
+            )
+            .unwrap()
+        };
+        assert_eq!(listed(&services)["kept"], Value::Null);
+        let kept = dispatch(
+            &ctx,
+            &services,
+            "blender-viewer/version-keep",
+            Some(json!({ "actor": "human", "blend": "bed.blend", "version": 2 })),
+        )
+        .unwrap();
+        assert_eq!(kept, json!({ "rel": "bed.blend", "kept": 2 }));
+        let after = listed(&services);
+        assert_eq!(after["kept"], 2);
+        assert_eq!(after["versions"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            versions::sha256_file(&bed).unwrap(),
+            before,
+            "bed.blend was written"
+        );
+
+        let err = dispatch(
+            &ctx,
+            &services,
+            "blender-viewer/version-keep",
+            Some(json!({ "actor": "human", "blend": "bed.blend", "version": 9 })),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, INVALID_PARAMS);
+        assert!(err.message.contains("no version 9"), "{}", err.message);
+        assert_eq!(
+            listed(&services)["kept"],
+            2,
+            "a refused keep changes nothing"
+        );
+    }
+
+    #[test]
+    fn only_the_person_keeps_a_version_and_never_on_main() {
+        let env = TempDir::new().unwrap();
+        std::fs::write(env.path().join("bed.blend"), b"b").unwrap();
+        let fx = Fixture::new();
+        let ctx = context(env.path());
+        let services = fx.services(Config::default(), false);
+        seed_versions(&services, env.path(), "bed.blend", 2);
+        for (params, says) in [
+            (json!({ "blend": "bed.blend", "version": 1 }), "actor"),
+            (
+                json!({ "actor": "system", "blend": "bed.blend", "version": 1 }),
+                "actor",
+            ),
+            (
+                json!({ "actor": "agent", "blend": "bed.blend", "version": 1 }),
+                "only the person",
+            ),
+            (
+                json!({ "actor": "human", "blend": "bed.blend" }),
+                "`version` is required",
+            ),
+        ] {
+            let err =
+                dispatch(&ctx, &services, "blender-viewer/version-keep", Some(params)).unwrap_err();
+            assert_eq!(err.code, INVALID_PARAMS);
+            assert!(err.message.contains(says), "{}", err.message);
+        }
+
+        let main = fx.services(Config::default(), true);
+        seed_versions(&main, env.path(), "bed.blend", 2);
+        let err = dispatch(
+            &ctx,
+            &main,
+            "blender-viewer/version-keep",
+            Some(json!({ "actor": "human", "blend": "bed.blend", "version": 1 })),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, crate::apps::READ_ONLY);
+        assert!(crate::apps::is_write_method("blender-viewer/version-keep"));
+        for services in [&services, &main] {
+            let listed = dispatch(
+                &ctx,
+                services,
+                "blender-viewer/export-versions",
+                Some(json!({ "blend": "bed.blend" })),
+            )
+            .unwrap();
+            assert_eq!(listed["kept"], Value::Null);
+        }
+    }
+
+    /// Go back to A opens the version's own copy of the `.blend`, so the list
+    /// says where it is, or `null` for a version that kept none.
+    #[test]
+    fn the_list_names_a_version_s_blend_copy_only_when_it_has_one() {
+        let env = TempDir::new().unwrap();
+        std::fs::write(env.path().join("bed.blend"), b"b").unwrap();
+        let fx = Fixture::new();
+        let ctx = context(env.path());
+        let services = fx.services(Config::default(), false);
+        seed_versions(&services, env.path(), "bed.blend", 2);
+        let asset = services.asset(env.path(), "bed.blend");
+        let copy = versions::version_dir(&asset, 1).join(versions::BLEND_COPY);
+        std::fs::write(&copy, b"BLENDER-v402 as v1 was").unwrap();
+
+        let listed = dispatch(
+            &ctx,
+            &services,
+            "blender-viewer/export-versions",
+            Some(json!({ "blend": "bed.blend" })),
+        )
+        .unwrap();
+        let by_n = |n: u64| {
+            listed["versions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["n"] == n)
+                .unwrap()["blendCopy"]
+                .clone()
+        };
+        assert_eq!(by_n(2), Value::Null);
+        assert_eq!(by_n(1), json!(copy.display().to_string()));
+    }
+
+    #[test]
+    fn glb_and_image_by_version_serve_only_that_version_s_files() {
+        let env = TempDir::new().unwrap();
+        let tools = TempDir::new().unwrap();
+        let exe = fake_blender(tools.path(), "ok");
+        std::fs::write(env.path().join("bed.blend"), b"b").unwrap();
+        let mut fx = Fixture::new();
+        fx.host.files.insert(exe.clone());
+        let ctx = context(env.path());
+        let services = fx.services(config_with(&exe), false);
+        let start = json!({ "actor": "human", "blend": "bed.blend" });
+        for _ in 0..2 {
+            dispatch(
+                &ctx,
+                &services,
+                "blender-viewer/export-start",
+                Some(start.clone()),
+            )
+            .unwrap();
+            wait(&fx.jobs);
+        }
+        let asset = services.asset(env.path(), "bed.blend");
+        std::fs::write(versions::version_dir(&asset, 1).join("model.glb"), b"first").unwrap();
+
+        let glb_of = |version: Value| {
+            dispatch(
+                &ctx,
+                &services,
+                "blender-viewer/glb",
+                Some(json!({ "blend": "bed.blend", "version": version })),
+            )
+        };
+        let first = glb_of(json!(1)).unwrap();
+        assert_eq!(
+            BASE64.decode(first["base64"].as_str().unwrap()).unwrap(),
+            b"first"
+        );
+        let newest = glb_of(Value::Null).unwrap();
+        assert_ne!(
+            BASE64.decode(newest["base64"].as_str().unwrap()).unwrap(),
+            b"first"
+        );
+        assert!(glb_of(json!(9)).is_err(), "no v9");
+        assert!(glb_of(json!("../v1")).is_err(), "a version is a number");
+
+        let image = dispatch(
+            &ctx,
+            &services,
+            "blender-viewer/image",
+            Some(json!({ "blend": "bed.blend", "id": "front", "version": 1 })),
+        )
+        .unwrap();
+        assert_eq!(image["mime"], "image/png");
+    }
+
+    #[test]
+    fn state_reports_the_newest_version_and_the_lock() {
+        let env = TempDir::new().unwrap();
+        std::fs::write(env.path().join("bed.blend"), b"b").unwrap();
+        let fx = Fixture::new();
+        let ctx = context(env.path());
+        let services = fx.services(Config::default(), false);
+        seed_versions(&services, env.path(), "bed.blend", 2);
+
+        let state = dispatch(&ctx, &services, "blender-viewer/state", None).unwrap();
+        assert_eq!(state["version"]["n"], 2);
+        assert_eq!(state["version"]["author"], "human");
+        assert_eq!(state["versions"], json!([2, 1]));
+        assert!(state["model"].as_str().unwrap().contains("v2"));
+        assert_eq!(state["locked"], Value::Null);
+
+        lock::acquire(
+            env.path(),
+            "bed.blend",
+            std::process::id(),
+            Some("c1"),
+            None,
+        )
+        .unwrap();
+        let state = dispatch(&ctx, &services, "blender-viewer/state", None).unwrap();
+        assert_eq!(state["locked"]["file"], "bed.blend");
+        assert_eq!(state["locked"]["pid"], std::process::id());
+    }
+
+    /// A Blender stand-in that writes the file it was asked to open.
+    fn recording_blender(dir: &Path) -> PathBuf {
+        let opened = dir.join("opened.txt");
+        #[cfg(windows)]
+        let (name, body) = (
+            "blender.cmd",
+            format!(
+                "@echo off\r\nif \"%1\"==\"--version\" (\r\necho Blender 4.2.1\r\nexit /b 0\r\n)\r\necho %~1> \"{}\"\r\n",
+                opened.display()
+            ),
+        );
+        #[cfg(not(windows))]
+        let (name, body) = (
+            "blender",
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'Blender 4.2.1'; exit 0; fi\nprintf '%s' \"$1\" > '{}'\n",
+                opened.display()
+            ),
+        );
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        path
+    }
+
+    /// The bug: `open` was handed the request's path as it came, so a path
+    /// relative to the environment, as the viewer sends it, read as missing.
+    #[test]
+    fn open_resolves_a_project_relative_path() {
+        let env = TempDir::new().unwrap();
+        let tools = TempDir::new().unwrap();
+        let exe = recording_blender(tools.path());
+        std::fs::create_dir_all(env.path().join("assets")).unwrap();
+        std::fs::write(env.path().join("assets/props.blend"), b"b").unwrap();
+        let mut fx = Fixture::new();
+        fx.host.files.insert(exe.clone());
+        let services = fx.services(config_with(&exe), false);
+
+        let opened = dispatch(
+            &context(env.path()),
+            &services,
+            "blender-viewer/open",
+            Some(json!({ "blend": "assets/props.blend" })),
+        )
+        .unwrap();
+        assert_eq!(opened["launched"], true);
+        let record = tools.path().join("opened.txt");
+        let until = std::time::Instant::now() + Duration::from_secs(10);
+        while !record.is_file() && std::time::Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let arg = std::fs::read_to_string(&record).expect("Blender was started");
+        assert_eq!(
+            Path::new(arg.trim()),
+            env.path().join("assets/props.blend"),
+            "Blender got the file inside the environment"
+        );
+
+        // Still refused: a file that is not there, or not in the environment.
+        for bad in ["assets/missing.blend", "../props.blend"] {
+            let err = dispatch(
+                &context(env.path()),
+                &services,
+                "blender-viewer/open",
+                Some(json!({ "blend": bad })),
+            )
+            .unwrap_err();
+            assert_eq!(err.code, INVALID_PARAMS, "{bad}");
+        }
+    }
+
+    #[test]
+    fn open_is_refused_while_blender_in_a_pane_has_the_file() {
+        let env = TempDir::new().unwrap();
+        let tools = TempDir::new().unwrap();
+        let exe = recording_blender(tools.path());
+        std::fs::write(env.path().join("bed.blend"), b"b").unwrap();
+        let mut fx = Fixture::new();
+        fx.host.files.insert(exe.clone());
+        let services = fx.services(config_with(&exe), false);
+        lock::acquire(
+            env.path(),
+            "bed.blend",
+            std::process::id(),
+            Some("c1"),
+            None,
+        )
+        .unwrap();
+        let err = dispatch(
+            &context(env.path()),
+            &services,
+            "blender-viewer/open",
+            Some(json!({ "blend": "bed.blend" })),
+        )
+        .unwrap_err();
+        assert!(
+            err.message.contains("open in Blender in a pane"),
+            "{}",
+            err.message
+        );
+        assert!(!tools.path().join("opened.txt").exists());
+    }
+
+    /// The Files app's Open in Blender passes an absolute path and no
+    /// environment; it went straight to the launch and opened a second
+    /// Blender on a file the pane's Blender held.
+    #[test]
+    fn open_by_a_bare_path_is_refused_while_blender_in_a_pane_has_the_file() {
+        let env = TempDir::new().unwrap();
+        let tools = TempDir::new().unwrap();
+        let exe = recording_blender(tools.path());
+        std::fs::create_dir_all(env.path().join("props")).unwrap();
+        let blend = env.path().join("props/bed.blend");
+        std::fs::write(&blend, b"b").unwrap();
+        let mut fx = Fixture::new();
+        fx.host.files.insert(exe.clone());
+        lock::acquire(
+            env.path(),
+            "props/bed.blend",
+            std::process::id(),
+            None,
+            None,
+        )
+        .unwrap();
+        let err = open(&config_with(&exe), &fx.host, &fx.versions, &blend).unwrap_err();
+        assert_eq!(err.code, INVALID_PARAMS);
+        assert!(
+            err.message
+                .starts_with("props/bed.blend is open in Blender in a pane"),
+            "{}",
+            err.message
+        );
+        assert!(!tools.path().join("opened.txt").exists());
     }
 
     // Opt-in: a real Blender. These run only with `VEISTRA_TEST_REAL_BLENDER=1`
@@ -1082,6 +1910,7 @@ bpy.ops.wm.save_as_mainfile(filepath=sys.argv[-1])
             read_only: false,
             app_cache: fx.app_cache.path().to_path_buf(),
             embedder: false,
+            dirty: &|_| None,
         }
     }
 
@@ -1111,7 +1940,7 @@ bpy.ops.wm.save_as_mainfile(filepath=sys.argv[-1])
             &ctx,
             &services,
             "blender-viewer/export-start",
-            Some(json!({ "blend": "art/chair.blend" })),
+            Some(json!({ "actor": "human", "blend": "art/chair.blend" })),
         )
         .unwrap();
         wait_real(&fx.jobs);
@@ -1174,7 +2003,7 @@ bpy.ops.wm.save_as_mainfile(filepath=sys.argv[-1])
             &ctx,
             &services,
             "blender-viewer/export-start",
-            Some(json!({ "blend": "bad.blend" })),
+            Some(json!({ "actor": "human", "blend": "bad.blend" })),
         )
         .unwrap();
         wait_real(&fx.jobs);
