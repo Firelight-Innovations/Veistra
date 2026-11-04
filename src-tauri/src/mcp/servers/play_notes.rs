@@ -248,6 +248,7 @@ mod tests {
             Draft {
                 anchor: Anchor::Take {
                     take: "2026-10-30-1402-0f3a".into(),
+                    number: None,
                     n: 1,
                     at_ms: 1_000,
                     in_ms: None,

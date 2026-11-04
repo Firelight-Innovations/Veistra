@@ -13,18 +13,65 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 
 const bridge = vi.hoisted(() => ({ invoke: vi.fn() }));
 
-const events = vi.hoisted(() => new Map<string, (payload: unknown) => void>());
+/**
+ * The bridge's listeners, every one per event as the bridge keeps them: Play
+ * and its review both hear `comments:changed`. `get` answers a function that
+ * calls them all, or nothing while none listens.
+ */
+const events = vi.hoisted(() => {
+  const sets = new Map<string, Set<(payload: unknown) => void>>();
+  return {
+    on(event: string, cb: (payload: unknown) => void) {
+      const set = sets.get(event) ?? new Set();
+      sets.set(event, set);
+      set.add(cb);
+      return () => void set.delete(cb);
+    },
+    get(event: string) {
+      const set = sets.get(event);
+      if (!set || set.size === 0) return undefined;
+      return (payload: unknown) => [...set].forEach((cb) => cb(payload));
+    },
+    clear: () => sets.clear(),
+  };
+});
 
 vi.mock("@veistra/bridge", () => ({
   invoke: bridge.invoke,
   reportPainted: vi.fn(),
   openIn: vi.fn(),
   OPENED_EVENT: "veistra:opened",
-  on: (event: string, cb: (payload: unknown) => void) => {
-    events.set(event, cb);
-    return () => events.delete(event);
-  },
+  on: (event: string, cb: (payload: unknown) => void) => events.on(event, cb),
   session: () => Promise.resolve({ projectPath: null, instanceId: "i1" }),
+}));
+
+/**
+ * The markup layer needs a canvas jsdom lacks. This one shows the frame as
+ * the layer does, and its button finishes with no pins drawn.
+ */
+vi.mock("./FrameMarkup", () => ({
+  default: (p: {
+    src: string;
+    onDone: (result: unknown, shown: { width: number; height: number }) => void;
+  }) => (
+    <div>
+      <img src={p.src} alt="The frame being marked up" />
+      <button
+        type="button"
+        onClick={() =>
+          p.onDone(
+            {
+              json: { version: 1, pins: [], annotations: [], excalidraw: { elements: [] } },
+              png: new Blob([new Uint8Array([1])], { type: "image/png" }),
+            },
+            { width: 640, height: 360 },
+          )
+        }
+      >
+        Keep the markup
+      </button>
+    </div>
+  ),
 }));
 
 import App from "../App";
@@ -204,7 +251,7 @@ interface World {
   } | null;
   keys: Key[];
   take: { state: string; id?: string; number?: number; startedAt?: number | null };
-  record: { on: boolean; blocked: string | null };
+  record: { on: boolean; blocked: string | null; quality?: string; keep?: number };
   takes: unknown[];
   projects: unknown[];
   /** Where the game's window is (`embed::State`); embedded unless a test says otherwise. */
@@ -223,6 +270,10 @@ interface World {
   scenes: string[];
   /** Whether the game holds the mouse, as addon v2's backend reports it (#312). */
   mouseCaptured?: boolean;
+  /** The marks made with F8 in the game so far (#312). */
+  f8Marks?: number;
+  /** What `comments/list` answers. */
+  comments: unknown[];
 }
 
 function liveBackend(over: Partial<World> = {}): World {
@@ -239,6 +290,7 @@ function liveBackend(over: Partial<World> = {}): World {
     found: false,
     lines: [],
     scenes: [],
+    comments: [],
     ...over,
   };
   const state = (keySince: number, since = 0) => ({
@@ -257,6 +309,7 @@ function liveBackend(over: Partial<World> = {}): World {
         runId: world.run.id,
         take: world.take,
         mouseCaptured: world.mouseCaptured,
+        f8Marks: world.f8Marks,
         // Each key once, after the pane's cursor, as `Session::keys_since` answers.
         keys: world.keys.filter((k) => k.seq > keySince),
       },
@@ -283,9 +336,23 @@ function liveBackend(over: Partial<World> = {}): World {
         world.run = { id: (world.run?.id ?? 0) + 1, state: { kind: "running" } };
         return Promise.resolve(state(0));
       case "play/record":
-        world.record = { ...world.record, on: params?.on === true };
-        if (params?.on !== true) save();
-        return Promise.resolve({ on: world.record.on });
+        // Whatever is absent stays as it was, as `set_record` keeps it.
+        if (typeof params?.on === "boolean") {
+          world.record = { ...world.record, on: params.on };
+          if (!params.on) save();
+        }
+        if (typeof params?.quality === "string")
+          world.record = { ...world.record, quality: params.quality };
+        if (typeof params?.keep === "number") world.record = { ...world.record, keep: params.keep };
+        return Promise.resolve({
+          on: world.record.on,
+          quality: world.record.quality ?? "720p30",
+          keep: world.record.keep ?? 10,
+        });
+      case "context/put":
+        return Promise.resolve({ id: "ctx_1" });
+      case "context/insert":
+        return Promise.resolve({ inserted: true });
       case "play/stop":
         save();
         if (world.run) world.run = { ...world.run, state: { kind: "stopped" } };
@@ -327,7 +394,7 @@ function liveBackend(over: Partial<World> = {}): World {
       case "play/addon-status":
         return Promise.resolve({ addon: "no", needsRestart: false, readOnly: world.readOnly });
       case "comments/list":
-        return Promise.resolve([]);
+        return Promise.resolve(world.comments);
       case "play/takes":
         return Promise.resolve({ takes: world.takes, dir: "" });
       case "play/take":
@@ -692,7 +759,10 @@ describe("Play live view", () => {
     }, 400);
     await screen.findByText("Reviewing", undefined, { timeout: 2000 });
     expect(screen.queryByText(/not recorded/)).toBeNull();
-    expect(calls("play/take").some((c) => (c[1] as { id: string }).id === TAKE_ID)).toBe(true);
+    // Review loads the take in an effect after the "Reviewing" label renders, so wait for it.
+    await waitFor(() =>
+      expect(calls("play/take").some((c) => (c[1] as { id: string }).id === TAKE_ID)).toBe(true),
+    );
   });
 
   it("lists a take the game's own exit saved", async () => {
@@ -983,6 +1053,353 @@ describe("Play output drawer", () => {
     expect(screen.getByText("slow frame")).toBeTruthy();
     expect(screen.getByText("boom")).toBeTruthy();
     expect(screen.queryByText("ready")).toBeNull();
+  });
+
+  // Play listed comments when it opened and after its own writes, so a note
+  // an agent fixed over MCP kept its old count until the pane was reopened.
+  it("counts the open notes again when a comment change is pushed", async () => {
+    const note = {
+      id: "c1",
+      anchor: { kind: "take", take: TAKE_ID, n: 1, atMs: 1000, packet: "p", scene: "" },
+      author: "user",
+      body: "The door light flickers",
+      status: "fixed",
+      created: 1,
+      updated: 2,
+    };
+    const world = liveBackend({ comments: [note] });
+    render(<App />);
+    await waitFor(() => expect(tab("Notes").textContent).toBe("Notes1"));
+    world.comments = [{ ...note, status: "resolved" }];
+    events.get("comments:changed")?.({
+      id: "c1",
+      kind: "take",
+      take: TAKE_ID,
+      status: "resolved",
+      from: "fixed",
+    });
+    await waitFor(() => expect(tab("Notes").textContent).toBe("Notes"));
+  });
+});
+
+describe("Play review", () => {
+  const noted = () =>
+    calls("veistra/track")
+      .map((c) => c[1] as { event: string; props: Record<string, unknown> })
+      .filter((p) => p.event === "note_created")
+      .map((p) => p.props);
+
+  beforeEach(() => {
+    URL.createObjectURL = vi.fn(() => "blob:frame");
+    URL.revokeObjectURL = vi.fn();
+  });
+
+  it("reports a live markup kept for the take being recorded as a note", async () => {
+    liveBackend();
+    render(<App />);
+    await screen.findByText("Playing");
+    fireEvent.click(screen.getByRole("button", { name: /^Mark up/ }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Keep the markup" }, { timeout: 5000 }),
+    );
+    await waitFor(() => expect(noted()).toEqual([{ kind: "frame", from: "live" }]));
+    expect(calls("context/put")).toHaveLength(0);
+  });
+
+  // The Take menu lists every project's takes, and Play again ran whichever
+  // project the pane had picked, so another project's take played the wrong game.
+  it("plays the reviewed take's project again, and the picker follows it", async () => {
+    liveBackend({
+      ...IDLE,
+      found: true,
+      projects: [project("game"), project("demo")],
+      takes: [{ ...LISTED, project: "demo" }],
+    });
+    render(<App />);
+    const picker = (await screen.findByRole("combobox", {
+      name: "Godot project",
+    })) as HTMLSelectElement;
+    expect(picker.value).toBe("game");
+    fireEvent.click(await screen.findByRole("button", { name: /Takes · 1/ }));
+    await screen.findByText("Reviewing");
+    const again = screen.getByRole("button", { name: /^Play again/ }) as HTMLButtonElement;
+    await waitFor(() => expect(again.disabled).toBe(false));
+    fireEvent.click(again);
+    await waitFor(() => expect(calls("play/run")).toHaveLength(1));
+    expect(calls("play/run")[0][1]).toMatchObject({ project: "demo" });
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("combobox", { name: "Godot project" }) as HTMLSelectElement).value,
+      ).toBe("demo"),
+    );
+  });
+
+  // Spec §13 test 5 times review from F7. The poll sees the key up to a tick
+  // after it was pressed, so the press's own time is what review counts from.
+  it("counts review's opening from the F7 press in the game", async () => {
+    const world = liveBackend();
+    const answer = bridge.invoke.getMockImplementation()!;
+    bridge.invoke.mockImplementation((method: string, params?: unknown) =>
+      method === "play/take"
+        ? Promise.resolve({
+            take: {
+              ...LISTED,
+              version: 1,
+              environment: { branch: null, commit: null },
+              project: ".",
+              godot: "4.5",
+              video: { width: 1280, height: 720, fps: 30 },
+              scenes: [],
+              marks: [],
+              counts: { errors: 0, warnings: 0 },
+              ticks: 0,
+              path: "C:/p/.veistra/takes/2026-10-30-1402-0f3a",
+              bytes: 1,
+              hasVideo: true,
+              drafts: 0,
+            },
+            urls: { video: "asset://v", telemetry: "asset://t", log: "asset://l" },
+            notes: { version: 1, notes: [], nextN: 1, dismissed: [] },
+          })
+        : answer(method, params),
+    );
+    render(<App />);
+    await screen.findByText("Playing");
+    world.keys = [{ seq: 1, key: "F7", t: Date.now() - 1500 }];
+    await screen.findByText("Reviewing");
+    await waitFor(() => expect(document.querySelector("video.pl-review__video")).not.toBeNull(), {
+      timeout: 2000,
+    });
+    fireEvent.loadedData(document.querySelector("video.pl-review__video")!);
+    const root = document.querySelector(".pl-review") as HTMLElement;
+    await waitFor(() => expect(Number(root.dataset.openMs)).toBeGreaterThanOrEqual(1500));
+    expect(Number(root.dataset.openMs)).toBeLessThan(10_000);
+  });
+});
+
+describe("Play's Record settings and Still broken (#321)", () => {
+  afterEach(() => {
+    Element.prototype.getBoundingClientRect = realRect;
+  });
+
+  /** Note 2 of Take 4, which the agent says it fixed. */
+  const FIXED = {
+    id: "c2",
+    anchor: {
+      kind: "take",
+      take: TAKE_ID,
+      number: 4,
+      n: 2,
+      atMs: 102_180,
+      packet: ".veistra/feedback/2026-10-30-1402-0f3a-1",
+      scene: "res://levels/hallway.tscn",
+    },
+    author: "user",
+    body: "The enemy walks into the east wall",
+    status: "fixed",
+    resolution: { note: "Rebaked the nav mesh", by: "agent", at: 1, commit: "3f2a1c9" },
+    created: 1,
+    updated: 2,
+  };
+  const order = (method: string) => bridge.invoke.mock.calls.findIndex((c) => c[0] === method);
+  const stillBroken = async (reply?: string) => {
+    fireEvent.click(await screen.findByRole("button", { name: /^Notes/ }));
+    if (reply)
+      fireEvent.change(
+        await screen.findByPlaceholderText("If it is still broken, say what you saw"),
+        { target: { value: reply } },
+      );
+    fireEvent.click(await screen.findByRole("button", { name: "Still broken" }));
+  };
+
+  it("opens beside Record, hides the game, and changes the quality and keep alone", async () => {
+    const world = liveBackend({
+      projects: [project("game")],
+      record: { on: false, blocked: null },
+    });
+    render(<App />);
+    await screen.findByText("Playing");
+    placeBox();
+    await waitFor(() => expect(lastParams("play/embed-rect")?.visible).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "Settings for Record" }));
+    await screen.findByRole("dialog", { name: "Record settings" });
+    // The game is a native window over the pane: it steps aside while this is open.
+    await waitFor(() => expect(lastParams("play/embed-rect")?.visible).toBe(false));
+    fireEvent.click(screen.getByRole("tab", { name: "1080p · 60" }));
+    await waitFor(() => expect(calls("play/record")).toHaveLength(1));
+    expect(calls("play/record")[0][1]).toEqual({ quality: "1080p60", project: "game" });
+    fireEvent.change(screen.getByRole("combobox", { name: "Takes to keep" }), {
+      target: { value: "20" },
+    });
+    await waitFor(() => expect(calls("play/record")).toHaveLength(2));
+    expect(calls("play/record")[1][1]).toEqual({ keep: 20, project: "game" });
+    expect(world.record).toMatchObject({ on: false, quality: "1080p60", keep: 20 });
+    fireEvent.click(screen.getByRole("button", { name: "Show folder" }));
+    await waitFor(() => expect(calls("play/takes-reveal")).toHaveLength(1));
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(lastParams("play/embed-rect")?.visible).toBe(true));
+  });
+
+  it("runs a Still broken note's scene in its take's project, recorded once for that note", async () => {
+    liveBackend({
+      found: true,
+      projects: [project("game"), project("demo")],
+      takes: [{ ...LISTED, project: "demo" }],
+      record: { on: false, blocked: null },
+      comments: [FIXED],
+    });
+    render(<App />);
+    await screen.findByText("Playing");
+    await stillBroken("still clips at the door");
+    await waitFor(() => expect(calls("play/run")).toHaveLength(1));
+    expect(calls("comments/verdict")[0][1]).toMatchObject({
+      id: "c2",
+      verdict: "broken",
+      reply: "still clips at the door",
+    });
+    // The verdict first, then the game that was running, then the run for the note.
+    expect(order("comments/verdict")).toBeLessThan(order("play/stop"));
+    expect(order("play/stop")).toBeLessThan(order("play/run"));
+    expect(calls("play/run")[0][1]).toEqual({
+      project: "demo",
+      scene: "res://levels/hallway.tscn",
+      followUp: "c2",
+    });
+    // Recorded once: Record itself is left off.
+    expect(calls("play/record")).toHaveLength(0);
+    await screen.findByText(
+      /Checking note 2 of Take 4: press F8 where it still breaks, F7 when you are done\./,
+    );
+  });
+
+  it("sends the words alone to the note's agent where Record cannot run, and runs nothing", async () => {
+    const sentTo = { kind: "terminal", id: "t7", label: "Claude Code · Terminal 7" };
+    liveBackend({
+      ...IDLE,
+      found: true,
+      projects: [project("game")],
+      record: { on: false, blocked: BLOCKED },
+      comments: [{ ...FIXED, sentTo }],
+    });
+    render(<App />);
+    await stillBroken("still clips at the door");
+    await waitFor(() => expect(calls("context/insert")).toHaveLength(1));
+    expect(calls("play/run")).toHaveLength(0);
+    const put = calls("context/put")[0][1] as Record<string, string>;
+    expect(put.kind).toBe("text");
+    expect(put.text).toContain("Still broken after your fix: note 2 of Take 4.");
+    expect(put.text).toContain("They said: still clips at the door");
+    expect(put.text).toContain("Your fix: Rebaked the nav mesh (commit 3f2a1c9)");
+    expect(put.text).toContain(".veistra/feedback/2026-10-30-1402-0f3a-1/packet.md");
+    expect(put.text).toContain(`No new take was recorded: ${BLOCKED}`);
+    expect(calls("context/insert")[0][1]).toEqual({
+      itemIds: ["ctx_1"],
+      terminal: "t7",
+      before: "Still broken after your fix: note 2 of Take 4. Read ",
+      after: ".",
+    });
+    await screen.findByText(/waiting at Claude Code · Terminal 7's prompt/);
+  });
+
+  it("plays a fixed note's scene from review recorded once, Record left as it is", async () => {
+    liveBackend({
+      ...IDLE,
+      found: true,
+      projects: [project("game")],
+      takes: [LISTED],
+      record: { on: false, blocked: null },
+    });
+    const answer = bridge.invoke.getMockImplementation()!;
+    bridge.invoke.mockImplementation((method: string, params?: unknown) => {
+      if (method === "play/notes") return Promise.resolve({ notes: [FIXED] });
+      if (method !== "play/take") return answer(method, params);
+      return Promise.resolve({
+        take: {
+          ...LISTED,
+          version: 1,
+          environment: { branch: null, commit: null },
+          project: "game",
+          godot: "4.5",
+          video: { width: 1280, height: 720, fps: 30 },
+          scenes: [],
+          marks: [],
+          counts: { errors: 0, warnings: 0 },
+          ticks: 0,
+          path: "C:/p/.veistra/takes/2026-10-30-1402-0f3a",
+          bytes: 1,
+          hasVideo: true,
+          drafts: 0,
+        },
+        urls: { video: "asset://v", telemetry: "asset://t", log: "asset://l" },
+        notes: {
+          version: 1,
+          notes: [{ n: 2, kind: "frame", atMs: 102_180, body: "wall", commentId: "c2" }],
+          nextN: 3,
+          dismissed: [],
+        },
+      });
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /Takes · 1/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Play hallway.tscn" }));
+    await waitFor(() => expect(calls("play/run")).toHaveLength(1));
+    expect(calls("play/run")[0][1]).toEqual({
+      project: "game",
+      scene: "res://levels/hallway.tscn",
+      recordOnce: true,
+    });
+    expect(calls("play/record")).toHaveLength(0);
+  });
+});
+
+describe("Play marks", () => {
+  const dropped = () =>
+    calls("veistra/track")
+      .map((c) => c[1] as { event: string; props: Record<string, unknown> })
+      .filter((p) => p.event === "mark_dropped");
+
+  it("reports each mark the game makes, and none it had before the pane opened", async () => {
+    const world = liveBackend({ f8Marks: 2 });
+    render(<App />);
+    await screen.findByText("Playing");
+    await waitFor(() => expect(calls("play/state").length).toBeGreaterThanOrEqual(3), {
+      timeout: 2000,
+    });
+    expect(dropped()).toHaveLength(0);
+    world.f8Marks = 4;
+    await waitFor(() => expect(dropped()).toHaveLength(2), { timeout: 2000 });
+    expect(dropped()[0].props).toEqual({ source: "game", recording: true });
+  });
+
+  it("counts a new run's game marks from none", async () => {
+    const world = liveBackend({ run: null, take: { state: "off" } });
+    render(<App />);
+    await waitFor(() => expect(calls("play/state").length).toBeGreaterThanOrEqual(2), {
+      timeout: 2000,
+    });
+    world.run = { id: 2, state: { kind: "running" } };
+    world.take = { state: "off" };
+    world.f8Marks = 1;
+    await waitFor(() => expect(dropped()).toHaveLength(1), { timeout: 2000 });
+    expect(dropped()[0].props).toEqual({ source: "game", recording: false });
+  });
+
+  it("names the Mark button and F8 in the pane apart", async () => {
+    liveBackend({ f8Marks: 0 });
+    render(<App />);
+    await screen.findByText("Playing");
+    const button = screen.getByRole("button", { name: /^Mark(?! up)/ }) as HTMLButtonElement;
+    await waitFor(() => expect(button.disabled).toBe(false));
+    fireEvent.click(button);
+    await waitFor(() => expect(dropped()).toHaveLength(1));
+    fireEvent.keyDown(pane(), { key: "F8" });
+    await waitFor(() => expect(dropped()).toHaveLength(2));
+    expect(dropped().map((p) => p.props)).toEqual([
+      { source: "button", recording: true },
+      { source: "pane_key", recording: true },
+    ]);
+    expect(calls("play/mark")).toHaveLength(2);
   });
 });
 

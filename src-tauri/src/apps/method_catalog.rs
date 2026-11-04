@@ -84,6 +84,7 @@ fn sources() -> Vec<&'static str> {
         include_str!("../godot/live.rs"),
         include_str!("../comments.rs"),
         include_str!("../context.rs"),
+        include_str!("../context_commands.rs"),
         include_str!("../refs/mod.rs"),
     ];
     #[cfg(feature = "schematify")]
@@ -251,6 +252,8 @@ mod tests {
             "blender-viewer/editor-open",
             "comments/create",
             "context/put",
+            "context/insert",
+            "context/agents",
             "refs/resolve",
             "refs/search",
             "refs/prompt",

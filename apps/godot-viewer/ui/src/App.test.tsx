@@ -104,7 +104,8 @@ function backend(
         });
       }
       case "comments/list":
-        return Promise.resolve(opts.comments ?? []);
+        // A new array each time, as the bridge's decoded answer is.
+        return Promise.resolve([...(opts.comments ?? [])]);
       case "comments/create":
         return Promise.resolve(opts.createComment?.() ?? null);
       case "context/put":
@@ -312,6 +313,21 @@ describe("Godot Viewer toolbar", () => {
     });
     render(<App />);
     await screen.findByRole("button", { name: "Comments · 3 open" });
+  });
+
+  // The list was read when the pane opened and after its own writes, so a fix
+  // an agent made over MCP left the count where it was until a reload.
+  it("counts again when a comment change is pushed", async () => {
+    const list = [
+      comment("a", { kind: "node", path: "Main" }, "fixed"),
+      comment("b", { kind: "node", path: "Main" }),
+    ];
+    backend(undefined, { comments: list });
+    render(<App />);
+    await screen.findByRole("button", { name: "Comments · 2 open" });
+    list[0] = comment("a", { kind: "node", path: "Main" }, "resolved");
+    events.get("comments:changed")?.({ id: "a", kind: "node", status: "resolved", from: "fixed" });
+    await screen.findByRole("button", { name: "Comments · 1 open" });
   });
 
   it("draws no badge on a node with nothing open", async () => {

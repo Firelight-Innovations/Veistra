@@ -1944,6 +1944,27 @@ describe("slash commands", () => {
     expect(screen.getByRole("group", { hidden: true, name: "Canvas selection" })).toBeTruthy();
   });
 
+  it("puts the words an app sent on either side of its chip, after what is typed", async () => {
+    backend({ status: null, seq: 0, items: [] });
+    render(<App />);
+    await settingsButton();
+    fireEvent.change(prompt(), { target: { value: "also" } });
+    act(() =>
+      bridge.listeners.get("agent-tab:attach")?.({
+        contextId: "ctx_2",
+        label: ".veistra/feedback/t-1/packet.md",
+        before: "Playtest feedback: 2 notes. Read ",
+        after: " first.",
+      }),
+    );
+    expect((prompt() as HTMLTextAreaElement).value).toBe(
+      "also Playtest feedback: 2 notes. Read @.veistra/feedback/t-1/packet.md first.",
+    );
+    expect(
+      screen.getByRole("group", { hidden: true, name: ".veistra/feedback/t-1/packet.md" }),
+    ).toBeTruthy();
+  });
+
   it("offers a kind's search when its name is typed, and starts that search empty", async () => {
     backend(
       { status: null, seq: 0, items: [] },

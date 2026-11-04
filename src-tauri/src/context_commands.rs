@@ -12,7 +12,7 @@ use crate::error::{AppError, Result};
 use crate::harness::{self, Harness};
 use crate::project;
 use crate::pty::PtySessions;
-use crate::shell_state::ShellState;
+use crate::shell_state::{ShellSnapshot, ShellState, SurfaceInstance};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use serde::Serialize;
@@ -132,6 +132,33 @@ pub fn ingest_drop(
     (out, items, refused)
 }
 
+/// Words typed on either side of a reference, so one line can be a sentence
+/// ("Playtest feedback: 2 notes. Read `@…/packet.md` first.") rather than a
+/// bare path. Empty for every insertion but an app's `context/insert`.
+#[derive(Debug, Default)]
+struct Around {
+    before: String,
+    after: String,
+}
+
+/// The line typed at the prompt: `before`, the reference, `after`. Control
+/// characters are dropped from the words around it, so no sentence an app
+/// sends can carry an Enter, and the space a harness leaves after its last
+/// reference is dropped when words follow it. No reference, no line: words
+/// with nothing to point at would read as a message about nothing.
+pub fn compose(before: &str, reference: &str, after: &str) -> String {
+    if reference.is_empty() {
+        return String::new();
+    }
+    let clean = |s: &str| s.chars().filter(|c| !c.is_control()).collect::<String>();
+    let reference = if after.is_empty() {
+        reference
+    } else {
+        reference.trim_end()
+    };
+    format!("{}{reference}{}", clean(before), clean(after))
+}
+
 fn insert(
     ptys: &PtySessions,
     id: &str,
@@ -139,8 +166,10 @@ fn insert(
     paths: &[String],
     items: Vec<ContextItem>,
     refused: Vec<String>,
+    around: &Around,
 ) -> Inserted {
-    let text = harness::reference(target.harness, target.family, target.cwd.as_deref(), paths);
+    let reference = harness::reference(target.harness, target.family, target.cwd.as_deref(), paths);
+    let text = compose(&around.before, &reference, &around.after);
     if !text.is_empty() {
         // Same door as a keystroke: see `PtySessions::insert_paths`.
         ptys.write(id, &text);
@@ -176,7 +205,15 @@ pub fn terminal_drop_paths(
     if let (false, Some(root)) = (items.is_empty(), root.as_deref()) {
         context::notify(&app, root);
     }
-    Ok(insert(&ptys, &id, &target, &out, items, refused))
+    Ok(insert(
+        &ptys,
+        &id,
+        &target,
+        &out,
+        items,
+        refused,
+        &Around::default(),
+    ))
 }
 
 /// An image was pasted into a terminal. Stored, then referenced at the prompt.
@@ -211,7 +248,15 @@ pub fn terminal_paste_image(
         Ok(item) => {
             context::notify(&app, &root);
             let path = item.path.clone();
-            Ok(insert(&ptys, &id, &target, &[path], vec![item], Vec::new()))
+            Ok(insert(
+                &ptys,
+                &id,
+                &target,
+                &[path],
+                vec![item],
+                Vec::new(),
+                &Around::default(),
+            ))
         }
         // A refused paste is a message for the user, not a crash.
         Err(e) => Ok(Inserted {
@@ -232,7 +277,7 @@ pub fn terminal_insert_items(
     id: String,
     item_ids: Vec<String>,
 ) -> Result<Inserted> {
-    insert_stored(&app, &ptys, &id, &item_ids)
+    insert_stored(&app, &ptys, &id, &item_ids, &Around::default())
 }
 
 /// The shared body of the strip's re-insert and [`insert_for_cluster`]: write
@@ -242,6 +287,7 @@ fn insert_stored(
     ptys: &PtySessions,
     id: &str,
     item_ids: &[String],
+    around: &Around,
 ) -> Result<Inserted> {
     let target = ptys
         .target(id)
@@ -256,12 +302,16 @@ fn insert_stored(
             Err(e) => refused.push(e.message),
         }
     }
-    Ok(insert(ptys, id, &target, &paths, Vec::new(), refused))
+    Ok(insert(
+        ptys,
+        id,
+        &target,
+        &paths,
+        Vec::new(),
+        refused,
+        around,
+    ))
 }
-
-/// The method an app frame calls to type references to stored context items at
-/// the agent's prompt, so the person can read them and press Enter themselves.
-pub const INSERT_METHOD: &str = "context/insert";
 
 /// The first of `candidates` (the cluster's shown terminal leads) that is
 /// running a coding agent. A plain shell is skipped on purpose: a markup
@@ -273,18 +323,169 @@ pub fn pick_agent_terminal(
     candidates.iter().find(|id| runs_agent(id)).cloned()
 }
 
+/// The terminal `context/insert` types into: the one the caller chose, when it
+/// is still an agent in this cluster, else the first agent there. A chosen
+/// terminal that has gone, moved cluster or dropped back to a shell is a
+/// refusal with a reason rather than a silent fall back to another agent: the
+/// person picked that one, and a packet typed at a different prompt is a
+/// message to someone they did not choose.
+fn choose_terminal(
+    candidates: &[String],
+    wanted: Option<&str>,
+    runs_agent: impl Fn(&str) -> bool,
+) -> std::result::Result<String, &'static str> {
+    match wanted {
+        Some(id) if candidates.iter().any(|c| c == id) && runs_agent(id) => Ok(id.to_string()),
+        Some(_) => Err("the terminal you chose is no longer running an agent in this environment"),
+        None => pick_agent_terminal(candidates, runs_agent)
+            .ok_or("no agent is running in this environment's terminals"),
+    }
+}
+
+/// How a reference reaches an [`AgentTarget`]: typed at a terminal's prompt by
+/// `context/insert`, or put on an agent tab's prompt as a chip by the shell's
+/// `veistra/attach-to-agent`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentKind {
+    Terminal,
+    AgentTab,
+}
+
+/// One agent a page can send to, as `context/agents` lists it, and what a
+/// comment records as `sentTo` so a later message can go back to the same one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTarget {
+    pub kind: AgentKind,
+    /// The terminal's id, or the agent tab's instance id.
+    pub id: String,
+    /// What a SEND TO picker shows, e.g. "Claude Code · Terminal 2".
+    pub label: String,
+}
+
+fn harness_name(harness: Harness) -> &'static str {
+    match harness {
+        Harness::Claude => "Claude Code",
+        Harness::Codex => "Codex",
+        Harness::Gemini => "Gemini CLI",
+        Harness::Shell => "Shell",
+    }
+}
+
+/// Every agent in cluster `cluster`, the default first: its terminals running a
+/// coding harness in `terminals` order (the shown one leads), then its agent
+/// tabs, an on-screen one first. That order is the default X8 sets, the active
+/// agent terminal and else the first agent tab, so a caller that has no choice
+/// of its own takes the head of the list. Pure; `harness_of` is the pty side.
+pub fn agents_in(
+    snapshot: &ShellSnapshot,
+    cluster: &str,
+    terminals: &[String],
+    harness_of: impl Fn(&str) -> Option<Harness>,
+) -> Vec<AgentTarget> {
+    let mut out: Vec<AgentTarget> = terminals
+        .iter()
+        .filter_map(|id| {
+            let harness = harness_of(id).filter(|h| h.is_agent())?;
+            let title = snapshot
+                .terminals
+                .iter()
+                .find(|t| &t.id == id)
+                .map_or(id.as_str(), |t| t.title.as_str());
+            Some(AgentTarget {
+                kind: AgentKind::Terminal,
+                id: id.clone(),
+                label: format!("{} · {title}", harness_name(harness)),
+            })
+        })
+        .collect();
+    let mut tabs: Vec<&SurfaceInstance> = snapshot
+        .windows
+        .iter()
+        .flat_map(|w| &w.clusters)
+        .filter(|c| c.id == cluster)
+        .flat_map(|c| c.tree.tabs())
+        .filter_map(|tab| {
+            snapshot
+                .instances
+                .iter()
+                .find(|i| i.id == tab && i.app_id == crate::apps::agent_tab::ID)
+        })
+        .collect();
+    tabs.sort_by_key(|i| !crate::embed::host::shown(snapshot, &i.id));
+    out.extend(tabs.into_iter().map(|i| AgentTarget {
+        kind: AgentKind::AgentTab,
+        id: i.id.clone(),
+        label: format!("Agent tab · {}", i.title),
+    }));
+    out
+}
+
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct InsertParams {
     item_ids: Vec<String>,
+    /// A terminal from `context/agents`; unset, the cluster's first agent.
+    #[serde(default)]
+    terminal: Option<String>,
+    #[serde(default)]
+    before: String,
+    #[serde(default)]
+    after: String,
 }
 
-/// `context/insert`: types `@path` references for items in this cluster's
-/// context store at the prompt of the cluster's agent terminal, without
-/// pressing Enter. Answers `{ inserted: false, reason }` rather than an error
-/// when there is no agent terminal to type into, because the items are already
-/// attached in the strip and that is a normal state, not a failure.
-pub fn insert_for_cluster(
+/// The two host-answered `context/*` methods that need the terminals, which the
+/// store (`context.rs`) deliberately knows nothing about. Every other
+/// `context/*` method is the store's.
+pub fn is_method(method: &str) -> bool {
+    matches!(method, "context/insert" | "context/agents")
+}
+
+pub fn call(
+    app: &AppHandle,
+    cluster_id: Option<&str>,
+    method: &str,
+    params: Option<serde_json::Value>,
+) -> std::result::Result<serde_json::Value, veistra_rpc::RpcError> {
+    match method {
+        "context/insert" => insert_for_cluster(app, cluster_id, params),
+        "context/agents" => Ok(agents_for_cluster(app, cluster_id)),
+        other => Err(veistra_rpc::RpcError::new(
+            veistra_rpc::METHOD_NOT_FOUND,
+            format!("`{other}` is the context store's, not the terminals'"),
+        )),
+    }
+}
+
+/// `context/agents`: the agents in this frame's cluster that a page can send
+/// to, `{ agents: [{ kind, id, label }] }`, the default first. `kind` is
+/// `terminal` (send with `context/insert` and its `terminal`) or `agentTab`
+/// (send with `veistra/attach-to-agent` and its `instanceId`). Empty outside a
+/// cluster or with no agent running, which a picker shows as such.
+fn agents_for_cluster(app: &AppHandle, cluster_id: Option<&str>) -> serde_json::Value {
+    let Some(cluster) = cluster_id else {
+        return serde_json::json!({ "agents": [] });
+    };
+    let shell = app.state::<ShellState>();
+    let ptys = app.state::<PtySessions>();
+    let agents = agents_in(
+        &shell.snapshot(),
+        cluster,
+        &shell.terminals_in_cluster(cluster),
+        |id| ptys.target(id).map(|t| t.harness),
+    );
+    serde_json::json!({ "agents": agents })
+}
+
+/// `context/insert`: types references for items in this cluster's context store
+/// at an agent terminal's prompt, with `before` and `after` around them, and
+/// never presses Enter: the person reads the line and sends it. `terminal`
+/// picks one from `context/agents`; unset, the cluster's first agent terminal.
+/// Answers `{ inserted: false, reason }` rather than an error when there is no
+/// such terminal, because the items are already attached in the strip and that
+/// is a normal state, not a failure.
+fn insert_for_cluster(
     app: &AppHandle,
     cluster_id: Option<&str>,
     params: Option<serde_json::Value>,
@@ -298,14 +499,17 @@ pub fn insert_for_cluster(
     };
     let ptys = app.state::<PtySessions>();
     let candidates = app.state::<ShellState>().terminals_in_cluster(cluster);
-    let Some(terminal) = pick_agent_terminal(&candidates, |id| {
+    let terminal = match choose_terminal(&candidates, p.terminal.as_deref(), |id| {
         ptys.target(id).is_some_and(|t| t.harness.is_agent())
-    }) else {
-        return Ok(declined(
-            "no agent is running in this environment's terminals",
-        ));
+    }) {
+        Ok(id) => id,
+        Err(reason) => return Ok(declined(reason)),
     };
-    let done = insert_stored(app, &ptys, &terminal, &p.item_ids)
+    let around = Around {
+        before: p.before,
+        after: p.after,
+    };
+    let done = insert_stored(app, &ptys, &terminal, &p.item_ids, &around)
         .map_err(|e| RpcError::new(INTERNAL_ERROR, e.to_string()))?;
     Ok(serde_json::json!({
         "inserted": done.count > 0,
@@ -454,6 +658,150 @@ mod tests {
         assert_eq!(picked.as_deref(), Some("claude-1"));
         assert_eq!(pick_agent_terminal(&ids, |_| false), None);
         assert_eq!(pick_agent_terminal(&[], |_| true), None);
+    }
+
+    #[test]
+    fn a_chosen_terminal_is_used_only_while_it_is_an_agent_here() {
+        let ids = [
+            "shell".to_string(),
+            "claude-1".to_string(),
+            "codex-2".to_string(),
+        ];
+        let agent = |id: &str| id != "shell";
+        assert_eq!(choose_terminal(&ids, None, agent), Ok("claude-1".into()));
+        assert_eq!(
+            choose_terminal(&ids, Some("codex-2"), agent),
+            Ok("codex-2".into()),
+            "the person's pick wins over the shown terminal"
+        );
+        assert!(
+            choose_terminal(&ids, Some("shell"), agent).is_err(),
+            "a plain shell is never typed into, even when named"
+        );
+        assert!(
+            choose_terminal(&ids, Some("claude-9"), agent).is_err(),
+            "a terminal from another cluster, or one that closed, is refused, not swapped"
+        );
+        assert!(choose_terminal(&ids, None, |_| false).is_err());
+    }
+
+    #[test]
+    fn the_packet_sentence_goes_around_the_reference_on_one_line() {
+        let reference = harness::reference(
+            Harness::Claude,
+            crate::quoting::ShellFamily::Posix,
+            None,
+            &["C:/p/.veistra/feedback/t-1/packet.md".to_string()],
+        );
+        assert!(reference.ends_with(' '), "{reference:?}");
+        let mention = reference.trim_end();
+        assert_eq!(
+            compose("Playtest feedback: 2 notes. Read ", &reference, " first."),
+            format!("Playtest feedback: 2 notes. Read {mention} first.")
+        );
+        assert_eq!(
+            compose("", &reference, ""),
+            reference,
+            "no words, unchanged"
+        );
+        assert_eq!(
+            compose("a\r\nb ", &reference, " c\n"),
+            format!("ab {mention} c"),
+            "an app's words cannot press Enter"
+        );
+        assert_eq!(compose("Read ", "", " first."), "", "nothing to point at");
+    }
+
+    fn agents_snapshot() -> ShellSnapshot {
+        use crate::layout::PaneNode;
+        let mut tree = PaneNode::leaf("pane-1".to_string());
+        for tab in ["files-1", "agent-tab-1", "agent-tab-2"] {
+            tree.insert_tab("pane-1", tab, None);
+        }
+        let mut other = PaneNode::leaf("pane-2".to_string());
+        other.insert_tab("pane-2", "agent-tab-3", None);
+        let cluster = |id: &str, tree: PaneNode| crate::shell_state::Cluster {
+            id: id.into(),
+            name: id.into(),
+            tree,
+            project: Some("C:/p".into()),
+            worktree: None,
+            active_terminal: None,
+            band_height: None,
+            page: None,
+            environment: None,
+            pinned: false,
+            icon: None,
+            environment_missing: false,
+        };
+        let instance = |id: &str, app_id: &str, title: &str| SurfaceInstance {
+            id: id.into(),
+            app_id: app_id.into(),
+            kind: crate::shell_state::SurfaceKind::App,
+            title: title.into(),
+        };
+        let terminal = |id: &str, title: &str| crate::shell_state::TerminalSession {
+            id: id.into(),
+            title: title.into(),
+            cluster_id: "c1".into(),
+            agent_finished: false,
+            group_id: None,
+        };
+        ShellSnapshot {
+            windows: vec![crate::shell_state::WindowPlacement {
+                label: "main".into(),
+                clusters: vec![cluster("c1", tree), cluster("c2", other)],
+                active_cluster_id: Some("c1".into()),
+                geometry: None,
+                right_page: None,
+            }],
+            instances: vec![
+                instance("files-1", "files", "Files"),
+                instance("agent-tab-1", "agent-tab", "Fix the chase"),
+                instance("agent-tab-2", "agent-tab", "Agent"),
+                instance("agent-tab-3", "agent-tab", "Elsewhere"),
+            ],
+            terminals: vec![terminal("t1", "pwsh"), terminal("t2", "Terminal 2")],
+        }
+    }
+
+    #[test]
+    fn the_agents_are_listed_with_the_default_first() {
+        let snapshot = agents_snapshot();
+        let harness = |id: &str| match id {
+            "t1" => Some(Harness::Shell),
+            "t2" => Some(Harness::Claude),
+            _ => None,
+        };
+        let terminals = ["t1".to_string(), "t2".to_string()];
+        let agents = agents_in(&snapshot, "c1", &terminals, harness);
+        let seen: Vec<(AgentKind, &str, &str)> = agents
+            .iter()
+            .map(|a| (a.kind, a.id.as_str(), a.label.as_str()))
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                (AgentKind::Terminal, "t2", "Claude Code · Terminal 2"),
+                (AgentKind::AgentTab, "agent-tab-2", "Agent tab · Agent"),
+                (
+                    AgentKind::AgentTab,
+                    "agent-tab-1",
+                    "Agent tab · Fix the chase"
+                ),
+            ],
+            "no plain shell, no other cluster's tab, the shown tab before the hidden one"
+        );
+        let no_terminals = agents_in(&snapshot, "c1", &terminals, |_| None);
+        assert_eq!(
+            no_terminals[0].id, "agent-tab-2",
+            "with no agent terminal, the first agent tab is the default"
+        );
+        assert!(agents_in(&snapshot, "c9", &[], harness).is_empty());
+        assert_eq!(
+            serde_json::to_value(&agents[1]).unwrap(),
+            serde_json::json!({ "kind": "agentTab", "id": "agent-tab-2", "label": "Agent tab · Agent" })
+        );
     }
 
     #[test]

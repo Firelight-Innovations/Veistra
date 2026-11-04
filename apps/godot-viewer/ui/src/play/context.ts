@@ -5,8 +5,9 @@
  * called and what it becomes, so the buttons and the drag share one path.
  */
 import { invoke } from "@veistra/bridge";
-import { formatPlayTime } from "../../../../shared/comments";
+import { formatPlayTime, takeHistory, type Comment } from "../../../../shared/comments";
 import { contextKey, type ContextRef } from "../../../../shared/context";
+import { noteName } from "./notes";
 import type { Capture, LogLine } from "./rpc";
 
 export { dragContext } from "../../../../shared/context";
@@ -45,5 +46,40 @@ export function putLog(lines: LogLine[], scene: string | null) {
     title: `Play - output${scene ? ` of ${leaf(scene)}` : ""}`,
     label: "Play - game output",
     text: logText(lines, scene),
+  });
+}
+
+/**
+ * Still broken where Record cannot run (#321): there is no new take to send,
+ * so the agent that had the note gets the person's words, the fix they
+ * checked and the packet it worked from, as one text item. `comment` is the
+ * note as it stood before the verdict, with the agent's fix still on it.
+ */
+export function stillBrokenText(
+  comment: Comment,
+  reply: string | undefined,
+  blocked: string,
+): string {
+  const first = takeHistory(comment)[0];
+  const fix = comment.resolution;
+  return [
+    `Still broken after your fix: ${first ? noteName(first) : "a note"}. ${comment.body}`,
+    reply ? `They said: ${reply}` : "",
+    fix ? `Your fix: ${fix.note}${fix.commit ? ` (commit ${fix.commit})` : ""}` : "",
+    first ? `The packet you worked from: ${first.packet}/packet.md` : "",
+    `No new take was recorded: ${blocked}`,
+    `The note is ${comment.id}; list_play_notes has its history.`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+export function putStillBroken(comment: Comment, reply: string | undefined, blocked: string) {
+  return invoke<ContextRef>("context/put", {
+    key: contextKey("play", comment.id, "still-broken"),
+    kind: "text",
+    title: "Play - still broken after your fix",
+    label: "Play - still broken",
+    text: stillBrokenText(comment, reply, blocked),
   });
 }

@@ -1,24 +1,33 @@
 /**
  * Play's pure modules: the note model, telemetry in the page, the contact
- * sheet's times and the keys. The game box's geometry is `apps/shared/nativeBox.ts`'s.
+ * sheet's times, shape and seeks, and the keys. The game box's geometry is `apps/shared/nativeBox.ts`'s.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Comment } from "../../../../shared/comments";
-import { CONTACT_MAX, clock, contactLayout, contactTimes } from "./frames";
+import { CONTACT_MAX, clock, contactLayout, contactTimes, seek } from "./frames";
 import { liveAction, reviewAction } from "./keys";
+import { newF8Marks } from "./markTelemetry";
 import {
   addNote,
+  checkedOf,
+  commentOf,
   dismissMark,
   emptyDoc,
   errorsNear,
   markSent,
+  nearWords,
+  NO_RANGE,
   noteStatus,
   normalize,
+  packetMessage,
   parseLog,
   pendingMarks,
   removeNote,
   sendable,
+  settledRange,
   updateNote,
+  withIn,
+  withOut,
 } from "./notes";
 import { frameSeries, nearestTick, parseTicks, recordedTarget, toViewport } from "./telemetry";
 
@@ -61,6 +70,26 @@ describe("notes", () => {
     expect(sendable(sent).map((n) => n.n)).toEqual([2]);
   });
 
+  it("leave one sentence around the packet for the agent, counted", () => {
+    const say = (n: number) => {
+      const { before, after } = packetMessage(n);
+      return `${before}.veistra/feedback/t-1/packet.md${after}`;
+    };
+    expect(say(2)).toBe("Playtest feedback: 2 notes. Read .veistra/feedback/t-1/packet.md first.");
+    expect(say(1)).toBe("Playtest feedback: 1 note. Read .veistra/feedback/t-1/packet.md first.");
+  });
+
+  it("say which notes are still broken after the agent's fix", () => {
+    const say = (n: number, still: number) => {
+      const { before, after } = packetMessage(n, still);
+      return `${before}p/packet.md${after}`;
+    };
+    expect(say(1, 1)).toBe("Still broken after your fix: 1 note. Read p/packet.md first.");
+    expect(say(3, 1)).toBe(
+      "Playtest feedback: 3 notes, 1 still broken after your fix. Read p/packet.md first.",
+    );
+  });
+
   it("read a notes.json leniently and keep numbers above what is there", () => {
     const doc = normalize({ notes: [{ n: 4, atMs: 0 }, { nope: true }], nextN: 2 });
     expect(doc.notes).toHaveLength(1);
@@ -91,6 +120,49 @@ describe("notes", () => {
     const comment = { id: "c1", status: "fixed" } as Comment;
     expect(noteStatus(note, [comment])).toBe("fixed");
     expect(noteStatus({ ...note, commentId: undefined }, [comment])).toBe("draft");
+  });
+
+  it("find the note a Still broken draft checks, before Send and after it", () => {
+    const checked = { id: "c2", status: "open" } as Comment;
+    const draft = { ...addNote(emptyDoc(), 1).note, followUp: "c2" };
+    expect(checkedOf(draft, [checked])).toBe(checked);
+    expect(commentOf(draft, [checked])).toBeUndefined();
+    expect(noteStatus(draft, [checked])).toBe("draft");
+    const sent = { ...draft, commentId: "c2" };
+    expect(commentOf(sent, [checked])).toBe(checked);
+    expect(checkedOf({ ...draft, followUp: undefined }, [checked])).toBeUndefined();
+  });
+});
+
+describe("the pending range", () => {
+  it("keep the other end only while it is still on its own side", () => {
+    let r = withIn(NO_RANGE, 5_000);
+    expect(r).toEqual({ inMs: 5_000, outMs: null });
+    expect(settledRange(r)).toBeNull();
+    r = withOut(r, 9_000);
+    expect(settledRange(r)).toEqual({ inMs: 5_000, outMs: 9_000 });
+    // In moved past Out drops Out, and Out before In drops In.
+    expect(withIn(r, 9_500)).toEqual({ inMs: 9_500, outMs: null });
+    expect(withOut(r, 4_000)).toEqual({ inMs: null, outMs: 4_000 });
+    expect(settledRange(withOut(withIn(NO_RANGE, 3_000), 3_000))).toBeNull();
+  });
+});
+
+describe("the log near a note", () => {
+  it("count errors and warnings in words, and say nothing for none", () => {
+    const row = (level: "error" | "warning", ms: number) => ({
+      t: ms,
+      ms,
+      level,
+      stream: "",
+      text: "x",
+    });
+    expect(nearWords([row("error", 1), row("warning", 2)])).toBe("1 error · 1 warning");
+    expect(
+      nearWords([row("error", 1), row("error", 2), row("warning", 3), row("warning", 4)]),
+    ).toBe("2 errors · 2 warnings");
+    expect(nearWords([row("warning", 1)])).toBe("1 warning");
+    expect(nearWords([])).toBeNull();
   });
 });
 
@@ -131,6 +203,42 @@ describe("telemetry", () => {
     });
     expect(recordedTarget(tick, 10, 10, { width: 640, height: 360 })?.nodePath).toBe("A/Big");
     expect(recordedTarget(null, 0, 0, { width: 1, height: 1 })).toBeNull();
+  });
+
+  // Spec §13 test 5: a pin on the enemy names Enemy_02. Its mesh's box is
+  // the smallest under the pin, but a person means the body, as a live pick
+  // (which hits the collider) says.
+  const hallway = (enemyBox: string) =>
+    parseTicks(
+      `{"t":1,"kind":"tick","scene":"res://levels/hallway.tscn","viewport":[1280,720],"nodes":[` +
+        '{"path":"Hallway/Walls","type":"StaticBody3D","rect":[0,0,1280,720]},' +
+        `{"path":"Hallway/Enemy_02","type":"CharacterBody3D","rect":${enemyBox},"pos":[14.2,0,-6.8]},` +
+        '{"path":"Hallway/Enemy_02/Mesh","type":"MeshInstance3D","rect":[915,220,230,390],"pos":[14.2,1,-6.8]}]}',
+    )[0];
+
+  it("lift a pin on a mesh to the body it belongs to", () => {
+    const tick = hallway("[905,210,250,410]");
+    const full = { width: 1280, height: 720 };
+    expect(recordedTarget(tick, 1000, 400, full)).toEqual({
+      nodePath: "Hallway/Enemy_02",
+      type: "CharacterBody3D",
+      worldPoint: [14.2, 0, -6.8],
+      source: "recorded",
+    });
+    // Off the enemy, the walls' body is the smallest box and is itself a body.
+    expect(recordedTarget(tick, 100, 100, full)?.nodePath).toBe("Hallway/Walls");
+  });
+
+  it("keep the mesh when the body's box does not hold the pin, or nothing above it is a body", () => {
+    // A body box that has fallen behind its mesh (a tick apart) is not lifted to.
+    const behind = hallway("[600,210,250,410]");
+    const full = { width: 1280, height: 720 };
+    expect(recordedTarget(behind, 1000, 400, full)?.nodePath).toBe("Hallway/Enemy_02/Mesh");
+    // A mesh tracked through `veistra_track` with no body above it.
+    const [lamp] = parseTicks(
+      '{"t":1,"kind":"tick","scene":"","viewport":[1280,720],"nodes":[{"path":"Hallway/Lamp","type":"Node3D","rect":[0,0,400,400]},{"path":"Hallway/Lamp/Bulb","type":"MeshInstance3D","rect":[100,100,50,50]}]}',
+    );
+    expect(recordedTarget(lamp, 120, 120, full)?.nodePath).toBe("Hallway/Lamp/Bulb");
   });
 
   // Base 640x360 under stretch aspect "keep" in a 1000x700 window: Godot
@@ -197,6 +305,21 @@ describe("telemetry", () => {
   });
 });
 
+describe("mark telemetry", () => {
+  it("take what an opening pane finds as the start, and report each mark after it", () => {
+    const first = newF8Marks(null, 1, 3, true);
+    expect(first).toEqual({ next: { run: 1, count: 3 }, report: 0 });
+    expect(newF8Marks(first.next, 1, 5, false)).toEqual({ next: { run: 1, count: 5 }, report: 2 });
+    expect(newF8Marks(first.next, 1, 3, false).report).toBe(0);
+  });
+
+  it("count a run not seen before from none, and never report a count going down", () => {
+    expect(newF8Marks({ run: 1, count: 4 }, 2, 1, false).report).toBe(1);
+    expect(newF8Marks(null, 2, 2, false).report).toBe(2);
+    expect(newF8Marks({ run: 2, count: 4 }, 2, 1, false).report).toBe(0);
+  });
+});
+
 describe("contact sheets", () => {
   it("run one frame a second from two before to two after", () => {
     expect(contactTimes(41_000, 41_000, 151_400)).toEqual([39_000, 40_000, 41_000, 42_000, 43_000]);
@@ -213,6 +336,37 @@ describe("contact sheets", () => {
   it("lay sixteen out four by four, and fewer in one row", () => {
     expect(contactLayout(16)).toMatchObject({ cols: 4, rows: 4, width: 1280, height: 720 });
     expect(contactLayout(3)).toMatchObject({ cols: 3, rows: 1 });
+  });
+
+  it("keep the take's own shape in every cell", () => {
+    expect(contactLayout(8, 4 / 3)).toMatchObject({
+      cell: { width: 320, height: 240 },
+      width: 1280,
+      height: 480,
+    });
+    expect(contactLayout(4, 21 / 9).cell).toEqual({ width: 320, height: 137 });
+    expect(contactLayout(4, 0).cell).toEqual({ width: 320, height: 180 });
+  });
+
+  it("give up on a seek the video never answers, or one it cannot make", async () => {
+    vi.useFakeTimers();
+    try {
+      const silent = {
+        currentTime: 0,
+        readyState: 4,
+        error: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as HTMLVideoElement;
+      const waiting = seek(silent, 41_000, 5_000);
+      vi.advanceTimersByTime(5_000);
+      await expect(waiting).rejects.toThrow("did not reach 0:41.00");
+      expect(silent.removeEventListener).toHaveBeenCalledTimes(2);
+      const broken = { ...silent, error: { code: 4 } } as unknown as HTMLVideoElement;
+      await expect(seek(broken, 0)).rejects.toThrow("could not be read");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("print take time as minutes and seconds", () => {

@@ -1,6 +1,7 @@
 /**
  * What every app that hands things to an agent shares: the slice of a
- * `ContextItem` an app reads back, and the press handler that turns a moved
+ * `ContextItem` an app reads back, the agents it can hand one to and the one
+ * delivery to the agent chosen, and the press handler that turns a moved
  * press into a drag of one context item onto a terminal. The store itself
  * (`context/put`, the strip beside each terminal) is the host's; see
  * `apps/README.md`, "Context: pushing things to an agent".
@@ -29,6 +30,65 @@ export function contextKey(...parts: Array<string | null | undefined>): string {
     )
     .filter((p) => p.length > 0)
     .join("/");
+}
+
+/**
+ * An agent a page can send to, as `context/agents` lists it
+ * (`context_commands::AgentTarget`): a terminal typed at with `context/insert`,
+ * or an agent tab given a chip by `veistra/attach-to-agent`.
+ */
+export interface AgentTarget {
+  kind: "terminal" | "agentTab";
+  /** The terminal's id, or the agent tab's instance id. */
+  id: string;
+  /** What a SEND TO picker shows, e.g. "Claude Code · Terminal 2". */
+  label: string;
+}
+
+/** The agents in this frame's cluster, the default (X8) first; empty when none runs. */
+export const listAgents = () =>
+  invoke<{ agents: AgentTarget[] }>("context/agents").then((r) => r.agents ?? []);
+
+/** Words typed on either side of the reference, so the one line is a sentence. */
+export interface Around {
+  before: string;
+  after: string;
+}
+
+/** What handing an item to an agent came to: there, or why not. */
+export type Delivery = { delivered: true } | { delivered: false; reason: string };
+
+/**
+ * Hand context item `itemId` to `target` and to nothing else (X8): a terminal
+ * has its reference typed at the prompt, an agent tab gets it as a chip
+ * labelled `label`, with `around` on either side in both. Neither presses
+ * Enter; the person reads the line and sends it.
+ */
+export async function handToAgent(
+  target: AgentTarget,
+  itemId: string,
+  label: string,
+  around: Around,
+): Promise<Delivery> {
+  if (target.kind === "terminal") {
+    const r = await invoke<{ inserted: boolean; reason?: string }>("context/insert", {
+      itemIds: [itemId],
+      terminal: target.id,
+      ...around,
+    });
+    return r.inserted
+      ? { delivered: true }
+      : { delivered: false, reason: r.reason ?? "the terminal did not take it" };
+  }
+  const r = await invoke<{ delivered?: number } | null>("veistra/attach-to-agent", {
+    contextId: itemId,
+    label,
+    instanceId: target.id,
+    ...around,
+  });
+  return (r?.delivered ?? 0) > 0
+    ? { delivered: true }
+    : { delivered: false, reason: "that agent tab is no longer open" };
 }
 
 const PRESS_THRESHOLD = 4;

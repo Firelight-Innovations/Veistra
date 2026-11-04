@@ -1,17 +1,33 @@
 /**
  * The Notes side of review (the PlayReview and AgentHandoff boards): one card
- * per note, the marks not yet made notes, and Send.
+ * per note, the marks not yet made notes, and Send with its SEND TO picker.
  *
  * A card reads its status from the comment Send filed: Draft until then, then
  * Sent, Agent working, Fixed (with the agent's summary, Play the scene, Looks
  * good and Still broken), and Resolved, folded at the bottom. A mark close to
  * an error shows that line, because the error is the first lead for a note.
+ * SEND TO lists `context/agents`, the default first (X8); Review keeps the
+ * choice, because Ctrl Enter sends to it too.
+ *
+ * A Still broken take's draft (#321) says which note it checks and lists that
+ * note's takes, oldest first, this one last; its thread is the old note's.
  */
 import { useState } from "react";
 import type { Comment, Status, Verdict } from "../../../../shared/comments";
-import { statusView } from "../../../../shared/comments";
+import { statusView, takeHistory } from "../../../../shared/comments";
+import type { AgentTarget } from "../../../../shared/context";
 import { clock } from "./frames";
-import { commentOf, errorsNear, noteStatus, span, type LogRow, type NoteDraft } from "./notes";
+import {
+  checkedOf,
+  commentOf,
+  errorsNear,
+  nearWords,
+  noteName,
+  noteStatus,
+  span,
+  type LogRow,
+  type NoteDraft,
+} from "./notes";
 
 /** Errors this close to a mark are shown on it (design §6). */
 const MARK_ERROR_MS = 2_000;
@@ -20,9 +36,16 @@ const NOTE_ERROR_MS = 10_000;
 
 export interface SendOptions {
   contact: boolean;
+  /** "Video clip per note": off unless ticked (X12). */
+  clip: boolean;
 }
 
+/** One agent's key in the picker: its kind and id, which together are unique. */
+export const agentKey = (a: AgentTarget) => `${a.kind}:${a.id}`;
+
 export interface NotesPanelProps {
+  /** The take under review, which a Still broken note's history ends with. */
+  take: { id: string; number: number };
   notes: NoteDraft[];
   comments: Comment[];
   log: LogRow[];
@@ -33,6 +56,12 @@ export interface NotesPanelProps {
   /** Kept by Review, because Ctrl Enter sends with them too. */
   options: SendOptions;
   onOptions: (options: SendOptions) => void;
+  /** Who Send can go to, the default first, and who it goes to; null with none running. */
+  agents: AgentTarget[];
+  agent: AgentTarget | null;
+  onAgent: (agent: AgentTarget) => void;
+  /** Why a clip cannot be cut on this machine, or null when it can. */
+  clipUnavailable: string | null;
   onSelect: (n: number) => void;
   onChange: (n: number, patch: Partial<NoteDraft>) => void;
   onDelete: (n: number) => void;
@@ -62,13 +91,42 @@ function StatusWord({ status }: { status: Status | "draft" }) {
   );
 }
 
+/**
+ * A Still broken note's takes: the one it was first sent from, each take sent
+ * as still broken since, and this take until Send adds it.
+ */
+function History(props: { checked: Comment; note: NoteDraft; take: NotesPanelProps["take"] }) {
+  const { checked, note, take } = props;
+  const history = takeHistory(checked);
+  const named = (number: number | undefined) =>
+    number !== undefined ? `Take ${number}` : "An earlier take";
+  return (
+    <ol className="pl-note__history" aria-label={`Takes of note ${note.n}`}>
+      {history.map((h, i) => (
+        <li key={`${h.take}:${h.n}`}>
+          {named(h.number)} · {clock(h.atMs)} · {i === 0 ? "sent" : "still broken"}
+          {h.take === take.id && " · this take"}
+        </li>
+      ))}
+      {!history.some((h) => h.take === take.id) && (
+        <li>
+          Take {take.number} · {clock(note.atMs)} · this take, not sent yet
+        </li>
+      )}
+    </ol>
+  );
+}
+
 function NoteCard(props: {
+  take: NotesPanelProps["take"];
   note: NoteDraft;
   comment: Comment | undefined;
+  /** The note a Still broken draft checks, before and after Send. */
+  checked: Comment | undefined;
   status: Status | "draft";
-  near: number;
+  /** The errors and warnings within 10 s, which Send attaches to the note. */
+  near: LogRow[];
   selected: boolean;
-  readOnly: boolean;
   onSelect: () => void;
   onChange: (patch: Partial<NoteDraft>) => void;
   onDelete: () => void;
@@ -76,10 +134,13 @@ function NoteCard(props: {
   onVerdict: (verdict: Verdict, reply?: string) => void;
   onPlayScene: () => void;
 }) {
-  const { note, comment, status, selected } = props;
+  const { note, comment, checked, status, selected } = props;
   const [reply, setReply] = useState("");
   const draft = status === "draft";
+  const first = checked ? takeHistory(checked)[0] : undefined;
+  const thread = comment ?? checked;
   const scene = comment?.anchor.kind === "take" ? comment.anchor.scene : undefined;
+  const near = nearWords(props.near);
   return (
     <div
       className={`pl-note${selected ? " pl-note--selected" : ""} pl-note--${status}`}
@@ -96,6 +157,12 @@ function NoteCard(props: {
         <span className="pl-note__spacer" />
         <StatusWord status={status} />
       </button>
+      {checked && first && (
+        <div className="pl-note__checks">
+          <span className="pl-note__checks-title">Still broken · {noteName(first)}</span>
+          <History checked={checked} note={note} take={props.take} />
+        </div>
+      )}
       {draft && selected ? (
         <>
           <label className="pl-sr" htmlFor={`note-${note.n}`}>
@@ -136,13 +203,16 @@ function NoteCard(props: {
           </span>
         )}
         {note.markupPng && <span className="pl-chip">marked up</span>}
-        {props.near > 0 && (
-          <span className="pl-chip pl-chip--danger">
-            {props.near} {props.near === 1 ? "error" : "errors"} near
+        {near && (
+          <span
+            className="pl-chip pl-chip--danger"
+            title={props.near.map((r) => `${clock(r.ms)} ${r.text}`).join("\n")}
+          >
+            {near} near
           </span>
         )}
       </div>
-      {draft && selected && !props.readOnly && (
+      {draft && selected && (
         <div className="pl-note__actions">
           <button type="button" className="k-btn k-btn--ghost k-btn--sm" onClick={props.onDelete}>
             Delete
@@ -152,9 +222,9 @@ function NoteCard(props: {
           </button>
         </div>
       )}
-      {comment && (comment.replies ?? []).length > 0 && (
+      {thread && (thread.replies ?? []).length > 0 && (
         <div className="pl-note__thread">
-          {(comment.replies ?? []).map((r) => (
+          {(thread.replies ?? []).map((r) => (
             <p key={r.at}>
               <strong>{r.by === "agent" ? "Agent" : "You"}:</strong> {r.body}
             </p>
@@ -178,6 +248,7 @@ function NoteCard(props: {
             <button
               type="button"
               className="k-btn k-btn--primary k-btn--sm"
+              title={`Run the game in ${scene ?? "the scene it ran"} and record that run`}
               onClick={props.onPlayScene}
             >
               Play {scene ? scene.slice(scene.lastIndexOf("/") + 1) : "again"}
@@ -213,6 +284,7 @@ export function NotesPanel(props: NotesPanelProps) {
     note,
     status: noteStatus(note, props.comments),
     comment: commentOf(note, props.comments),
+    checked: checkedOf(note, props.comments),
   }));
   const open = rows.filter((r) => r.status !== "resolved");
   const resolved = rows.filter((r) => r.status === "resolved");
@@ -222,12 +294,13 @@ export function NotesPanel(props: NotesPanelProps) {
     return (
       <NoteCard
         key={r.note.n}
+        take={props.take}
         note={r.note}
         comment={r.comment}
+        checked={r.checked}
         status={r.status}
-        near={errorsNear(props.log, from, to, NOTE_ERROR_MS).length}
+        near={errorsNear(props.log, from, to, NOTE_ERROR_MS)}
         selected={props.selected === r.note.n}
-        readOnly={props.readOnly}
         onSelect={() => props.onSelect(r.note.n)}
         onChange={(patch) => props.onChange(r.note.n, patch)}
         onDelete={() => props.onDelete(r.note.n)}
@@ -300,8 +373,34 @@ export function NotesPanel(props: NotesPanelProps) {
         {showResolved && resolved.map(card)}
       </div>
       <div className="pl-notes__send">
-        <span className="pl-notes__label">SEND TO</span>
-        <span className="pl-notes__to">The agent in this environment</span>
+        <span className="pl-notes__label" aria-hidden="true">
+          SEND TO
+        </span>
+        <select
+          className="pl-notes__to"
+          aria-label="Send to"
+          value={props.agent ? agentKey(props.agent) : ""}
+          disabled={props.agents.length === 0}
+          title={
+            props.agents.length === 0
+              ? "Start an agent in a terminal or an agent tab here to send to it. The packet is still written."
+              : "The one agent the packet's line is left for. Nothing is sent until you press Enter there."
+          }
+          onChange={(e) => {
+            const picked = props.agents.find((a) => agentKey(a) === e.target.value);
+            if (picked) props.onAgent(picked);
+          }}
+        >
+          {props.agents.length === 0 ? (
+            <option value="">No agent running here</option>
+          ) : (
+            props.agents.map((a) => (
+              <option key={agentKey(a)} value={agentKey(a)}>
+                {a.label}
+              </option>
+            ))
+          )}
+        </select>
         <label>
           <input
             type="checkbox"
@@ -313,8 +412,18 @@ export function NotesPanel(props: NotesPanelProps) {
         <span className="pl-notes__always">
           Log and scene data around each note always go: they are what the agent works from.
         </span>
-        <label title="Not built yet: a clip needs encoding in the page, and the agent reads the contact sheet instead.">
-          <input type="checkbox" disabled checked={false} onChange={() => undefined} />
+        <label
+          title={
+            props.clipUnavailable ??
+            "An MP4 of each note, two seconds either side, for a person to watch. The agent reads the contact sheet."
+          }
+        >
+          <input
+            type="checkbox"
+            disabled={props.clipUnavailable !== null}
+            checked={options.clip && props.clipUnavailable === null}
+            onChange={(e) => props.onOptions({ ...options, clip: e.target.checked })}
+          />
           Video clip per note, for people
         </label>
         <button
