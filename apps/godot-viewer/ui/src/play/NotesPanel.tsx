@@ -1,15 +1,18 @@
 /**
  * The Notes side of review (the PlayReview and AgentHandoff boards): one card
- * per note, the marks not yet made notes, and Send.
+ * per note, the marks not yet made notes, and Send with its SEND TO picker.
  *
  * A card reads its status from the comment Send filed: Draft until then, then
  * Sent, Agent working, Fixed (with the agent's summary, Play the scene, Looks
  * good and Still broken), and Resolved, folded at the bottom. A mark close to
  * an error shows that line, because the error is the first lead for a note.
+ * SEND TO lists `context/agents`, the default first (X8); Review keeps the
+ * choice, because Ctrl Enter sends to it too.
  */
 import { useState } from "react";
 import type { Comment, Status, Verdict } from "../../../../shared/comments";
 import { statusView } from "../../../../shared/comments";
+import type { AgentTarget } from "../../../../shared/context";
 import { clock } from "./frames";
 import {
   commentOf,
@@ -28,7 +31,12 @@ const NOTE_ERROR_MS = 10_000;
 
 export interface SendOptions {
   contact: boolean;
+  /** "Video clip per note": off unless ticked (X12). */
+  clip: boolean;
 }
+
+/** One agent's key in the picker: its kind and id, which together are unique. */
+export const agentKey = (a: AgentTarget) => `${a.kind}:${a.id}`;
 
 export interface NotesPanelProps {
   notes: NoteDraft[];
@@ -41,6 +49,12 @@ export interface NotesPanelProps {
   /** Kept by Review, because Ctrl Enter sends with them too. */
   options: SendOptions;
   onOptions: (options: SendOptions) => void;
+  /** Who Send can go to, the default first, and who it goes to; null with none running. */
+  agents: AgentTarget[];
+  agent: AgentTarget | null;
+  onAgent: (agent: AgentTarget) => void;
+  /** Why a clip cannot be cut on this machine, or null when it can. */
+  clipUnavailable: string | null;
   onSelect: (n: number) => void;
   onChange: (n: number, patch: Partial<NoteDraft>) => void;
   onDelete: (n: number) => void;
@@ -190,6 +204,7 @@ function NoteCard(props: {
             <button
               type="button"
               className="k-btn k-btn--primary k-btn--sm"
+              title={`Run the game in ${scene ?? "the scene it ran"} with Record on`}
               onClick={props.onPlayScene}
             >
               Play {scene ? scene.slice(scene.lastIndexOf("/") + 1) : "again"}
@@ -311,8 +326,34 @@ export function NotesPanel(props: NotesPanelProps) {
         {showResolved && resolved.map(card)}
       </div>
       <div className="pl-notes__send">
-        <span className="pl-notes__label">SEND TO</span>
-        <span className="pl-notes__to">The agent in this environment</span>
+        <span className="pl-notes__label" aria-hidden="true">
+          SEND TO
+        </span>
+        <select
+          className="pl-notes__to"
+          aria-label="Send to"
+          value={props.agent ? agentKey(props.agent) : ""}
+          disabled={props.agents.length === 0}
+          title={
+            props.agents.length === 0
+              ? "Start an agent in a terminal or an agent tab here to send to it. The packet is still written."
+              : "The one agent the packet's line is left for. Nothing is sent until you press Enter there."
+          }
+          onChange={(e) => {
+            const picked = props.agents.find((a) => agentKey(a) === e.target.value);
+            if (picked) props.onAgent(picked);
+          }}
+        >
+          {props.agents.length === 0 ? (
+            <option value="">No agent running here</option>
+          ) : (
+            props.agents.map((a) => (
+              <option key={agentKey(a)} value={agentKey(a)}>
+                {a.label}
+              </option>
+            ))
+          )}
+        </select>
         <label>
           <input
             type="checkbox"
@@ -324,8 +365,18 @@ export function NotesPanel(props: NotesPanelProps) {
         <span className="pl-notes__always">
           Log and scene data around each note always go: they are what the agent works from.
         </span>
-        <label title="Not built yet: a clip needs encoding in the page, and the agent reads the contact sheet instead.">
-          <input type="checkbox" disabled checked={false} onChange={() => undefined} />
+        <label
+          title={
+            props.clipUnavailable ??
+            "An MP4 of each note, two seconds either side, for a person to watch. The agent reads the contact sheet."
+          }
+        >
+          <input
+            type="checkbox"
+            disabled={props.clipUnavailable !== null}
+            checked={options.clip && props.clipUnavailable === null}
+            onChange={(e) => props.onOptions({ ...options, clip: e.target.checked })}
+          />
           Video clip per note, for people
         </label>
         <button

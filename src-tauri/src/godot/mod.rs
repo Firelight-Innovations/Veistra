@@ -12,6 +12,8 @@
 
 /// The opt-in capture script and its file channel.
 pub mod addon;
+/// A note's `clip.mp4`, trimmed from the take by Send when asked (Windows).
+pub mod clip;
 /// The executable and the projects inside an environment.
 pub mod detect;
 /// A take's H.264 video: its size, rate and keyframes, and the encoder (Windows).

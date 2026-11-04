@@ -2,7 +2,8 @@
 /**
  * Reviewing a take: notes from the keyboard, a fixed note's verdict, and
  * Send, which must hand `play/send` every draft with its pictures and then
- * put `packet.md` in front of the agent. jsdom cannot decode video, so the
+ * put `packet.md` in front of the one agent SEND TO names, in one line, and
+ * count it as `notes_sent`. jsdom cannot decode video, so the
  * frame grabbing in `frames.ts` is replaced; its arithmetic is tested in
  * `model.test.ts`.
  */
@@ -109,9 +110,24 @@ interface Disk {
 
 const copy = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 
+/** The agents `context/agents` lists by default: a terminal, the default, then a tab. */
+const AGENTS = [
+  { kind: "terminal", id: "t1", label: "Claude Code · Terminal 1" },
+  { kind: "agentTab", id: "agent-2", label: "Agent tab · Chat" },
+];
+
 function backend(
   notes: unknown[] = [{ n: 1, kind: "frame", atMs: 41_000, body: "The door light flickers" }],
-  over: { insertMs?: number; deleteMs?: number; filed?: unknown[] } = {},
+  over: {
+    insertMs?: number;
+    deleteMs?: number;
+    filed?: unknown[];
+    agents?: unknown[];
+    insert?: unknown;
+    problems?: string[];
+    clipUnavailable?: string | null;
+    hasVideo?: boolean;
+  } = {},
 ): Disk {
   const disk: Disk = {
     notes: { version: 1, notes: copy(notes) as Record<string, unknown>[], nextN: 3, dismissed: [] },
@@ -121,9 +137,10 @@ function backend(
     switch (method) {
       case "play/take":
         return Promise.resolve({
-          take: TAKE,
+          take: { ...TAKE, hasVideo: over.hasVideo ?? true },
           urls: { video: "asset://v", telemetry: "asset://t", log: "asset://l" },
           notes: copy(disk.notes),
+          clipUnavailable: over.clipUnavailable ?? null,
         });
       case "play/notes-save":
         disk.notes = copy(params?.notes) as Disk["notes"];
@@ -139,11 +156,18 @@ function backend(
           packet,
           packetMd: "C:/env/.veistra/feedback/2026-10-30-1402-0f3a-1/packet.md",
           comments: [[1, "c1"]],
+          problems: over.problems ?? [],
         });
+      case "context/agents":
+        return Promise.resolve({ agents: copy(over.agents ?? AGENTS) });
       case "context/put":
         return Promise.resolve({ id: "ctx_1" });
       case "context/insert":
-        return new Promise((resolve) => setTimeout(() => resolve(null), over.insertMs ?? 0));
+        return new Promise((resolve) =>
+          setTimeout(() => resolve(over.insert ?? { inserted: true }), over.insertMs ?? 0),
+        );
+      case "veistra/attach-to-agent":
+        return Promise.resolve({ delivered: 1 });
       case "play/take-delete":
         return new Promise((resolve) =>
           setTimeout(() => resolve({ deleted: params?.id }), over.deleteMs ?? 0),
@@ -429,7 +453,125 @@ describe("Review", () => {
       kind: "file",
       path: "C:/env/.veistra/feedback/2026-10-30-1402-0f3a-1/packet.md",
     });
-    expect(props.onNotice).toHaveBeenCalled();
+    // The default agent, the cluster's terminal, gets the one line; no tab does.
+    expect(calls("context/insert")[0][1]).toEqual({
+      itemIds: ["ctx_1"],
+      terminal: "t1",
+      before: "Playtest feedback: 1 note. Read ",
+      after: " first.",
+    });
+    expect(calls("veistra/attach-to-agent")).toHaveLength(0);
+    expect(calls("play/send")[0][1]).toMatchObject({ clip: false, sentTo: AGENTS[0] });
+    await waitFor(() => expect(props.onNotice).toHaveBeenCalled());
+    expect(props.onNotice).toHaveBeenCalledWith(
+      expect.stringContaining("waiting at Claude Code · Terminal 1's prompt"),
+    );
+    expect(tracked("notes_sent")).toEqual([
+      {
+        notes: 1,
+        ranged: 0,
+        markedUp: 0,
+        contact: true,
+        clip: false,
+        to: "terminal",
+        delivered: true,
+      },
+    ]);
+  });
+
+  it("sends to the agent picked in SEND TO, and to that one alone", async () => {
+    backend();
+    const { props } = mount();
+    await screen.findByText("The door light flickers");
+    const to = screen.getByRole("combobox", { name: "Send to" }) as HTMLSelectElement;
+    await waitFor(() => expect(to.options).toHaveLength(2));
+    expect(to.value).toBe("terminal:t1");
+    fireEvent.change(to, { target: { value: "agentTab:agent-2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send 1 note" }));
+    await waitFor(() => expect(props.onNotice).toHaveBeenCalled());
+    expect(calls("context/insert")).toHaveLength(0);
+    expect(calls("veistra/attach-to-agent")).toEqual([
+      [
+        "veistra/attach-to-agent",
+        {
+          contextId: "ctx_1",
+          label: ".veistra/feedback/2026-10-30-1402-0f3a-1/packet.md",
+          instanceId: "agent-2",
+          before: "Playtest feedback: 1 note. Read ",
+          after: " first.",
+        },
+      ],
+    ]);
+    // Each comment keeps who it went to (X7), for Still broken.
+    expect(calls("play/send")[0][1]).toMatchObject({ sentTo: AGENTS[1] });
+    expect(tracked("notes_sent")[0]).toMatchObject({ to: "agentTab", delivered: true });
+  });
+
+  it("says why the agent was not told, and what the packet is missing", async () => {
+    const reason = "the terminal you chose is no longer running an agent in this environment";
+    backend(undefined, {
+      insert: { inserted: false, reason },
+      problems: ["Note 1's clip was not cut: the take has no video."],
+    });
+    const { props } = mount();
+    await screen.findByText("The door light flickers");
+    fireEvent.click(screen.getByRole("button", { name: "Send 1 note" }));
+    await waitFor(() => expect(props.onNotice).toHaveBeenCalled());
+    const notice = vi.mocked(props.onNotice).mock.calls[0][0];
+    expect(notice).toContain(`No agent was told: ${reason}.`);
+    expect(notice).toContain("Note 1's clip was not cut: the take has no video.");
+    expect(tracked("notes_sent")[0]).toMatchObject({ to: "terminal", delivered: false });
+  });
+
+  it("writes the packet with no agent running, and tells nobody", async () => {
+    backend(undefined, { agents: [] });
+    const { props } = mount();
+    await screen.findByText("The door light flickers");
+    const to = screen.getByRole("combobox", { name: "Send to" }) as HTMLSelectElement;
+    expect(to.disabled).toBe(true);
+    expect(within(to).getByRole("option").textContent).toBe("No agent running here");
+    fireEvent.click(screen.getByRole("button", { name: "Send 1 note" }));
+    await waitFor(() => expect(props.onNotice).toHaveBeenCalled());
+    expect(calls("play/send")[0][1]).toMatchObject({ sentTo: null });
+    expect(calls("context/insert")).toHaveLength(0);
+    expect(calls("veistra/attach-to-agent")).toHaveLength(0);
+    expect(tracked("notes_sent")[0]).toMatchObject({ to: "none", delivered: false });
+  });
+
+  it("cuts a clip only when it is ticked, and cannot be ticked where none can be cut", async () => {
+    backend();
+    mount();
+    await screen.findByText("The door light flickers");
+    const tick = screen.getByRole("checkbox", { name: /Video clip per note/ }) as HTMLInputElement;
+    expect(tick.checked).toBe(false);
+    fireEvent.click(tick);
+    fireEvent.click(screen.getByRole("button", { name: "Send 1 note" }));
+    await waitFor(() => expect(calls("play/send")).toHaveLength(1));
+    expect(calls("play/send")[0][1]).toMatchObject({ clip: true });
+    // A clip is cut per note, so Send waits longer for it than the bridge's default.
+    expect(calls("play/send")[0][2]).toBeGreaterThan(30_000);
+    cleanup();
+
+    const why = "Video clips are cut by the Windows media transcoder, so only Windows makes them.";
+    backend(undefined, { clipUnavailable: why });
+    mount();
+    await screen.findByText("The door light flickers");
+    const off = screen.getByRole("checkbox", { name: /Video clip per note/ }) as HTMLInputElement;
+    expect(off.disabled).toBe(true);
+    expect(off.closest("label")?.title).toBe(why);
+  });
+
+  it("refuses a note with no picture on a take with no video, before anything is written", async () => {
+    backend(undefined, { hasVideo: false });
+    const { props } = mount();
+    await screen.findByText("The door light flickers");
+    fireEvent.click(screen.getByRole("button", { name: "Send 1 note" }));
+    await waitFor(() =>
+      expect(props.onProblem).toHaveBeenCalledWith(
+        expect.stringContaining("This take has no video, so note 1 has no frame to send."),
+      ),
+    );
+    expect(calls("play/send")).toHaveLength(0);
   });
 
   it("shows a fixed note's summary and sends Still broken with the reply", async () => {
@@ -458,7 +600,9 @@ describe("Review", () => {
       verdict: "broken",
       reply: "still clips at the door",
     });
-    fireEvent.click(screen.getByRole("button", { name: "Play hallway.tscn" }));
+    const play = screen.getByRole("button", { name: "Play hallway.tscn" });
+    expect(play.title).toBe("Run the game in res://levels/hallway.tscn with Record on");
+    fireEvent.click(play);
     expect(props.onPlayScene).toHaveBeenCalledWith("res://levels/hallway.tscn");
   });
 

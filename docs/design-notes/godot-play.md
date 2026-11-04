@@ -166,7 +166,7 @@ check it". The same chokepoint reports `godot:note_fixed` and `godot:note_resolv
 | One Godot app or two (#313) | One app, two modes: Editor · Play (owner decision 1) | Play's UI moved into `apps/godot-viewer/ui/src/play/`, and one Rust entry answers both modes. The two apps that switched with `veistra/open` were rejected by the owner: a pane is the Godot app, and the mode is what it shows. |
 | Record default | Off | Takes cost disk (open decision 2's recommendation). |
 | Tracked nodes | The design's default, with geometry for its "VisualInstance3D" | `veistra_track` when it has members, else bodies, plus the geometry and sprites not inside one, in view by their box's centre, nearest 64. VisualInstance3D also takes in lights, probes and decals; a body's own mesh tracked beside it could take a pin that should name the body; and a character's origin is at its feet, below a frame that shows the rest of it (#312). |
-| Video clip in the packet | Not built | The agent reads the contact sheet; the checkbox is shown disabled with why. |
+| Video clip in the packet | Not built (replaced by #315's below) | The agent reads the contact sheet; the checkbox is shown disabled with why. |
 | Retention | Ten takes | Open decision 7. |
 | Video size | The window's, not 720p (replaced by #310's below) | `windows-capture` crops or pads, it does not scale. The bitrate is fixed at 3.5 Mbit/s, under 60 MB for two minutes. A D3D11 scaling pass is the follow-up. |
 | One embedder for the game, the Godot editor and Blender (#309) | `crate::embed`, a registry keyed by pane instance and kind; the game belongs to the Play pane that last sent `visible: true` | Keying by cluster or app id was rejected: a cluster can hold an editor and a game, Play can be open in two panes, and `play` becomes a mode of the Godot app (#313). The embed living inside Play's run gave the editors nothing to call. |
@@ -219,6 +219,15 @@ check it". The same chokepoint reports `godot:note_fixed` and `godot:note_resolv
 | Retention at Stop (#314) | On its own thread once the take is written; a note with no words and no markup is not a draft | Retention reads every take and can delete a video, which review was waiting behind. One N pressed and left empty kept a take past `keep` for good. |
 | Play again from review (#314) | The reviewed take's project, and the project picker follows | The take menu lists every project's takes, so Play again could run another game than the one reviewed. |
 | One `godot` telemetry feature (#311) | `features/godot.ts`, apps `godot-viewer` and `play`, all eight §13 events declared at once | One feature per app was rejected: `play` becomes a mode of the Godot app (#313), and an app may report for one feature only. Declared whole so later issues add calls, not list edits. |
+| Who Send tells (#315) | One agent, picked in SEND TO from `context/agents`: the cluster's agent terminals, the shown one first, then its agent tabs, the shown one first; the head of the list is the default | Decision X8. Send typed at the first agent terminal and chipped every agent tab too, so one Send could reach several agents. A chosen agent that has gone is a refusal with its reason, never a fall back to another: the packet would go to someone the person did not pick. |
+| The one message (#315) | "Playtest feedback: 2 notes. Read `<reference>` first." on one line at that agent's prompt, Enter never pressed; `context/insert` takes `terminal`, `before` and `after`, and the agent tab's chip takes the same words | Decision X8. The bare reference said nothing about what it was. Control characters are dropped from the words, so an app's sentence cannot carry an Enter. |
+| Attach to one agent tab (#315) | `veistra/attach-to-agent` takes an `instanceId` and answers `{delivered}`; without one it still chips every agent tab | A chosen tab that had closed was missed without a word. The canvas's Send selection names no tab and keeps working as before. |
+| `sentTo` on a comment (#315) | The target, `{kind, id, label}`, stored on every comment Send files, absent on older ones | Decision X7, so Still broken (#321) goes back to the same agent. |
+| Video clip per note (#315) | Built, off by default: Rust cuts `clip.mp4` from `take.mp4`, two seconds either side of the note, with the Windows media transcoder; the tick is disabled elsewhere with the reason | Decision X12 asks the owner to confirm. Cutting in the page would play the span in real time through `MediaRecorder` and ship the bytes over the bridge. A clip that fails is named in `problems` and in `packet.md`'s "Not in this packet", and the Send goes on. |
+| A Send that partly fails (#315) | Everything that can refuse the whole Send does so before any note is filed; after that a note not filed stays a draft, is named in `problems`, and the rest go; only a Send that filed nothing is an error | Failing the whole Send after some comments were filed would leave them filed and their notes drafts, and the next Send would file them twice. |
+| Contact sheets (#315) | Cells 320 px wide at the take's own shape; `context.json` and `packet.md` give the times when they are not one a second apart | A 4:3 or ultrawide game was squashed into 16:9 cells, and a span longer than sixteen seconds is sampled evenly, which "1 frame a second" would misdescribe. |
+| A note with no ink (#315) | Its `markup.json` names `frames/note.png` in the markup format with no pins; its `markup.png` is the frame | Every note has the three files the packet promises, and an agent reads one format for both. |
+| `notes_sent` (#315) | Fired in the page once `play/send` answers: `notes`, `ranged`, `markedUp`, `contact`, `clip`, `to` and `delivered` | Decision X1: counts and flags only. `delivered` false with `to` set means the agent chosen did not take the line. |
 
 ### Not verified on a real machine
 
@@ -303,6 +312,22 @@ From #314, tested in jsdom and type-checked only; no WebView2, video decoder or 
 - Arrow keys landing on the next decoded frame (WebView2 seeks to the nearest frame, which
   may not be the next one when the video's timestamps are not on the 30 fps grid).
 - `godot:note_created` and `godot:mark_dropped` reaching PostHog.
+
+From #315, unit-tested through fakes, jsdom and a Windows type-check; no WebView2, terminal,
+agent tab, video decoder or media transcoder ran:
+
+- A Send from a real take: every note's `markup.png`, `contact.png` and `context.json` in
+  `.veistra/feedback/<take>-<n>/`, the contact sheet's frames under their printed times, and
+  `packet.md` read against the AgentHandoff board.
+- The line "Playtest feedback: N notes. Read @<packet>/packet.md first." waiting, unsent, at a
+  Claude Code, Codex and Gemini CLI prompt, and in an agent tab as a chip with the words around
+  it; a terminal picked in SEND TO and then closed refused with its reason.
+- `clip.mp4`: the transcoder's trim (`SetTrimStartTime` and `SetTrimStopTime` read as positions in
+  the source), its thread and apartment, the clip playing, and how long a clip of each note takes
+  against Send's longer bridge timeout (30 s, plus 30 s a note with clips on).
+- The seek timeout (5 s) never firing on a healthy take, so a slow first seek does not drop a
+  picture.
+- `godot:notes_sent` reaching PostHog.
 
 From #311, not yet run in a real Veistra (unit-tested only):
 

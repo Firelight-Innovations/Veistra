@@ -19,6 +19,7 @@
  * deliberately outside that rule (see `apps/README.md`'s layout note).
  */
 import { invoke } from "@veistra/bridge";
+import type { AgentTarget } from "./context";
 
 // --- what the backend returns --------------------------------------------
 
@@ -89,6 +90,8 @@ export interface Comment {
   resolution?: Resolution;
   /** Absent when empty, as `resolution` is when unset. */
   replies?: Reply[];
+  /** The agent Send handed this comment to, so Still broken can go back to it. */
+  sentTo?: AgentTarget;
   created: number;
   updated: number;
 }

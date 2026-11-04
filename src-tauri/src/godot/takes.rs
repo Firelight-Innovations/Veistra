@@ -65,6 +65,13 @@ pub fn new_id(started_ms: u64, salt: u16) -> String {
     format!("{y:04}-{mo:02}-{d:02}-{h:02}{mi:02}-{salt:04x}")
 }
 
+/// `2026-10-30 14:02 UTC`: the minute a take started, for `packet.md`. UTC
+/// for the reason the id is: the packet travels with the worktree.
+pub fn utc_label(started_ms: u64) -> String {
+    let (y, mo, d, h, mi) = utc_minute(started_ms);
+    format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02} UTC")
+}
+
 /// Whether `id` is shaped like one [`new_id`] makes. Every id that reaches a
 /// path join comes through here, so a crafted one cannot leave the folder.
 pub fn valid_id(id: &str) -> bool {

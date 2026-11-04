@@ -657,14 +657,11 @@ fn call_from(
         return Ok(json!({ "section": section }));
     }
 
-    // Typing context references at the agent's prompt needs the terminals, which
-    // the store (`context.rs`) deliberately knows nothing about.
-    if method == crate::context_commands::INSERT_METHOD {
-        return crate::context_commands::insert_for_cluster(
-            app,
-            context.cluster_id.as_deref(),
-            params,
-        );
+    // Typing context references at an agent's prompt, and listing the agents
+    // there are to type at, need the terminals, which the store (`context.rs`)
+    // deliberately knows nothing about.
+    if crate::context_commands::is_method(method) {
+        return crate::context_commands::call(app, context.cluster_id.as_deref(), method, params);
     }
 
     // The context store, likewise answered by the host so every app (and every

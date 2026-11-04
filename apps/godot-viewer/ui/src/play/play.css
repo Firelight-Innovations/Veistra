@@ -1142,7 +1142,13 @@
 }
 
 .pl-notes__to {
+  font: var(--type-caption);
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle-1);
+  background: var(--bg-surface-1);
   color: var(--txt-primary);
+  min-width: 0;
 }
 
 .pl-notes__always {

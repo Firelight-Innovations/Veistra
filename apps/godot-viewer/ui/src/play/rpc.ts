@@ -8,6 +8,7 @@
 import { invoke } from "@veistra/bridge";
 import type { AddonState } from "../../../../shared/godot";
 import type { Comment } from "../../../../shared/comments";
+import type { AgentTarget } from "../../../../shared/context";
 import type { Rect } from "../../../../shared/nativeBox";
 import type { EmbedState } from "../../../../shared/nativeWindow";
 import type { NotesDoc } from "./notes";
@@ -146,6 +147,8 @@ export interface TakeDetail {
   take: ListedTake;
   urls: { video: string; telemetry: string; log: string };
   notes: NotesDoc;
+  /** Why "Video clip per note" cannot be ticked on this machine, or null. */
+  clipUnavailable?: string | null;
 }
 
 export interface PickHit {
@@ -161,6 +164,16 @@ export interface Sent {
   packet: string;
   packetMd: string;
   comments: [number, string][];
+  /**
+   * What was asked for and is not in the packet, one sentence each: a clip
+   * not cut, a note not filed (still a draft). `packet.md` lists them too.
+   */
+  problems?: string[];
+}
+
+/** How long Send may take: the pictures are quick, a clip re-encodes its span. */
+export function sendTimeoutMs(notes: number, clip: boolean): number {
+  return 30_000 + (clip ? notes * 30_000 : 0);
 }
 
 export type { Rect } from "../../../../shared/nativeBox";
@@ -206,6 +219,18 @@ export const getTake = (id: string) => invoke<TakeDetail>("play/take", { id });
 export const deleteTake = (id: string) => invoke<{ deleted: string }>("play/take-delete", { id });
 export const saveNotes = (take: string, notes: NotesDoc) =>
   invoke<{ saved: boolean }>("play/notes-save", { take, notes });
-export const sendNotes = (take: string, notes: unknown[]) =>
-  invoke<Sent>("play/send", { take, notes });
+/**
+ * `clip` cuts `clip.mp4` per note in Rust; `sentTo` is kept on each comment
+ * (X7), so Still broken goes back to the same agent.
+ */
+export const sendNotes = (
+  take: string,
+  notes: unknown[],
+  options: { clip: boolean; sentTo: AgentTarget | null },
+) =>
+  invoke<Sent>(
+    "play/send",
+    { take, notes, clip: options.clip, sentTo: options.sentTo },
+    sendTimeoutMs(notes.length, options.clip),
+  );
 export const listNotes = (take?: string) => invoke<{ notes: Comment[] }>("play/notes", { take });
