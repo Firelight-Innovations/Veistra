@@ -206,7 +206,7 @@ pub fn record_blocked(ctx: &Ctx, project_dir: &Path) -> Option<String> {
     if let Some(why) = record::unavailable() {
         return Some(why.to_string());
     }
-    if super::addon::status(project_dir) != super::addon::Installed::Yes {
+    if !super::addon::status(project_dir).usable() {
         return Some(
             "Recording needs the capture addon, version 2. Enable capture, then run the game."
                 .to_string(),

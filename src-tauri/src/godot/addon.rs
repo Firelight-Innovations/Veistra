@@ -22,8 +22,8 @@ pub const SCRIPT: &str = include_str!("veistra_capture.gd");
 const AUTOLOAD_KEY: &str = "VeistraCapture";
 const SCRIPT_RES_PATH: &str = "res://addons/veistra/veistra_capture.gd";
 
-/// Where the version marker on the script's first line says it is from, so a
-/// project holding an older copy can be told to update.
+/// The protocol the script on disk speaks, on its first line: a game whose
+/// script carries it gets a channel even when the text is an earlier one.
 const VERSION_MARKER: &str = "# veistra-capture v2";
 
 /// The addon version a running game reported in its `hello.json`: 2 writes
@@ -39,10 +39,24 @@ pub fn running_version(dir: &Path) -> Option<u32> {
 #[serde(rename_all = "camelCase")]
 pub enum Installed {
     No,
-    /// The script and the autoload line are both present and current.
+    /// The script and the autoload line are both present, and the script is
+    /// this build's.
     Yes,
+    /// Both present, and the script is an earlier version 2. It speaks this
+    /// build's channel, so games keep their capture while the pane offers the
+    /// update; it goes out as `partial` because that is the state the pane
+    /// already offers Update capture for.
+    #[serde(rename = "partial")]
+    Outdated,
     /// One of the two is missing, or the script is from another version.
     Partial,
+}
+
+impl Installed {
+    /// Whether a game started now is given a channel.
+    pub fn usable(self) -> bool {
+        matches!(self, Self::Yes | Self::Outdated)
+    }
 }
 
 pub fn script_path(project: &Path) -> PathBuf {
@@ -56,18 +70,25 @@ fn autoload_line() -> String {
     format!("{AUTOLOAD_KEY}=\"*{SCRIPT_RES_PATH}\"")
 }
 
+/// Where the project's addon stands. The whole text is compared, not the
+/// marker: the script changes between releases without a new protocol, and a
+/// marker-only check called every earlier version 2 current forever, so a
+/// fix to it never reached a project that had it already.
 pub fn status(project: &Path) -> Installed {
     let script = std::fs::read_to_string(script_path(project)).ok();
     let project_file = std::fs::read_to_string(project.join("project.godot")).unwrap_or_default();
-    let registered = has_autoload(&project_file);
-    let current = script
-        .as_deref()
-        .is_some_and(|s| s.starts_with(VERSION_MARKER));
-    match (script.is_some(), registered) {
-        (false, false) => Installed::No,
-        (true, true) if current => Installed::Yes,
+    match (script.as_deref(), has_autoload(&project_file)) {
+        (None, false) => Installed::No,
+        (Some(text), true) if same_text(text, SCRIPT) => Installed::Yes,
+        (Some(text), true) if text.starts_with(VERSION_MARKER) => Installed::Outdated,
         _ => Installed::Partial,
     }
+}
+
+/// Equal apart from line endings: Git on Windows checks a committed copy out
+/// with CRLF, and that is still this build's script.
+fn same_text(a: &str, b: &str) -> bool {
+    a.replace("\r\n", "\n") == b.replace("\r\n", "\n")
 }
 
 fn has_autoload(project_file: &str) -> bool {
@@ -515,6 +536,37 @@ mod tests {
         .unwrap();
         assert_eq!(status(dir.path()), Installed::Partial);
         install(dir.path()).unwrap();
+        assert_eq!(status(dir.path()), Installed::Yes);
+    }
+
+    #[test]
+    fn an_earlier_v2_is_offered_the_update_and_keeps_its_capture_meanwhile() {
+        let dir = project(PROJECT);
+        install(dir.path()).unwrap();
+        let earlier = SCRIPT.replacen("const TICK_SEC := 0.1", "const TICK_SEC := 0.2", 1);
+        assert_ne!(earlier, SCRIPT);
+        std::fs::write(script_path(dir.path()), &earlier).unwrap();
+
+        let found = status(dir.path());
+        assert_eq!(found, Installed::Outdated);
+        assert!(found.usable(), "an earlier v2 still speaks the channel");
+        assert_eq!(
+            serde_json::to_value(found).unwrap(),
+            "partial",
+            "the pane offers Update capture for it"
+        );
+        assert!(!Installed::Partial.usable() && !Installed::No.usable());
+
+        install(dir.path()).unwrap();
+        assert_eq!(status(dir.path()), Installed::Yes);
+    }
+
+    #[test]
+    fn a_crlf_copy_of_the_shipped_script_is_current() {
+        let dir = project(PROJECT);
+        install(dir.path()).unwrap();
+        let crlf = SCRIPT.replace("\r\n", "\n").replace('\n', "\r\n");
+        std::fs::write(script_path(dir.path()), crlf).unwrap();
         assert_eq!(status(dir.path()), Installed::Yes);
     }
 

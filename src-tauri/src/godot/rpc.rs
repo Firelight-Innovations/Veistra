@@ -326,7 +326,7 @@ fn valid_scene(scene: &str) -> bool {
 }
 
 fn channel_for(ctx: &Ctx, project: &GodotProject) -> Result<Option<PathBuf>, RpcError> {
-    if addon::status(&project.dir) != addon::Installed::Yes {
+    if !addon::status(&project.dir).usable() {
         return Ok(None);
     }
     let base = ctx.scratch.join("play");
@@ -504,7 +504,7 @@ fn addon_status(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
         .is_some_and(|r| r.is_running() && r.spec.channel.is_none());
     Ok(json!({
         "addon": to_value(&addon::status(&project.dir))?,
-        "needsRestart": running_without && addon::status(&project.dir) == addon::Installed::Yes,
+        "needsRestart": running_without && addon::status(&project.dir).usable(),
         "readOnly": ctx.read_only,
     }))
 }
