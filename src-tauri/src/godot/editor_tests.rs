@@ -208,6 +208,8 @@ fn off_windows_the_editor_keeps_its_own_window_and_says_why() {
     assert_eq!(state["editor"]["embed"]["state"]["cause"], "unsupported");
     assert_eq!(state["editor"]["plugin"]["installed"], "no");
     assert_eq!(state["editor"]["plugin"]["running"], false);
+    let why = state["editor"]["plugin"]["why"].as_str().unwrap();
+    assert!(why.contains("enable the plugin here"), "{why}");
     end(&w);
 }
 
@@ -256,6 +258,12 @@ fn send_selection_brings_the_nodes_and_the_viewport_in_one_answer() {
     let c = ctx(&w, "c1");
     call(&c, "godot/editor-open", json!({})).unwrap();
     let stop = plugin_on(channel(&w), answer);
+    let state = call(&c, "godot/editor-state", json!({})).unwrap();
+    let plugin = &state["editor"]["plugin"];
+    assert_eq!(
+        (&plugin["running"], &plugin["why"]),
+        (&json!(true), &Value::Null)
+    );
     let sent = std::time::Instant::now();
     let got = call(&c, "godot/editor-selection", json!({})).unwrap();
     assert!(sent.elapsed() < Duration::from_secs(1), "spec §13 test 11");

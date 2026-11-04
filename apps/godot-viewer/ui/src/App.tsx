@@ -1,15 +1,16 @@
 /**
  * The Godot app: one pane, two modes (owner decision 1 of the v0.2 design).
- * Editor shows the scene, read-only until the embedded editor arrives; Play
- * runs the game in the pane, records runs as takes and reviews them. The
- * `play` app id is this app opened in Play mode (`modes.ts`).
+ * Editor is the Godot editor in the pane (`editor/EditorMode.tsx`, #316), or
+ * the read-only scene viewer where the backend says it cannot open; Play runs
+ * the game in the pane, records runs as takes and reviews them. The `play`
+ * app id is this app opened in Play mode (`modes.ts`).
  *
  * This shell is what loads eagerly; each mode is loaded when it is first
  * shown. The bridge drops an event nobody listens for, and the shell sends
  * the frame's place in the window only when it changes, so the window rect,
- * the overlays and an open's payload are caught here, from the first moment,
- * and handed to whichever mode shows. A mode loaded later, or switched to in
- * place, would otherwise never hear where it is and could not place the game.
+ * the overlays and an open's payload are caught here and handed to whichever
+ * mode shows. A mode loaded later could otherwise place neither the game nor
+ * the editor.
  *
  * What both modes read, or what must outlive a switch, lives here too: the
  * Godot status, the project Play chose, and the notes drawn on the live game
@@ -19,22 +20,22 @@
  */
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { OPENED_EVENT, on, session } from "@veistra/bridge";
-import { editorBody, NOTHING_BUILT } from "../../../shared/editorSurface";
+import { editorBody, type EditorBuilt } from "../../../shared/editorSurface";
 import { errorText, getStatus, type GodotStatus } from "../../../shared/godot";
 import { useShellPlacement } from "../../../shared/useNativeBox";
 import { initialMode, MODES, readMode, writeMode, type GodotMode } from "./modes";
 import type { LiveNote } from "./play/Review";
 
 const SceneMode = lazy(() => import("./SceneMode"));
+const EditorMode = lazy(() => import("./editor/EditorMode"));
 
 /**
- * Which Editor surfaces this app can draw besides the viewer. The status says
+ * Which Editor surfaces this app draws besides the viewer. The status says
  * where Editor mode shows (`editor`, DECISIONS X4), and `editorBody` turns
- * that into what renders. Nothing but the viewer is built yet, so every answer
- * is the viewer for now; C1 adds the editor in the pane and its popped-out
- * state by turning these on and rendering them.
+ * that into what renders. Both are `EditorMode`: in the pane, or the same
+ * editor in its own window where nothing can be placed.
  */
-const EDITOR_BUILT = NOTHING_BUILT;
+const EDITOR_BUILT: EditorBuilt = { embedded: true, popOut: true };
 const PlayMode = lazy(() => import("./play/PlayMode"));
 
 /**
@@ -152,6 +153,7 @@ export default function App() {
   if (mode === null) return null;
   const modeSwitch = { value: mode, options: MODES, onChange: switchMode };
   const shared = { modeSwitch, status, statusError, reloadStatus, epoch };
+  const editor = editorBody(status?.editor, EDITOR_BUILT);
   return (
     <Suspense fallback={null}>
       {mode === "play" ? (
@@ -166,10 +168,10 @@ export default function App() {
           runRequest={runRequest}
           onRunHandled={onRunHandled}
         />
+      ) : editor === "viewer" ? (
+        <SceneMode {...shared} onPlay={runInPlay} />
       ) : (
-        editorBody(status?.editor, EDITOR_BUILT) === "viewer" && (
-          <SceneMode {...shared} onPlay={runInPlay} />
-        )
+        <EditorMode {...shared} frameRect={frameRect} overlays={overlays} />
       )}
     </Suspense>
   );

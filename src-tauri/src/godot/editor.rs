@@ -391,6 +391,7 @@ pub fn state(ctx: &Ctx) -> Value {
             }
         }
     }
+    let running = editor.plugin_running();
     json!({
         "editor": {
             "project": editor.rel,
@@ -399,8 +400,10 @@ pub fn state(ctx: &Ctx) -> Value {
             "embed": editor.embed.report(),
             "plugin": {
                 "installed": plugin::status(&editor.project),
-                "running": editor.plugin_running(),
+                "running": running,
                 "problem": editor.plugin_problem,
+                // What each tool that needs it says while it cannot act.
+                "why": (!running).then(|| no_plugin(&editor)),
             },
             "view": editor.view(),
         },

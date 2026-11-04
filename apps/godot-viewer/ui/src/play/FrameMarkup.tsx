@@ -1,13 +1,14 @@
 /**
- * The shared markup tools over one still frame of the game: a frame of a
- * take in review, or the live frame the addon captured (design §7, §8).
+ * The shared markup tools over one still frame: a frame of a take in review,
+ * the live frame the addon captured (design §7, §8), or the Godot editor's
+ * viewport (#316).
  *
  * Built on `@veistra/markup`'s layer with an image host, the same as every
  * other viewer, so the output is the one `markup.png` + `markup.json` format
  * (`docs/markup-format.md`). What Play adds is `pick`: in review, the object
- * under a pin comes from the take's recorded boxes; live, there is no
- * synchronous answer (the addon's ray cast is a file round trip), so pins are
- * placed bare and the caller asks the game about each one after Done.
+ * under a pin comes from the take's recorded boxes; live and in the editor,
+ * there is no synchronous answer (the ray cast is a file round trip), so pins
+ * are placed bare and the caller asks the game or the editor after Done.
  *
  * Excalidraw is a lazy import, as in `MarkupScene`, so the review page does
  * not pay for it until someone draws.
@@ -16,6 +17,7 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { imageHost } from "@veistra/markup";
 import type { MarkupHost, PickHit } from "@veistra/markup";
 import type { MarkupController, MarkupExport } from "@veistra/markup/layer";
+import "./frame-markup.css";
 
 const MarkupLayer = lazy(() =>
   import("@veistra/markup/layer").then((m) => ({ default: m.MarkupLayer })),

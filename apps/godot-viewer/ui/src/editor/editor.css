@@ -1,0 +1,175 @@
+/*
+ * Editor mode with the Godot editor in the pane: the shared viewer toolbar,
+ * the agent banner and notices under it, then the box the editor's window is
+ * placed over. Tokens only; see apps/shared/app.css for why no colour is
+ * written out here.
+ */
+
+.ge {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  font-family: var(--type-font-body, Inter, sans-serif);
+  color: var(--txt-primary);
+  outline: none;
+}
+
+.ge__subject {
+  font: 400 12px/1 var(--mono);
+  color: var(--txt-primary);
+  white-space: nowrap;
+}
+
+/* Outside the box, so the box shrinks rather than anything sitting on the editor. */
+.ge__banner {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--info-subtle);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--txt-primary);
+}
+
+.ge__banner-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.ge__banner .k-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.ge__notices {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.ge__notice {
+  margin: 0;
+  padding: 6px 12px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--txt-secondary);
+  background: var(--warning-subtle);
+}
+
+.ge__notice--error {
+  color: var(--txt-primary);
+  background: var(--danger-subtle);
+}
+
+.ge__link {
+  font: inherit;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.ge__viewport {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  padding: 8px;
+  background: var(--bg-canvas);
+}
+
+/* The editor's window is placed exactly over this box, so nothing of ours is
+   drawn inside it while the editor shows (design §4.3). */
+.ge__box {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  outline: 1px solid var(--border-subtle);
+  background: var(--bg-surface-1);
+  overflow: hidden;
+}
+
+.ge__box[data-embedded] {
+  background: var(--bg-canvas);
+}
+
+.ge__still {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.ge__launch {
+  max-width: 420px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+}
+
+.ge__launch-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ge__launch-text {
+  margin: 0;
+  font: var(--type-caption);
+  color: var(--txt-secondary);
+}
+
+.ge__launch-plugin {
+  margin-top: 6px;
+}
+
+.ge__hint {
+  margin: 0;
+  padding: 16px;
+  font: var(--type-caption);
+  color: var(--txt-tertiary);
+  text-align: center;
+}
+
+.ge__sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.ge__consent {
+  flex-shrink: 0;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-layer-1);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--txt-secondary);
+}
+
+.ge__consent ul {
+  margin: 6px 0 8px;
+  padding-left: 18px;
+}
+
+.ge__consent-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}

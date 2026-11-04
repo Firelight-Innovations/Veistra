@@ -51,7 +51,7 @@ import {
   formatPlayTime,
   type Comment,
 } from "../../../../shared/comments";
-import { errorText, openInGodot } from "../../../../shared/godot";
+import { errorText } from "../../../../shared/godot";
 import type { WindowRect } from "../../../../shared/nativeBox";
 import { blobBase64, sendMarkup } from "../../../../shared/markupFlow";
 import { SendButton, SendFooter, useSendAction } from "../../../../shared/SendFooter";
@@ -91,6 +91,7 @@ import {
   type RunInfo,
 } from "./rpc";
 import { dragContext, putLog, putShot } from "./context";
+import { resolvePins } from "./pins";
 import type { RunRequest } from "../App";
 import { focusIfDropped, type ModeProps } from "../modes";
 import { getState as readScenes } from "../rpc";
@@ -120,18 +121,6 @@ function notRecorded(recordOn: boolean, blocked: string | null): string {
   if (recordOn)
     return "Nothing was recorded: a take starts once the game's window is in the pane, and this run's never got there.";
   return "This run was not recorded, so there is no take to review. Turn on Record.";
-}
-
-/** The excalidraw pins of a markup, with where each sits on the shown frame. */
-function pinCentres(json: MarkupExport["json"]): { n: number; x: number; y: number }[] {
-  const out: { n: number; x: number; y: number }[] = [];
-  for (const el of json.excalidraw.elements as Array<Record<string, unknown>>) {
-    const v = (el.customData as { veistra?: { kind?: string; n?: number } } | undefined)?.veistra;
-    if (v?.kind !== "pin" || typeof v.n !== "number") continue;
-    const [x, y, w, h] = ["x", "y", "width", "height"].map((k) => Number(el[k]) || 0);
-    out.push({ n: v.n, x: x + w / 2, y: y + h / 2 });
-  }
-  return out;
 }
 
 export interface PlayModeProps extends ModeProps {
@@ -535,25 +524,14 @@ export default function PlayMode(props: PlayModeProps) {
     async (result: MarkupExport, shown: { width: number; height: number }) => {
       const m = marking;
       if (!m) return;
-      const sx = m.natural.width > 0 ? m.natural.width / shown.width : 1;
-      const sy = m.natural.height > 0 ? m.natural.height / shown.height : 1;
-      let target: Target | null = null;
       const json = result.json;
-      for (const p of pinCentres(json)) {
-        try {
-          const { hit } = await pick(p.x * sx, p.y * sy);
-          if (!hit) continue;
-          const pin = json.pins.find((x) => x.n === p.n);
-          const wp = hit.worldPoint;
-          if (pin) {
-            pin.nodePath = hit.nodePath;
-            if (wp && wp.length === 3) pin.worldPoint = [wp[0], wp[1], wp[2]];
-          }
-          target ??= { ...hit, nodePath: hit.nodePath, source: "pick" };
-        } catch {
-          // A pick that fails leaves that pin bare; the picture still says it.
-        }
-      }
+      const first = await resolvePins(
+        json,
+        m.natural,
+        shown,
+        async (x, y) => (await pick(x, y)).hit,
+      );
+      const target: Target | null = first ? { ...first, source: "pick" } : null;
       const words = json.pins
         .map((p) => p.note)
         .filter(Boolean)
@@ -595,11 +573,6 @@ export default function PlayMode(props: PlayModeProps) {
   const onLiveNotesTaken = useCallback(
     (id: string) => setLiveNotes((notes) => notes.filter((n) => n.take !== id)),
     [setLiveNotes],
-  );
-
-  const doOpenEditor = useCallback(
-    () => guarded(() => openInGodot(chosenRel)),
-    [chosenRel, guarded],
   );
 
   const changeAddon = async (install: boolean) => {
@@ -688,7 +661,8 @@ export default function PlayMode(props: PlayModeProps) {
         toggleRecord();
         break;
       case "open-editor":
-        if (found && chosen && !readOnly) void doOpenEditor();
+        // The editor is Editor mode's, in this pane (#316): the key goes there.
+        props.modeSwitch.onChange("editor");
         break;
     }
   };
@@ -950,8 +924,8 @@ export default function PlayMode(props: PlayModeProps) {
     </Fragment>
   );
 
-  // Slot 5 is Pop out alone, always there. Open in Godot is Editor's leave
-  // now; Ctrl Shift O still opens the editor from here until C1 embeds it.
+  // Slot 5 is Pop out alone, always there. The editor is Editor mode's, and
+  // Ctrl Shift O turns there.
   const canPop = view.kind === "live" && running && (embedded || popped);
   const leave = (
     <ToolbarButton

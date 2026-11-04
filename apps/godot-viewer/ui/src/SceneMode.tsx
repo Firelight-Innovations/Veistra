@@ -1,12 +1,11 @@
 /**
  * The Godot app's read-only viewer: a scene's node tree beside a 3D view or
  * its last rendered frame. It is Editor mode's body whenever the backend
- * answers `viewer` (main, a cloud session, no Godot: `editorSurface.ts`), and,
- * until the editor can open in the pane (C1), every other time too, with Open
- * in Godot for the editor in its own window. The header is the shared
- * `ViewerToolbar`, so Editor reads like Play and the Blender viewer: the
- * environment and scene, freshness, actions, leave; the backend's reason for
- * the surface is the one line under it.
+ * answers `viewer` (main, a cloud session, no Godot: `editorSurface.ts`);
+ * every other answer is the editor itself (`editor/EditorMode.tsx`). The
+ * header is the shared `ViewerToolbar`, so Editor reads like Play and the
+ * Blender viewer: the environment and scene, freshness, actions, leave; the
+ * backend's reason for the surface is the one line under it.
  */
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { reportPainted } from "@veistra/bridge";
@@ -573,13 +572,6 @@ export default function SceneMode({ modeSwitch, status, epoch, onPlay }: SceneMo
       <SendFooter
         trailing={
           <>
-            {/* Until the editor is embedded (C1), an embedder's answer still
-                shows this view. Pop out says so in the line under the bar. */}
-            {surface?.surface === "embedded" && (
-              <span className="gv__footer-note">
-                The Godot editor opens in its own window for now: Open in Godot.
-              </span>
-            )}
             <button
               type="button"
               className="gv__footer-btn"
