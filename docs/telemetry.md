@@ -24,7 +24,7 @@ Once it is `on`:
 
 | What | Where it comes from | Example |
 |---|---|---|
-| Feature events | a feature's `track()` (§4), or an app through `veistra/track` (§5) | `agent-tab:prompt_sent {effort:"medium", images:0}` |
+| Feature events | a feature's `track()` (§4), an app through `veistra/track`, or Rust through `telemetry::track` (§5) | `agent-tab:prompt_sent {effort:"medium", images:0}` |
 | Clicks | PostHog autocapture, with `mask_all_text` and `mask_all_element_attributes` | a click on `button.titlebar__menu-item`, never its label or tooltip |
 | Rage and dead clicks | PostHog, from the same clicks | three fast clicks on a button that did nothing |
 | Session recordings | rrweb, if `telemetry.sessionReplay` is on | the shell window's layout and pointer, every character masked |
@@ -184,6 +184,31 @@ somebody else's code.
 Both calls are fire and forget. Nothing an app does waits on, or fails because
 of, a usage event.
 
+### From Rust
+
+Some moments happen where no webview sees them: an agent marking a play note
+fixed calls an MCP tool, and the only code that runs is Rust's. Those are
+reported with `telemetry::track(app, feature, event, props)`:
+
+```rust
+crate::telemetry::track(app, "godot", "note_fixed", json!({ "attempt": 1, "commit": true }));
+```
+
+It does not send anything. It emits `telemetry:event` to the **main window
+only**, whose shell checks it in `backendTrack.ts` exactly as `appTrack.ts`
+checks an app's: the feature must exist and declare the event, and the props
+go through `sanitize.ts`. Then it joins the same pipeline, so consent, the
+build's sink (§3) and the session it is linked to are all decided in the
+webview, and §9 still holds. One window rather than a broadcast because every
+window has its own pipeline, and a broadcast would be counted once per window;
+the shell listens on its own window (`onBackendUsage`) rather than with a
+global `listen`, which Tauri would deliver an event for any window to.
+
+Rust names the feature itself, since there is no frame to resolve one from.
+The same rule holds for its props: counts, flags and short codes, never a
+path, a node's name or a note's text. Today `comment_events.rs` reports
+`godot:note_fixed` and `godot:note_resolved` from the comment store's write.
+
 ## 6. Feedback
 
 ### The dialog
@@ -309,8 +334,6 @@ to an exact version in `package.json` for the same reason.
 
 - **No recording inside app panes.** Doing so needs the recorder loaded in
   each app and `recordCrossOriginIframes` on in both halves.
-- **No Rust-side events.** A feature whose only moment happens in Rust would
-  need a Tauri event the pipeline forwards. Nothing needs it yet.
 - **No PostHog Surveys.** The questions are in code, so changing one needs a
   release; in exchange they are typed, tested and drawn in Veistra's own UI.
   Mapping a prompt onto a PostHog survey id, so its answers land in the Surveys

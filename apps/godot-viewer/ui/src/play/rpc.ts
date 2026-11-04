@@ -8,6 +8,7 @@
 import { invoke } from "@veistra/bridge";
 import type { AddonState } from "../../../../shared/godot";
 import type { Comment } from "../../../../shared/comments";
+import type { AgentTarget } from "../../../../shared/context";
 import type { Rect } from "../../../../shared/nativeBox";
 import type { EmbedState } from "../../../../shared/nativeWindow";
 import type { NotesDoc } from "./notes";
@@ -84,11 +85,46 @@ export interface Session {
    * (#312); absent from a backend without it, which reads as not captured.
    */
   mouseCaptured?: boolean;
+  /**
+   * The marks made with F8 in the game, apart from the toolbar's (#312), so
+   * the page can report `mark_dropped` for them. Absent from an older backend.
+   */
+  f8Marks?: number;
+  /** The note a Still broken run went back to (#321); absent on any other run. */
+  followUp?: FollowUp | null;
+}
+
+/** Record's two qualities (`encode::Quality::named`). */
+export type RecordQuality = "720p30" | "1080p60";
+
+/**
+ * Record and its settings (X9): machine-local and the project's. `dir` is
+ * where takes go; `inEnvironment` says it is the environment's git-ignored
+ * `.veistra/takes/`, false on read-only main, whose takes are kept outside it.
+ */
+export interface RecordSettings {
+  on: boolean;
+  blocked: string | null;
+  quality?: RecordQuality;
+  keep?: number;
+  dir?: string | null;
+  inEnvironment?: boolean;
 }
 
 export interface Live {
-  record: { on: boolean; blocked: string | null };
+  record: RecordSettings;
   session: Session | null;
+}
+
+/**
+ * The note a Still broken take was recorded to check (`takes::FollowUp`): its
+ * comment, and the take and note number it was first sent as.
+ */
+export interface FollowUp {
+  comment: string;
+  take: string;
+  n: number;
+  number?: number;
 }
 
 export interface PlayState {
@@ -128,6 +164,8 @@ export interface TakeSummary {
   marks: number[];
   counts: { errors: number; warnings: number };
   ticks: number;
+  /** Set on a take Still broken recorded; its notes.json starts with that note's draft. */
+  followUp?: FollowUp;
 }
 
 export interface ListedTake extends TakeSummary {
@@ -141,6 +179,8 @@ export interface TakeDetail {
   take: ListedTake;
   urls: { video: string; telemetry: string; log: string };
   notes: NotesDoc;
+  /** Why "Video clip per note" cannot be ticked on this machine, or null. */
+  clipUnavailable?: string | null;
 }
 
 export interface PickHit {
@@ -156,6 +196,16 @@ export interface Sent {
   packet: string;
   packetMd: string;
   comments: [number, string][];
+  /**
+   * What was asked for and is not in the packet, one sentence each: a clip
+   * not cut, a note not filed (still a draft). `packet.md` lists them too.
+   */
+  problems?: string[];
+}
+
+/** How long Send may take: the pictures are quick, a clip re-encodes its span. */
+export function sendTimeoutMs(notes: number, clip: boolean): number {
+  return 30_000 + (clip ? notes * 30_000 : 0);
 }
 
 export type { Rect } from "../../../../shared/nativeBox";
@@ -168,8 +218,16 @@ export type { Rect } from "../../../../shared/nativeBox";
  */
 export const getState = (since: number, keySince = 0, project?: string) =>
   invoke<PlayState>("play/state", { since, keySince, project });
-export const run = (project?: string, scene?: string) =>
-  invoke<PlayState>("play/run", { project, scene });
+/**
+ * `recordOnce` records this run whatever Record is set to, and leaves the
+ * setting alone (X9): Play <scene> on a fixed note. `followUp` is Still
+ * broken's, the note the run is recorded to check, and implies it.
+ */
+export const run = (
+  project?: string,
+  scene?: string,
+  options: { recordOnce?: boolean; followUp?: string } = {},
+) => invoke<PlayState>("play/run", { project, scene, ...options });
 export const stop = () => invoke<PlayState>("play/stop");
 export const restart = (project?: string) => invoke<PlayState>("play/restart", { project });
 export const setPaused = (paused: boolean) => invoke<PlayState>("play/pause", { paused });
@@ -190,6 +248,17 @@ export const embedRect = (r: Rect, visible: boolean, window: string | undefined,
   invoke<{ ok: boolean }>("play/embed-rect", { ...r, visible, window, dpr });
 export const setRecord = (on: boolean, project?: string) =>
   invoke<{ on: boolean }>("play/record", { on, project });
+/** Quality or keep alone, Record left on or off: the next take begun or saved uses them. */
+export const setRecordSettings = (
+  settings: { quality?: RecordQuality; keep?: number },
+  project?: string,
+) =>
+  invoke<{ on: boolean; quality: RecordQuality; keep: number }>("play/record", {
+    ...settings,
+    project,
+  });
+/** Show folder: the takes folder in the system's file manager, made first if need be. */
+export const revealTakes = () => invoke<{ dir: string }>("play/takes-reveal");
 export const mark = () => invoke<{ t: number; marks: number[] }>("play/mark");
 export const pick = (x: number, y: number) =>
   invoke<{ hit: PickHit | null; t: number | null }>("play/pick", { x, y });
@@ -201,6 +270,18 @@ export const getTake = (id: string) => invoke<TakeDetail>("play/take", { id });
 export const deleteTake = (id: string) => invoke<{ deleted: string }>("play/take-delete", { id });
 export const saveNotes = (take: string, notes: NotesDoc) =>
   invoke<{ saved: boolean }>("play/notes-save", { take, notes });
-export const sendNotes = (take: string, notes: unknown[]) =>
-  invoke<Sent>("play/send", { take, notes });
+/**
+ * `clip` cuts `clip.mp4` per note in Rust; `sentTo` is kept on each comment
+ * (X7), so Still broken goes back to the same agent.
+ */
+export const sendNotes = (
+  take: string,
+  notes: unknown[],
+  options: { clip: boolean; sentTo: AgentTarget | null },
+) =>
+  invoke<Sent>(
+    "play/send",
+    { take, notes, clip: options.clip, sentTo: options.sentTo },
+    sendTimeoutMs(notes.length, options.clip),
+  );
 export const listNotes = (take?: string) => invoke<{ notes: Comment[] }>("play/notes", { take });

@@ -40,6 +40,15 @@ describe("trackFromFrame", () => {
     expect(trackFromFrame("files", true, { event: "drawn" }, [canvas]).ok).toBe(false);
   });
 
+  it("files Play's and the Godot app's events under godot, in the real registry", () => {
+    for (const app of ["play", "godot-viewer"]) {
+      const answer = trackFromFrame(app, true, { event: "mark_dropped", props: { source: "key" } });
+      expect(answer).toEqual({ ok: true });
+    }
+    expect(heard.map((e) => e.feature)).toEqual(["godot", "godot"]);
+    expect(trackFromFrame("play", true, { event: "dropped" }).ok).toBe(false);
+  });
+
   it("refuses an event its feature does not declare, and says which it does", () => {
     const answer = trackFromFrame("canvas", true, { event: "erased" }, [canvas]);
     expect(answer).toEqual({ ok: false, message: expect.stringContaining("drawn") });

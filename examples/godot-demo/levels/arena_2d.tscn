@@ -1,0 +1,69 @@
+[gd_scene load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://scripts/enemy_2d.gd" id="1_enemy"]
+[ext_resource type="Script" path="res://scripts/clock.gd" id="2_clock"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_body"]
+size = Vector2(48, 48)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_wall"]
+size = Vector2(1100, 24)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_crate"]
+size = Vector2(64, 64)
+
+[node name="Arena" type="Node2D"]
+
+[node name="Camera" type="Camera2D" parent="."]
+
+[node name="Floor" type="StaticBody2D" parent="."]
+position = Vector2(0, 120)
+
+[node name="Shape" type="CollisionShape2D" parent="Floor"]
+shape = SubResource("RectangleShape2D_wall")
+
+[node name="Look" type="Polygon2D" parent="Floor"]
+color = Color(0.35, 0.36, 0.4, 1)
+polygon = PackedVector2Array(-550, -12, 550, -12, 550, 12, -550, 12)
+
+[node name="Crate_01" type="StaticBody2D" parent="."]
+position = Vector2(-120, 76)
+
+[node name="Shape" type="CollisionShape2D" parent="Crate_01"]
+shape = SubResource("RectangleShape2D_crate")
+
+[node name="Look" type="Polygon2D" parent="Crate_01"]
+color = Color(0.6, 0.45, 0.25, 1)
+polygon = PackedVector2Array(-32, -32, 32, -32, 32, 32, -32, 32)
+
+[node name="Player" type="CharacterBody2D" parent="." groups=["player"]]
+position = Vector2(-400, 84)
+
+[node name="Shape" type="CollisionShape2D" parent="Player"]
+shape = SubResource("RectangleShape2D_body")
+
+[node name="Look" type="Polygon2D" parent="Player"]
+color = Color(0.3, 0.6, 1, 1)
+polygon = PackedVector2Array(-24, -24, 24, -24, 24, 24, -24, 24)
+
+[node name="Enemy_02" type="CharacterBody2D" parent="."]
+position = Vector2(200, 84)
+script = ExtResource("1_enemy")
+
+[node name="Shape" type="CollisionShape2D" parent="Enemy_02"]
+shape = SubResource("RectangleShape2D_body")
+
+[node name="Look" type="Polygon2D" parent="Enemy_02"]
+color = Color(0.85, 0.22, 0.2, 1)
+polygon = PackedVector2Array(-24, -24, 24, -24, 24, 24, -24, 24)
+
+[node name="HUD" type="CanvasLayer" parent="."]
+
+[node name="Clock" type="Label" parent="HUD"]
+offset_left = 16.0
+offset_top = 12.0
+offset_right = 640.0
+offset_bottom = 160.0
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+theme_override_font_sizes/font_size = 26
+script = ExtResource("2_clock")

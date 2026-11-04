@@ -1,13 +1,13 @@
 <div align="center">
 
-<img src="assets/ui/icon.png" alt="Veistra" width="120" height="120">
+<img src="assets/veistra-icon-256.svg" alt="Veistra" width="120" height="120">
 
 # Veistra
 
 <p>
   <strong>An Agentic Development Environment (ADE).</strong><br/>
   Built for game development, and general enough for any project.<br/>
-  Clusters, terminals, a design canvas, Godot, Blender, and your coding agents in one window.
+  Clusters, an agent tab, terminals, a design canvas, Godot, Blender, and your coding agents in one window.
 </p>
 
 <p>
@@ -33,12 +33,19 @@
 
 Veistra is an Agentic Development Environment (ADE): a desktop app that puts
 your terminals, your files, a design canvas and your game tools in one window,
-beside the coding agents you already use (Claude Code, Codex).
+beside the coding agents you already use (Claude, Codex).
 
 It is built for game development first. The Godot and Blender integrations and
 the design canvas exist because that is the work it was made for. The rest
 (clusters, terminals, files, git, MCP servers) is not tied to games, so with
 some tweaks it works for ordinary software too.
+
+Coding agents are limited by two things: the context they are given, and
+whether they can check their own work. Without those, you do both by hand, and
+every loop waits on you. Veistra supplies both, so the agent can close the loop
+itself.
+
+![A funnel: a very capable model narrows to a neck made of context and validation, and Veistra widens that neck](assets/bottleneck.svg)
 
 Veistra is a development tool. It does not run the software you build with it.
 
@@ -66,6 +73,15 @@ and you insert them at the agent's prompt in the form the agent can read.
 
 ![A terminal pane with the context strip: kept renders and canvas views, ready to insert at the agent's prompt](assets/ui/terminal-pane.png)
 
+### Agent tab
+
+The agent tab is a chat with a coding agent, built into the window. Pick a
+harness (Veistra's own, Claude or Codex) and a mode before the session starts,
+and Veistra can install a harness you are missing from the tab itself.
+Type `@` to attach files and other context as chips, use slash commands with
+autocomplete, rename sessions, and reopen previous ones. Built-in skills, such
+as the one for drawing canvas designs, can be switched on in Settings.
+
 ### Design canvas
 
 The canvas is where you and your agents draw designs. Frames nest into
@@ -91,9 +107,11 @@ does not bundle it.
 
 - **Godot Viewer** shows the scene tree and a 3D preview. The preview is
   approximate, not Godot's own renderer.
-- **Play** runs the project's main scene and streams its log into a pane.
 - **Open in Godot** hands the scene to the Godot editor.
 - **Send to agent** puts a scene tree or log on the agent's context.
+- **Play** runs the project's main scene in the pane itself, and records each
+  run as a take you can review, with notes the agent can read, so a bug found
+  in play can go straight into the fix loop.
 
 ### Blender
 
@@ -108,8 +126,8 @@ Veistra drives headless Blender. You need Blender installed.
 
 ### Files, context and sending things to agents
 
-The File Explorer and File Viewer open any project file. Files, scenes, logs
-and canvas selections can be kept as **context items** and sent to an agent
+The File Explorer and File Viewer open any project file. Files, scenes, logs,
+takes and canvas selections can be kept as **context items** and sent to an agent
 with **Send to agent**, instead of pasted into a terminal by hand.
 
 ### Plane project management
@@ -142,9 +160,17 @@ it is only useful with a cloud setup, and the screenshot shows fixture data.
 
 ### Search, git and settings
 
-`Ctrl+K` searches the project and `Ctrl+Shift+P` opens the command palette. A
-source control panel shows branch, staged and unstaged changes, and takes a
-commit message. Every setting comes from one schema.
+`Ctrl+K` searches the project, `Ctrl+Shift+P` opens the command palette and
+`Ctrl+,` opens Settings from anywhere. A source control panel shows branch,
+staged and unstaged changes, and takes a commit message. Every setting comes
+from one schema.
+
+### Usage data
+
+Veistra can send anonymous usage data, session recordings and feedback through
+PostHog. It is **opt-in**: nothing is sent, and the PostHog SDK is not even
+loaded, until you say yes. [Usage data and feedback](docs/telemetry.md) lists
+exactly what is sent.
 
 ## Coming soon
 
