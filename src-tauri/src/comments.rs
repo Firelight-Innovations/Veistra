@@ -61,10 +61,14 @@ pub enum Anchor {
     /// `in_ms`/`out_ms` present for a range. `packet` is the feedback folder
     /// relative to the environment, so an agent can read its `packet.md`.
     /// `scene` and `node_path` are there so the Scene and Blender views can show
-    /// the note on the node or part it is about.
+    /// the note on the node or part it is about. `number` is the take's
+    /// (Take 4), for the note's history; notes sent before it was kept have
+    /// none.
     #[serde(rename_all = "camelCase")]
     Take {
         take: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        number: Option<u32>,
         n: u32,
         at_ms: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -140,7 +144,9 @@ pub struct Resolution {
 }
 
 /// One message in a comment's thread after the first: an agent's earlier fix
-/// note kept when the person says Still broken, and the person's reply.
+/// note kept when the person says Still broken, and the person's reply. A
+/// reply with a `take` is a later attempt at a take note: the take the person
+/// recorded to show it still broken ([`add_take`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Reply {
@@ -149,6 +155,27 @@ pub struct Reply {
     pub at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub take: Option<TakeRef>,
+}
+
+/// One take in a take note's history: which take, its number, the packet Send
+/// wrote for it, and where in it the note is. The first is the note's anchor;
+/// each Still broken take adds one ([`Comment::takes`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TakeRef {
+    pub take: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<u32>,
+    pub packet: String,
+    /// The note's number in this take, which a later take numbers afresh.
+    pub n: u32,
+    pub at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub out_ms: Option<u64>,
 }
 
 /// The person's answer to a fixed comment.
@@ -180,6 +207,38 @@ pub struct Comment {
     pub sent_to: Option<AgentTarget>,
     pub created: u64,
     pub updated: u64,
+}
+
+impl Comment {
+    /// A take note's takes, oldest first: the one it was sent from, then each
+    /// Still broken take. Empty for every other kind of comment.
+    pub fn takes(&self) -> Vec<TakeRef> {
+        let Anchor::Take {
+            take,
+            number,
+            n,
+            at_ms,
+            in_ms,
+            out_ms,
+            packet,
+            ..
+        } = &self.anchor
+        else {
+            return Vec::new();
+        };
+        let first = TakeRef {
+            take: take.clone(),
+            number: *number,
+            packet: packet.clone(),
+            n: *n,
+            at_ms: *at_ms,
+            in_ms: *in_ms,
+            out_ms: *out_ms,
+        };
+        std::iter::once(first)
+            .chain(self.replies.iter().filter_map(|r| r.take.clone()))
+            .collect()
+    }
 }
 
 /// A comment before it has an id or a clock reading. What a viewer's `create`
@@ -480,14 +539,7 @@ pub fn verdict(
         match verdict {
             Verdict::Good => comment.status = Status::Resolved,
             Verdict::Broken => {
-                if let Some(fix) = comment.resolution.take() {
-                    comment.replies.push(Reply {
-                        by: fix.by,
-                        body: fix.note,
-                        at: fix.at,
-                        commit: fix.commit,
-                    });
-                }
+                reopen(comment);
                 let body = reply
                     .filter(|r| !r.trim().is_empty())
                     .unwrap_or_else(|| "Still broken.".to_string());
@@ -496,12 +548,89 @@ pub fn verdict(
                     body,
                     at,
                     commit: None,
+                    take: None,
                 });
-                comment.status = Status::Open;
             }
         }
         Ok(())
     })
+}
+
+/// Open a comment again, the agent's fix note moved into the thread.
+fn reopen(comment: &mut Comment) {
+    if let Some(fix) = comment.resolution.take() {
+        comment.replies.push(Reply {
+            by: fix.by,
+            body: fix.note,
+            at: fix.at,
+            commit: fix.commit,
+            take: None,
+        });
+    }
+    comment.status = Status::Open;
+}
+
+/// A Still broken take for a take note, sent from that take's review: the
+/// take joins the note's history rather than becoming a new note, so the
+/// agent that fixed it sees both attempts. `body` is what the person wrote on
+/// the new take; when it is the reply they gave with Still broken, unchanged,
+/// the take is put on that reply rather than repeating it. `sent_to` is the
+/// agent this attempt went to, kept for the next one.
+///
+/// Refused, like a verdict, on a resolved note, and on any comment that is not
+/// a take note. A note marked fixed since is opened again: the person has
+/// just shown it is not.
+pub fn add_take(
+    context: &CallContext,
+    id: &str,
+    link: TakeRef,
+    body: String,
+    sent_to: Option<AgentTarget>,
+) -> Result<Comment, RpcError> {
+    change(context, id, |comment, at| {
+        check_follow_up(comment)?;
+        if comment.status == Status::Fixed {
+            reopen(comment);
+        }
+        let body = body.trim().to_string();
+        let last = comment
+            .replies
+            .last_mut()
+            .filter(|r| r.by == Author::User && r.take.is_none() && r.body.trim() == body);
+        match last {
+            Some(reply) => reply.take = Some(link),
+            None => comment.replies.push(Reply {
+                by: Author::User,
+                body,
+                at,
+                commit: None,
+                take: Some(link),
+            }),
+        }
+        if sent_to.is_some() {
+            comment.sent_to = sent_to;
+        }
+        Ok(())
+    })
+}
+
+/// Why `comment` cannot take a Still broken take, if it cannot: it is not a
+/// take note, or it is resolved. Send and `play/run` ask before they write.
+pub fn check_follow_up(comment: &Comment) -> Result<(), RpcError> {
+    let id = &comment.id;
+    if !matches!(comment.anchor, Anchor::Take { .. }) {
+        return Err(RpcError::new(
+            INVALID_PARAMS,
+            format!("comment `{id}` is not a note on a take"),
+        ));
+    }
+    if comment.status == Status::Resolved {
+        return Err(RpcError::new(
+            INVALID_PARAMS,
+            format!("note `{id}` is resolved; a new problem is a new note"),
+        ));
+    }
+    Ok(())
 }
 
 // --- the RPC surface --------------------------------------------------------
@@ -1007,6 +1136,7 @@ mod tests {
         let ctx = context(env.path());
         let anchor = Anchor::Take {
             take: "2026-10-30-1402-0f3a".into(),
+            number: None,
             n: 2,
             at_ms: 102_180,
             in_ms: Some(98_000),
@@ -1032,7 +1162,139 @@ mod tests {
         assert_eq!(json["kind"], "take");
         assert_eq!(json["atMs"], 102_180);
         assert_eq!(json["nodePath"], "Hallway/Enemy_02");
+        assert_eq!(json.get("number"), None, "absent until Send knows it");
         assert_eq!(list(&ctx).expect("list")[0], made);
+    }
+
+    fn take_note(ctx: &CallContext) -> Comment {
+        let anchor = Anchor::Take {
+            take: "2026-10-30-1402-0f3a".into(),
+            number: Some(4),
+            n: 2,
+            at_ms: 102_000,
+            in_ms: None,
+            out_ms: None,
+            packet: ".veistra/feedback/2026-10-30-1402-0f3a-1".into(),
+            scene: None,
+            node_path: None,
+        };
+        let draft = Draft {
+            anchor,
+            body: "walks into the wall".into(),
+            screenshot_png: None,
+        };
+        create(ctx, draft).expect("create")
+    }
+
+    fn take_five() -> TakeRef {
+        TakeRef {
+            take: "2026-10-30-1440-9b1c".into(),
+            number: Some(5),
+            packet: ".veistra/feedback/2026-10-30-1440-9b1c-1".into(),
+            n: 1,
+            at_ms: 12_000,
+            in_ms: None,
+            out_ms: None,
+        }
+    }
+
+    /// The Done-when of #321 at the store: fixed, still broken, and the new
+    /// take sent from its review. One note, both takes in its history, and the
+    /// agent's fix and the person's reply between them.
+    #[test]
+    fn a_still_broken_note_keeps_both_takes_in_its_history() {
+        let env = TempDir::new().expect("tempdir");
+        let ctx = context(env.path());
+        let c = take_note(&ctx);
+        resolve_with_commit(
+            &ctx,
+            &c.id,
+            "rebaked the nav mesh".into(),
+            Some("3f2a1c9".into()),
+            Author::Agent,
+        )
+        .expect("fixed");
+        let reply = "still clips at the corner";
+        verdict(&ctx, &c.id, Verdict::Broken, Some(reply.into())).expect("broken");
+        let after = add_take(&ctx, &c.id, take_five(), format!("{reply}\n"), None).expect("take");
+
+        let numbers: Vec<_> = after.takes().iter().map(|t| t.number).collect();
+        assert_eq!(numbers, vec![Some(4), Some(5)]);
+        assert_eq!(after.status, Status::Open);
+        let thread: Vec<_> = after
+            .replies
+            .iter()
+            .map(|r| (r.by, r.body.as_str(), r.take.is_some()))
+            .collect();
+        assert_eq!(
+            thread,
+            vec![
+                (Author::Agent, "rebaked the nav mesh", false),
+                (Author::User, reply, true),
+            ],
+            "the unchanged reply carries the take rather than being repeated"
+        );
+        assert_eq!(list(&ctx).expect("list").len(), 1, "one note, not two");
+
+        let to = AgentTarget {
+            kind: crate::context_commands::AgentKind::Terminal,
+            id: "term-2".into(),
+            label: "Claude Code · Terminal 2".into(),
+        };
+        let mut six = take_five();
+        six.take = "2026-10-30-1502-0c0c".into();
+        let again = add_take(
+            &ctx,
+            &c.id,
+            six,
+            "now it is the door".into(),
+            Some(to.clone()),
+        )
+        .expect("a second attempt");
+        assert_eq!(again.takes().len(), 3);
+        assert_eq!(
+            again.replies.last().map(|r| r.body.as_str()),
+            Some("now it is the door")
+        );
+        assert_eq!(again.sent_to, Some(to), "the agent this attempt went to");
+    }
+
+    #[test]
+    fn a_take_is_refused_on_a_resolved_note_and_on_any_other_comment() {
+        let env = TempDir::new().expect("tempdir");
+        let ctx = context(env.path());
+        let node = create(&ctx, node_draft("the light")).expect("create");
+        let e = add_take(&ctx, &node.id, take_five(), "x".into(), None).unwrap_err();
+        assert_eq!(e.code, INVALID_PARAMS);
+        assert!(get(&ctx, &node.id).expect("get").replies.is_empty());
+
+        let c = take_note(&ctx);
+        resolve(&ctx, &c.id, "agent says fixed".into(), Author::Agent).expect("fixed");
+        let reopened = add_take(&ctx, &c.id, take_five(), "no it is not".into(), None)
+            .expect("a fixed note is shown not to be");
+        assert_eq!(reopened.status, Status::Open);
+        assert!(
+            reopened.resolution.is_none(),
+            "the fix moved into the thread"
+        );
+        verdict(&ctx, &c.id, Verdict::Good, None).expect("good");
+        let e = add_take(&ctx, &c.id, take_five(), "x".into(), None).unwrap_err();
+        assert_eq!(e.code, INVALID_PARAMS);
+        assert!(e.message.contains("resolved"), "{}", e.message);
+        let missing = add_take(&ctx, "nope", take_five(), "x".into(), None).unwrap_err();
+        assert_eq!(missing.code, INVALID_PARAMS);
+    }
+
+    /// Notes written before a take's number or a reply's take were kept.
+    #[test]
+    fn a_take_note_from_before_the_history_still_reads() {
+        let old = r#"{"id":"1-a","anchor":{"kind":"take","take":"2026-10-30-1402-0f3a","n":2,
+            "atMs":1,"packet":"p"},"author":"user","body":"b","status":"open",
+            "replies":[{"by":"agent","body":"tried","at":2}],"created":1,"updated":2}"#;
+        let c: Comment = serde_json::from_str(old).expect("old shape");
+        assert_eq!(c.takes().len(), 1);
+        assert_eq!(c.takes()[0].number, None);
+        assert_eq!(c.replies[0].take, None);
     }
 
     #[test]

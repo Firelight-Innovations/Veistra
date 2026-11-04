@@ -165,9 +165,10 @@ fn dock(ctx: &Ctx) -> Result<Value, RpcError> {
     Ok(json!({ "embed": s.embed.state() }))
 }
 
-/// With Record on, plan a take of the rest of the run and start it if the
-/// window is in the pane already; one still being looked for starts it when
-/// it is placed (`session::attached`).
+/// With Record on, or on a run recorded once (Play <scene>, Still broken),
+/// plan a take of the rest of the run and start it if the window is in the
+/// pane already; one still being looked for starts it when it is placed
+/// (`session::attached`).
 fn replan(ctx: &Ctx, s: &Session) {
     let (Some(run), Some(root)) = (ctx.godot.runner.get(&ctx.key), ctx.root.as_ref()) else {
         return;
@@ -181,7 +182,7 @@ fn replan(ctx: &Ctx, s: &Session) {
         .filter(|r| !r.is_empty())
         .unwrap_or_else(|| ".".to_string());
     let godot = ctx.godot.version_for_takes();
-    if let Some(plan) = plan_for(ctx, &run.spec.project, &rel, &godot, false) {
+    if let Some(plan) = plan_for(ctx, &run.spec.project, &rel, &godot, s.records_once()) {
         s.plan(plan);
         if let Some(hwnd) = s.embed.hwnd() {
             s.begin_take(hwnd);
@@ -373,7 +374,10 @@ fn set_record(ctx: &Ctx, p: &P) -> Result<Value, RpcError> {
                     }
                 }
             }
-            Some(false) => s.finish_take(&run),
+            Some(false) => {
+                s.stop_recording_once();
+                s.finish_take(&run);
+            }
             None => s.retune(quality, settings.keep),
         }
     }
@@ -573,20 +577,32 @@ fn send(ctx: &Ctx, raw: Option<&Value>) -> Result<Value, RpcError> {
     to_value(&sent)
 }
 
-/// The notes Send filed for this environment, with their status, newest
-/// take first; `take` narrows it to one take.
+/// The notes Send filed for this environment, with their status; `take`
+/// narrows it to the notes with that take in their history, and the one a
+/// Still broken take was recorded for, so its review shows that note's
+/// thread before anything is sent from it.
 fn notes(ctx: &Ctx, p: &P) -> Result<Value, RpcError> {
     let context = crate::apps::CallContext {
         cluster_id: Some(ctx.key.clone()),
         project: ctx.root.clone(),
     };
     let all = crate::comments::list(&context)?;
+    let checking = match &p.take {
+        Some(take) => takes_dir(ctx)
+            .ok()
+            .and_then(|dir| takes::read(&dir, take).ok())
+            .and_then(|t| t.summary.follow_up)
+            .map(|f| f.comment),
+        None => None,
+    };
     let wanted: Vec<_> = all
         .into_iter()
-        .filter(|c| match (&c.anchor, &p.take) {
-            (crate::comments::Anchor::Take { take, .. }, Some(want)) => take == want,
-            (crate::comments::Anchor::Take { .. }, None) => true,
-            _ => false,
+        .filter(|c| match &p.take {
+            Some(want) => {
+                checking.as_deref() == Some(c.id.as_str())
+                    || c.takes().iter().any(|t| &t.take == want)
+            }
+            None => matches!(c.anchor, crate::comments::Anchor::Take { .. }),
         })
         .collect();
     Ok(json!({ "notes": to_value(&wanted)? }))
@@ -675,6 +691,7 @@ pub fn state(ctx: &Ctx, key_since: u64, project: Option<&str>) -> Value {
             "ticks": s.ticks(),
             "mouseCaptured": s.mouse_captured(),
             "addon": s.channel.as_deref().and_then(super::addon::running_version),
+            "followUp": s.follow_up,
         },
     })
 }
@@ -878,6 +895,93 @@ mod tests {
             .unwrap()
             .unwrap_err();
         assert!(e.message.contains("no file manager"), "{}", e.message);
+    }
+
+    /// A Still broken take's review lists the note it checks before anything
+    /// is sent from it, and each take in a note's history finds the note.
+    #[test]
+    fn a_take_lists_the_notes_in_its_history_and_the_one_it_checks() {
+        use crate::comments::{self, Anchor, Draft, TakeRef};
+        let w = world();
+        let c = ctx(&w);
+        let context = crate::apps::CallContext {
+            cluster_id: Some("c1".into()),
+            project: Some(w.dir.path().to_path_buf()),
+        };
+        let (four, five, six) = (
+            "2026-10-30-1402-0f3a",
+            "2026-10-30-1440-9b1c",
+            "2026-10-30-1502-0c0c",
+        );
+        let note = comments::create(
+            &context,
+            Draft {
+                anchor: Anchor::Take {
+                    take: four.into(),
+                    number: Some(4),
+                    n: 2,
+                    at_ms: 102_000,
+                    in_ms: None,
+                    out_ms: None,
+                    packet: format!(".veistra/feedback/{four}-1"),
+                    scene: None,
+                    node_path: None,
+                },
+                body: "walks into the wall".into(),
+                screenshot_png: None,
+            },
+        )
+        .unwrap();
+        let checking = takes::FollowUp {
+            comment: note.id.clone(),
+            take: four.into(),
+            n: 2,
+            number: Some(4),
+            reply: "Still broken.".into(),
+        };
+        takes::finish(&takes::Finish {
+            dir: &takes::dir_in(w.dir.path()).join(five),
+            id: five,
+            number: 5,
+            project: "game",
+            environment: takes::EnvInfo::default(),
+            godot: "4.5.1",
+            godot_build: "4.5.1.stable.official.f62fdbde1",
+            started_at: 1_000,
+            ended_at: 9_000,
+            video: takes::VideoInfo::default(),
+            channel: None,
+            log: &[],
+            marks: &[],
+            follow_up: Some(&checking),
+        })
+        .unwrap();
+        let listed = |take: &str| -> Vec<Value> {
+            let answer = call(&c, "play/notes", Some(&json!({ "take": take })))
+                .unwrap()
+                .unwrap();
+            answer["notes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|n| n["id"].clone())
+                .collect()
+        };
+        let one = vec![json!(note.id)];
+        assert_eq!(listed(four), one);
+        assert_eq!(listed(five), one, "checked before it is sent");
+        assert!(listed(six).is_empty());
+        let link = TakeRef {
+            take: six.into(),
+            number: Some(6),
+            packet: format!(".veistra/feedback/{six}-1"),
+            n: 1,
+            at_ms: 0,
+            in_ms: None,
+            out_ms: None,
+        };
+        comments::add_take(&context, &note.id, link, "still".into(), None).unwrap();
+        assert_eq!(listed(six), one, "sent from it");
     }
 
     #[test]

@@ -23,7 +23,7 @@ use super::takes::{self, Summary};
 use super::telemetry::{self, Line};
 use super::{clip, scene};
 use crate::apps::CallContext;
-use crate::comments::{self, Anchor, Draft};
+use crate::comments::{self, Anchor, Author, Comment, Draft, TakeRef};
 use crate::context_commands::AgentTarget;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
@@ -74,6 +74,19 @@ pub struct Note {
     /// how far apart they are rather than assuming one a second.
     #[serde(default)]
     pub contact_ms: Option<Vec<u64>>,
+    /// The take note (a comment id) this one shows still broken.
+    #[serde(default)]
+    pub follow_up: Option<String>,
+}
+
+/// One note as `packet.md` describes it: what the page sent, its context, the
+/// comment it is filed as, and for a Still broken note that note as it stood
+/// before this take joined it.
+pub struct Row<'a> {
+    pub note: &'a Note,
+    pub context: &'a Value,
+    pub id: &'a str,
+    pub earlier: Option<&'a Comment>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -256,7 +269,7 @@ fn next_packet(feedback: &Path, take: &str) -> PathBuf {
 /// once the person has moved on to another.
 pub fn packet_md(
     summary: &Summary,
-    notes: &[(&Note, &Value, &str)],
+    notes: &[Row],
     project: &str,
     cluster: Option<&str>,
     problems: &[String],
@@ -280,7 +293,7 @@ pub fn packet_md(
     let _ = writeln!(md, "{}\n", meta.join(" · "));
     let sheets: Vec<&Note> = notes
         .iter()
-        .map(|(n, _, _)| *n)
+        .map(|r| r.note)
         .filter(|n| n.images.contact_png.is_some())
         .collect();
     let spacing = if sheets.iter().all(|n| every_second(n)) {
@@ -311,7 +324,20 @@ pub fn packet_md(
          the note.\n",
         if count == 1 { "note" } else { "notes" }
     );
-    for (note, ctx, id) in notes {
+    if notes.iter().any(|r| r.earlier.is_some()) {
+        let _ = writeln!(
+            md,
+            "A note marked still broken was sent and fixed before, and this take shows it is \
+             not: it keeps its id, and its earlier packet and the last fix are listed with it.\n"
+        );
+    }
+    for Row {
+        note,
+        context: ctx,
+        id,
+        earlier,
+    } in notes
+    {
         let when = match (note.in_ms, note.out_ms) {
             (Some(i), Some(o)) if o > i => format!("{} → {}", clock(i), clock(o)),
             _ => clock(note.at_ms),
@@ -319,8 +345,13 @@ pub fn packet_md(
         let scene = ctx["scene"].as_str().map(leaf).unwrap_or("");
         let _ = writeln!(
             md,
-            "## Note {} · {when}{}\n",
+            "## Note {}{} · {when}{}\n",
             note.n,
+            if earlier.is_some() {
+                " · still broken"
+            } else {
+                ""
+            },
             if scene.is_empty() {
                 String::new()
             } else {
@@ -335,6 +366,11 @@ pub fn packet_md(
             let _ = writeln!(md, "- **{k}:** {v}");
         };
         row("Note id", format!("`{id}`"));
+        if let Some(earlier) = earlier {
+            for (k, v) in still_broken_rows(earlier) {
+                row(k, v);
+            }
+        }
         if let Some(t) = note.target.as_ref().filter(|t| t.is_object()) {
             let path = t["nodePath"].as_str().unwrap_or("?");
             let mut what = format!("`{path}`");
@@ -437,6 +473,31 @@ pub fn packet_md(
     md
 }
 
+/// What a Still broken note adds to its section: each take it was sent from
+/// before, with that packet, and the fix that did not hold.
+fn still_broken_rows(earlier: &Comment) -> Vec<(&'static str, String)> {
+    let mut rows: Vec<(&'static str, String)> = earlier
+        .takes()
+        .iter()
+        .map(|t| {
+            let take = t
+                .number
+                .map_or_else(|| t.take.clone(), |n| format!("Take {n}"));
+            let note = format!("{take}, note {} at {}", t.n, clock(t.at_ms));
+            ("Sent before", format!("{note}: `{}/packet.md`", t.packet))
+        })
+        .collect();
+    if let Some(fix) = earlier.replies.iter().rev().find(|r| r.by == Author::Agent) {
+        let commit = fix
+            .commit
+            .as_deref()
+            .map(|c| format!(" (commit `{c}`)"))
+            .unwrap_or_default();
+        rows.push(("Last fix", format!("{}{commit}", fix.body.trim())));
+    }
+    rows
+}
+
 /// A note's `markup.json` when nothing was drawn: the frame itself, in the
 /// shape `docs/markup-format.md` gives an image, with no pins or ink.
 fn plain_markup(summary: &Summary, has_frame: bool) -> Value {
@@ -462,6 +523,10 @@ fn plain_markup(summary: &Summary, has_frame: bool) -> Value {
 /// note is filed. After that a failure is one note's or one clip's, and is
 /// reported in [`Sent::problems`] while the others go; only a Send that filed
 /// nothing at all is an error.
+///
+/// A note made on a Still broken take (`followUp`) is not a new comment: its
+/// take joins the history of the note it checks ([`comments::add_take`]), and
+/// a note it cannot join is refused with the rest, before anything is written.
 pub fn send(
     ctx: &CallContext,
     takes_dir: &Path,
@@ -485,6 +550,16 @@ pub fn send(
     {
         return Err(format!("note {} has no picture", bare.n));
     }
+    let mut earlier = Vec::new();
+    for note in &req.notes {
+        if let Some(id) = &note.follow_up {
+            let comment = comments::get(ctx, id)
+                .and_then(|c| comments::check_follow_up(&c).map(|()| c))
+                .map_err(|e| format!("note {}: {}", note.n, e.message))?;
+            earlier.push((note.n, comment));
+        }
+    }
+    let earlier_of = |n: u32| earlier.iter().find(|(m, _)| *m == n).map(|(_, c)| c);
     let listed = takes::read(takes_dir, &req.take)?;
     let summary = listed.summary;
     let take_dir = takes_dir.join(&req.take);
@@ -572,11 +647,32 @@ pub fn send(
             .as_ref()
             .and_then(|t| t["nodePath"].as_str())
             .map(str::to_string);
+        if let Some(id) = &note.follow_up {
+            let link = TakeRef {
+                take: req.take.clone(),
+                number: Some(summary.number),
+                packet: packet_rel.clone(),
+                n: note.n,
+                at_ms: note.at_ms,
+                in_ms: note.in_ms,
+                out_ms: note.out_ms,
+            };
+            let body = note.body.trim().to_string();
+            match comments::add_take(ctx, id, link, body, req.sent_to.clone()) {
+                Ok(made) => filed.push((note, c, made.id)),
+                Err(e) => problems.push(format!(
+                    "Note {} could not be added to the note it checks, so it is still a draft: {}",
+                    note.n, e.message
+                )),
+            }
+            continue;
+        }
         let made = comments::create_to(
             ctx,
             Draft {
                 anchor: Anchor::Take {
                     take: req.take.clone(),
+                    number: Some(summary.number),
                     n: note.n,
                     at_ms: note.at_ms,
                     in_ms: note.in_ms,
@@ -606,9 +702,14 @@ pub fn send(
     }
     mark_sent(takes_dir, &req.take, &ids, &packet_rel);
 
-    let rows: Vec<(&Note, &Value, &str)> = filed
+    let rows: Vec<Row> = filed
         .iter()
-        .map(|(n, c, id)| (*n, *c, id.as_str()))
+        .map(|(note, context, id)| Row {
+            note,
+            context,
+            id,
+            earlier: earlier_of(note.n),
+        })
         .collect();
     let md = packet_md(
         &summary,
@@ -679,6 +780,7 @@ mod tests {
                 out_png: Some(BASE64.encode(PNG)),
             },
             contact_ms: None,
+            follow_up: None,
         }
     }
 
@@ -696,8 +798,24 @@ mod tests {
     }
 
     fn take(root: &Path) -> (PathBuf, String) {
+        let (takes, id) = take_as(root, "2026-10-30-1402-0f3a", 4, None);
+        takes::save_notes(
+            &takes,
+            &id,
+            &json!({ "version": 1, "notes": [{ "n": 1 }, { "n": 2 }] }),
+        )
+        .unwrap();
+        (takes, id)
+    }
+
+    fn take_as(
+        root: &Path,
+        id: &str,
+        number: u32,
+        follow_up: Option<&takes::FollowUp>,
+    ) -> (PathBuf, String) {
         let takes = takes::dir_in(root);
-        let id = "2026-10-30-1402-0f3a".to_string();
+        let id = id.to_string();
         let started = 1_793_368_920_000;
         let channel = root.join("chan");
         std::fs::create_dir_all(&channel).unwrap();
@@ -721,7 +839,7 @@ mod tests {
         takes::finish(&Finish {
             dir: &takes.join(&id),
             id: &id,
-            number: 4,
+            number,
             project: ".",
             environment: EnvInfo {
                 branch: Some("wt/enemy-chase".into()),
@@ -735,13 +853,8 @@ mod tests {
             channel: Some(&channel),
             log: &log,
             marks: &[],
+            follow_up,
         })
-        .unwrap();
-        takes::save_notes(
-            &takes,
-            &id,
-            &json!({ "version": 1, "notes": [{ "n": 1 }, { "n": 2 }] }),
-        )
         .unwrap();
         (takes, id)
     }
@@ -1061,6 +1174,113 @@ mod tests {
             .path()
             .join(format!(".veistra/feedback/{id}-1/packet.md"))
             .exists());
+    }
+
+    /// Take 4's note 2, sent, fixed by an agent and marked still broken: what
+    /// a Still broken take is recorded to check.
+    fn a_fix_that_did_not_hold(ctx: &CallContext, takes_dir: &Path, id: &str) -> String {
+        let sent = send(
+            ctx,
+            takes_dir,
+            "Anomaly",
+            &request(id, vec![note(2, 102_000, None, "Walks into the wall")]),
+        )
+        .unwrap();
+        let note_id = sent.comments[0].1.clone();
+        comments::resolve_with_commit(
+            ctx,
+            &note_id,
+            "Rebaked the nav mesh".into(),
+            Some("3f2a1c9".into()),
+            Author::Agent,
+        )
+        .unwrap();
+        comments::verdict(
+            ctx,
+            &note_id,
+            comments::Verdict::Broken,
+            Some("still clips at the corner".into()),
+        )
+        .unwrap();
+        note_id
+    }
+
+    /// The Done-when of #321 through Send: the Still broken take's note is
+    /// filed onto the note it checks, which then has both takes in its
+    /// history, and its packet tells the agent so.
+    #[test]
+    fn a_still_broken_note_joins_the_note_it_checks_with_both_takes() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let ctx = ctx_for(root);
+        let (takes_dir, four) = take(root);
+        let note_id = a_fix_that_did_not_hold(&ctx, &takes_dir, &four);
+
+        let checking = takes::FollowUp {
+            comment: note_id.clone(),
+            take: four.clone(),
+            n: 2,
+            number: Some(4),
+            reply: "still clips at the corner".into(),
+        };
+        let five = "2026-10-30-1440-9b1c";
+        take_as(root, five, 5, Some(&checking));
+        assert_eq!(takes::read(&takes_dir, five).unwrap().drafts, 1);
+        let mut again = note(1, 12_000, None, "still clips at the corner");
+        again.follow_up = Some(note_id.clone());
+        let sent = send(&ctx, &takes_dir, "Anomaly", &request(five, vec![again])).unwrap();
+        assert!(sent.problems.is_empty(), "{:?}", sent.problems);
+        assert_eq!(sent.comments, vec![(1, note_id.clone())]);
+
+        let all = comments::list(&ctx).unwrap();
+        assert_eq!(all.len(), 1, "no second note");
+        let numbers: Vec<_> = all[0].takes().iter().map(|t| t.number).collect();
+        assert_eq!(numbers, vec![Some(4), Some(5)]);
+        assert_eq!(all[0].takes()[1].packet, sent.packet);
+        assert_eq!(all[0].status, comments::Status::Open);
+        assert_eq!(
+            takes::read(&takes_dir, five).unwrap().drafts,
+            0,
+            "the draft is sent, so the take can be retired"
+        );
+
+        let md = std::fs::read_to_string(root.join(&sent.packet).join("packet.md")).unwrap();
+        assert!(md.contains("## Note 1 · still broken · 0:12"), "{md}");
+        assert!(
+            md.contains(&format!(
+                "**Sent before:** Take 4, note 2 at 1:42: `.veistra/feedback/{four}-1/packet.md`"
+            )),
+            "{md}"
+        );
+        assert!(
+            md.contains("**Last fix:** Rebaked the nav mesh (commit `3f2a1c9`)"),
+            "{md}"
+        );
+        assert!(md.contains(&format!("`{note_id}`")));
+    }
+
+    /// A follow-up for a note that is gone, or already resolved, is refused
+    /// before a packet is made or a draft stamped.
+    #[test]
+    fn a_still_broken_note_for_a_note_it_cannot_join_writes_nothing() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let ctx = ctx_for(root);
+        let (takes_dir, four) = take(root);
+        let note_id = a_fix_that_did_not_hold(&ctx, &takes_dir, &four);
+        comments::resolve_with_commit(&ctx, &note_id, "again".into(), None, Author::Agent).unwrap();
+        comments::verdict(&ctx, &note_id, comments::Verdict::Good, None).unwrap();
+
+        let five = "2026-10-30-1440-9b1c";
+        take_as(root, five, 5, None);
+        for (follow_up, says) in [("cmt-gone", "note 1:"), (note_id.as_str(), "resolved")] {
+            let mut again = note(1, 12_000, None, "still broken");
+            again.follow_up = Some(follow_up.into());
+            let err = send(&ctx, &takes_dir, "Anomaly", &request(five, vec![again])).unwrap_err();
+            assert!(err.contains(says), "{err}");
+        }
+        assert!(!root.join(format!(".veistra/feedback/{five}-1")).exists());
+        assert_eq!(comments::list(&ctx).unwrap()[0].takes().len(), 1);
     }
 
     #[test]

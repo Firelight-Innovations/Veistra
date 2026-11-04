@@ -23,6 +23,7 @@ use super::preview;
 use super::runner::{now_ms, RunSpec, Runner, WindowArgs};
 use super::scene::{self, Refresh};
 use super::session::Session;
+use super::takes;
 use super::{scratch_root, Godot};
 use crate::embed::host::{HostSpec, Hosts, Orphan, Pane, Slot};
 use crate::embed::{self, Kind, Owner, OwnerFn};
@@ -99,6 +100,9 @@ struct Params {
     /// `play/run`, `play/restart`: record this run whatever Record is set
     /// to, and leave the setting as it is.
     record_once: bool,
+    /// `play/run`, `play/restart`: Still broken. The take note (a comment
+    /// id) this run is recorded to check; implies `record_once`.
+    follow_up: Option<String>,
 }
 
 fn params(raw: Option<&Value>) -> Result<Params, RpcError> {
@@ -371,11 +375,63 @@ fn channel_for(ctx: &Ctx, project: &GodotProject) -> Result<Option<PathBuf>, Rpc
     Ok(Some(dir))
 }
 
+/// What a run records beyond Record's setting: `once`, recorded whatever
+/// Record says, and the note a Still broken run went back to.
+#[derive(Default)]
+struct Asked {
+    once: bool,
+    follow_up: Option<takes::FollowUp>,
+}
+
+/// The note `id` names, as a Still broken run carries it: read before anything
+/// starts, so a run is never recorded for a note it cannot be sent to.
+fn follow_up_for(ctx: &Ctx, id: &str) -> Result<takes::FollowUp, RpcError> {
+    let context = crate::apps::CallContext {
+        cluster_id: Some(ctx.key.clone()),
+        project: ctx.root.clone(),
+    };
+    let comment = crate::comments::get(&context, id)?;
+    crate::comments::check_follow_up(&comment)?;
+    let first = comment.takes().into_iter().next();
+    let first = first.ok_or_else(|| fail(format!("note `{id}` has no take")))?;
+    let number = first.number.or_else(|| {
+        let dir = super::live::takes_dir(ctx).ok()?;
+        takes::read(&dir, &first.take)
+            .ok()
+            .map(|t| t.summary.number)
+    });
+    let reply = comment
+        .replies
+        .iter()
+        .rev()
+        .find(|r| r.by == crate::comments::Author::User)
+        .map(|r| r.body.clone())
+        .unwrap_or_else(|| "Still broken.".to_string());
+    Ok(takes::FollowUp {
+        comment: comment.id,
+        take: first.take,
+        n: first.n,
+        number,
+        reply,
+    })
+}
+
+fn asked(ctx: &Ctx, p: &Params) -> Result<Asked, RpcError> {
+    Ok(Asked {
+        once: p.record_once,
+        follow_up: p
+            .follow_up
+            .as_deref()
+            .map(|id| follow_up_for(ctx, id))
+            .transpose()?,
+    })
+}
+
 fn start_run(
     ctx: &Ctx,
     project: &GodotProject,
     scene: Option<String>,
-    record_once: bool,
+    asked: Asked,
 ) -> Result<Value, RpcError> {
     let found = require_engine(ctx)?;
     if project.engine_major < 4 {
@@ -411,15 +467,17 @@ fn start_run(
         window,
     };
     let run = ctx.godot.runner.start(&ctx.key, spec).map_err(fail)?;
+    let once = asked.once || asked.follow_up.is_some();
     let plan = channel
         .is_some()
         .then(|| {
             let (dir, rel) = (&project.dir, &project.rel);
-            super::live::plan_for(ctx, dir, rel, &found.version, record_once)
+            super::live::plan_for(ctx, dir, rel, &found.version, once)
         })
         .flatten();
     let embed = ctx.hosts.embed(Kind::Game);
-    let session = Arc::new(Session::with_embed(run.id, channel, plan, embed.clone()));
+    let session = Session::with_embed(run.id, channel, plan, embed.clone());
+    let session = Arc::new(session.recording_once(once, asked.follow_up));
     run.set_tap(Some(session.log_tap()));
     ctx.godot.set_session(&ctx.key, session.clone());
     {
@@ -479,13 +537,22 @@ fn launch_window(pane: Option<&Pane>, owner: Option<&Owner>) -> WindowArgs {
 
 fn play_run(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
     let project = pick_project(ctx, p)?;
-    start_run(ctx, &project, p.scene.clone(), p.record_once)
+    let asked = asked(ctx, p)?;
+    start_run(ctx, &project, p.scene.clone(), asked)
 }
 
 /// Stop, then start again with the same project and scene. The channel is made
-/// fresh, so a capture addon installed since the last run is picked up.
+/// fresh, so a capture addon installed since the last run is picked up. A run
+/// recorded once, or for a Still broken note, is restarted the same way unless
+/// the call asks for something of its own.
 fn play_restart(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
     let previous = ctx.godot.runner.get(&ctx.key).map(|r| r.spec.clone());
+    let mut asked = asked(ctx, p)?;
+    let same = previous.as_ref().and_then(|_| ctx.godot.session(&ctx.key));
+    if let Some(s) = same.filter(|_| !asked.once && asked.follow_up.is_none()) {
+        asked.once = s.records_once();
+        asked.follow_up.clone_from(&s.follow_up);
+    }
     stop_run(ctx)?;
     let project = match &previous {
         Some(spec) => projects(ctx)?
@@ -495,7 +562,7 @@ fn play_restart(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
         None => pick_project(ctx, p)?,
     };
     let scene = previous.and_then(|s| s.scene).or_else(|| p.scene.clone());
-    start_run(ctx, &project, scene, p.record_once)
+    start_run(ctx, &project, scene, asked)
 }
 
 fn live_channel(
@@ -1099,6 +1166,73 @@ mod tests {
         assert_ne!(first["run"]["id"], second["run"]["id"]);
         assert_eq!(second["run"]["scene"], "res://main.tscn");
         assert_eq!(second["run"]["state"]["kind"], "running");
+        w.godot.shutdown();
+    }
+
+    /// Still broken: a run for a note that can take another take carries it
+    /// (the page reads it back from `play/state`) and a restart keeps it; one
+    /// for a note that cannot is refused before anything starts.
+    #[test]
+    fn a_still_broken_run_carries_its_note_and_refuses_one_it_cannot_record_for() {
+        use crate::comments::{self, Anchor, Draft};
+        let w = world(true);
+        let c = ctx(&w, false, &real_check);
+        let context = crate::apps::CallContext {
+            cluster_id: Some("c1".into()),
+            project: Some(w.root.clone()),
+        };
+        let draft = |anchor| Draft {
+            anchor,
+            body: "walks into the wall".into(),
+            screenshot_png: None,
+        };
+        let note = comments::create(
+            &context,
+            draft(Anchor::Take {
+                take: "2026-10-30-1402-0f3a".into(),
+                number: Some(4),
+                n: 2,
+                at_ms: 102_000,
+                in_ms: None,
+                out_ms: None,
+                packet: ".veistra/feedback/2026-10-30-1402-0f3a-1".into(),
+                scene: None,
+                node_path: None,
+            }),
+        )
+        .unwrap();
+        let other = comments::create(
+            &context,
+            draft(Anchor::Node {
+                path: "World".into(),
+            }),
+        )
+        .unwrap();
+        for bad in ["cmt-gone", other.id.as_str()] {
+            assert!(call(&c, "play/run", json!({ "followUp": bad })).is_err());
+        }
+        assert!(w.godot.runner.get("c1").is_none(), "nothing started");
+
+        call(&c, "play/run", json!({ "followUp": note.id })).unwrap();
+        let session =
+            |c: &Ctx| call(c, "play/state", json!({})).unwrap()["live"]["session"].clone();
+        let checking = session(&c)["followUp"].clone();
+        assert_eq!(
+            checking,
+            json!({ "comment": note.id, "take": "2026-10-30-1402-0f3a", "n": 2, "number": 4 })
+        );
+        call(&c, "play/restart", json!({})).unwrap();
+        assert_eq!(
+            session(&c)["followUp"],
+            checking,
+            "a restart checks the same note"
+        );
+        call(&c, "play/restart", json!({ "recordOnce": true })).unwrap();
+        assert_eq!(
+            session(&c)["followUp"],
+            Value::Null,
+            "a restart that asks for its own run leaves the note"
+        );
         w.godot.shutdown();
     }
 

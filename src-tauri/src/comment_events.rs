@@ -166,6 +166,7 @@ mod tests {
             id: "0001-ab".into(),
             anchor: Anchor::Take {
                 take: "2026-10-30-1402-0f3a".into(),
+                number: None,
                 n: 2,
                 at_ms: 1_000,
                 in_ms: None,
@@ -216,6 +217,7 @@ mod tests {
             body: "first try".into(),
             at: 1,
             commit: None,
+            take: None,
         }];
         assert_eq!(
             heard(Some(Status::Open), &c),
