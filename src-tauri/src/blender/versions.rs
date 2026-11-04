@@ -196,7 +196,7 @@ pub fn newest(asset: &Path) -> Option<Version> {
 
 /// The next number: past the counter and past every folder, so a version that
 /// was pruned, or half-written before a crash, is never numbered again.
-fn next_number(asset: &Path) -> u32 {
+pub fn next_number(asset: &Path) -> u32 {
     let counter = std::fs::read_to_string(asset.join("asset.json"))
         .ok()
         .and_then(|raw| serde_json::from_str::<Asset>(&raw).ok())

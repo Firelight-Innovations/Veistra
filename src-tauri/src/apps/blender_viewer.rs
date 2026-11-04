@@ -16,6 +16,7 @@
 
 use crate::apps::CallContext;
 use crate::blender::detect::{self, Detected, RealHost, VersionCache};
+use crate::blender::editor::{self, Editors};
 use crate::blender::job::{Jobs, Spec};
 use crate::blender::versions::{self, Author, Version};
 use crate::blender::{self, keys, lock, Manifest};
@@ -25,7 +26,6 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
 use veistra_rpc::{RpcError, INTERNAL_ERROR, INVALID_PARAMS, METHOD_NOT_FOUND};
@@ -104,9 +104,43 @@ pub fn call(
     method: &str,
     params: Option<Value>,
 ) -> Result<Value, RpcError> {
+    call_for(app, context, None, method, params)
+}
+
+/// [`call`] with the pane instance that asked, which Blender in the pane is
+/// placed over (`blender-viewer/editor-*`, [`crate::blender::editor`]).
+pub fn call_for(
+    app: &AppHandle,
+    context: &CallContext,
+    instance: Option<&str>,
+    method: &str,
+    params: Option<Value>,
+) -> Result<Value, RpcError> {
     if method == "blender-viewer/set-executable" {
         return set_executable(app, params.as_ref());
     }
+    if method.starts_with("blender-viewer/editor-") {
+        return with_editor(app, context, instance, |ctx| {
+            editor::call(ctx, method, params.as_ref())
+        })
+        .unwrap_or_else(|| {
+            Err(RpcError::new(
+                METHOD_NOT_FOUND,
+                format!("no such method: {method}"),
+            ))
+        });
+    }
+    with_services(app, context, |services| {
+        dispatch(context, services, method, params)
+    })
+}
+
+/// [`Services`] for one call from the live app.
+pub fn with_services<R>(
+    app: &AppHandle,
+    context: &CallContext,
+    f: impl FnOnce(&Services) -> R,
+) -> R {
     let environment = context.cluster_id.as_deref().and_then(|cluster| {
         app.state::<crate::shell_state::ShellState>()
             .cluster_write_environment(cluster)
@@ -116,6 +150,11 @@ pub fn call(
         .path()
         .app_local_data_dir()
         .unwrap_or_else(|_| std::env::temp_dir().join("veistra"));
+    let editors = app.state::<Editors>();
+    let dirty = |rel: &str| {
+        let project = context.project.as_deref()?;
+        editors.dirty(project, rel)
+    };
     let services = Services {
         config: config(app),
         jobs: &app.state::<Jobs>(),
@@ -125,9 +164,50 @@ pub fn call(
         read_only,
         app_cache,
         embedder: crate::embed::SUPPORTED,
-        dirty: &|_| None,
+        dirty: &dirty,
     };
-    dispatch(context, &services, method, params)
+    f(&services)
+}
+
+/// The editor's [`editor::Ctx`] for one call from the live app.
+fn with_editor<R>(
+    app: &AppHandle,
+    context: &CallContext,
+    instance: Option<&str>,
+    f: impl FnOnce(&editor::Ctx) -> R,
+) -> R {
+    let shell = app.state::<crate::shell_state::ShellState>();
+    let read_only = context
+        .cluster_id
+        .as_deref()
+        .and_then(|cluster| shell.cluster_write_environment(cluster))
+        .is_some_and(|e| e.is_main());
+    let cfg = config(app);
+    let versions = app.state::<VersionCache>();
+    let find = || {
+        let found = detect::detect(&RealHost, &cfg.executable, &versions);
+        match found.path {
+            Some(path) => Ok((PathBuf::from(path), found.version)),
+            None => Err(
+                "Blender was not found — set its path in Settings > Blender, or in this viewer"
+                    .to_string(),
+            ),
+        }
+    };
+    let shown = |i: &str| crate::embed::host::shown(&shell.snapshot(), i);
+    let ctx = editor::Ctx {
+        editors: &app.state::<Editors>(),
+        hosts: &app.state::<crate::embed::host::Hosts>(),
+        cluster: context.cluster_id.clone().unwrap_or_default(),
+        instance: instance.map(str::to_string),
+        project: context.project.clone(),
+        read_only,
+        find: &find,
+        scratch: std::env::temp_dir().join("veistra-blender"),
+        owner: crate::embed::host::owner_fn(app),
+        shown: &shown,
+    };
+    f(&ctx)
 }
 
 /// "Open in Blender" for a path the caller already has, from the Files app's
@@ -517,12 +597,22 @@ fn actor(params: Option<&Value>) -> Result<Author, RpcError> {
 }
 
 /// An export that has started: which file, whether Blender in a pane had it
-/// open, and the version it becomes once it lands.
+/// open, and the version it lands as. Exports run one at a time, so no other
+/// can take that number first.
 pub struct Started {
     pub rel: String,
     pub locked: bool,
-    pub started_at: Option<u64>,
-    pub landed: Arc<Mutex<Option<Version>>>,
+    pub version: u32,
+    pub dir: PathBuf,
+}
+
+impl Started {
+    fn to_json(&self) -> Value {
+        json!({
+            "started": true, "rel": self.rel, "locked": self.locked,
+            "version": self.version, "dir": self.dir.display().to_string(),
+        })
+    }
 }
 
 fn export_start(
@@ -530,8 +620,40 @@ fn export_start(
     services: &Services,
     params: Option<&Value>,
 ) -> Result<Value, RpcError> {
-    let started = start_export(context, services, params)?;
-    Ok(json!({ "started": true, "rel": started.rel, "locked": started.locked }))
+    Ok(start_export(context, services, params)?.to_json())
+}
+
+/// MCP `export_blend`: an export as the agent, answered as soon as it starts.
+/// The `.blend` is only read, whether or not the person has it open.
+pub fn agent_export(
+    context: &CallContext,
+    services: &Services,
+    blend: &str,
+) -> Result<Value, RpcError> {
+    let params = json!({ "blend": blend, "actor": "agent" });
+    let started = start_export(context, services, Some(&params))?;
+    let mut answer = started.to_json();
+    answer["note"] = json!(if started.locked {
+        "The person has this file open in Blender. The export reads it as last saved and \
+         writes only the new version; their file is not touched. list_blend_exports shows \
+         the version once it lands."
+    } else {
+        "Exporting in the background. list_blend_exports shows the version once it lands, \
+         usually within a minute. The .blend is only read."
+    });
+    Ok(answer)
+}
+
+/// MCP `list_blend_exports`: a file's versions, newest first, and the
+/// export running now.
+pub fn agent_exports(
+    context: &CallContext,
+    services: &Services,
+    blend: &str,
+) -> Result<Value, RpcError> {
+    let mut answer = export_versions(context, services, Some(&json!({ "blend": blend })))?;
+    answer["job"] = json!(services.jobs.snapshot());
+    Ok(answer)
 }
 
 /// Start an export of `params.blend` as `params.actor`. Every export becomes
@@ -621,8 +743,8 @@ pub fn start_export(
     template.source_dirty = held.as_ref().and_then(|_| (services.dirty)(&rel));
 
     let asset = services.asset(project, &rel);
-    let landed = Arc::new(Mutex::new(None));
-    let slot = landed.clone();
+    let version = versions::next_number(&asset);
+    let dir = versions::version_dir(&asset, version);
     services
         .jobs
         .start(rel.clone(), spec, move |result| {
@@ -635,15 +757,14 @@ pub fn start_export(
                 std::fs::copy(versions::version_dir(&asset, version.n).join(glb), copy)
                     .map_err(|e| format!("could not copy the .glb to {}: {e}", copy.display()))?;
             }
-            *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(version);
             Ok(())
         })
         .map_err(internal)?;
     Ok(Started {
         rel,
         locked: held.is_some(),
-        started_at: services.jobs.snapshot().started_at,
-        landed,
+        version,
+        dir,
     })
 }
 

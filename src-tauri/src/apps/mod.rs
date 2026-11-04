@@ -21,7 +21,7 @@ mod agent_history;
 mod agent_install;
 pub(crate) mod agent_tab;
 mod agents;
-mod blender_viewer;
+pub(crate) mod blender_viewer;
 pub mod canvas;
 mod costs;
 #[cfg(feature = "design-mode")]
@@ -252,10 +252,10 @@ const REGISTRY: &[Registered] = &[
     Registered {
         id: "blender-viewer",
         name: "Blender Viewer",
-        description: "Runs Blender headless on a .blend and shows what came out — preview renders, \
-                      parts list and the .glb — with Open in Blender for the real editor.",
+        description: "Work in Blender inside the pane in Editor mode, and look at each export's \
+                      preview renders, parts list and .glb in Renders mode.",
         call: blender_viewer::call,
-        call_for: None,
+        call_for: Some(blender_viewer::call_for),
         places_window: true,
     },
     Registered {
@@ -797,6 +797,8 @@ pub const WRITE_METHODS: &[&str] = &[
     // An editor opened on main could save into it; main shows the read-only
     // viewer instead (`crate::editor_surface`).
     "blender-viewer/open",
+    // Blender in the pane, which saves the file it has open (#317).
+    "blender-viewer/editor-open",
     "files/open-in-blender",
     "play/addon-install",
     "play/addon-remove",

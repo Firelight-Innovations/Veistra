@@ -13,6 +13,7 @@
 //! refused there.
 
 pub mod detect;
+pub mod editor;
 pub mod job;
 pub mod lock;
 pub mod versions;

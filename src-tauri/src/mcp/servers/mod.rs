@@ -20,6 +20,7 @@
 //! It indexes their arrays and delegates, so nothing here is a second copy.
 
 pub mod agent;
+pub mod blender_exports;
 pub mod canvas;
 pub mod context;
 pub mod debug;
@@ -83,6 +84,9 @@ pub fn read_only_hint(server: &str, tool: &str) -> Option<bool> {
         ("workspace", "focus" | "layout" | "project") => true,
         ("workspace" | context::ID, tool) if play_notes::serves(tool) => {
             return play_notes::read_only(tool)
+        }
+        ("workspace" | context::ID, tool) if blender_exports::serves(tool) => {
+            return blender_exports::read_only(tool)
         }
         ("canvas", tool) => return canvas::read_only(tool),
         (context::ID, tool) => return context::read_only(tool),
@@ -163,10 +167,12 @@ pub fn instructions(id: &str) -> Option<&'static str> {
              to type into a terminal; that terminal is probably yours.",
         ),
         "workspace" => Some(
-            "Read-only: where the person is working. Call `focus` when they say \"this\" or \"here\"; \
+            "Where the person is working. Call `focus` when they say \"this\" or \"here\"; \
              it names the focused pane, the app and the file or selection it reports. `layout` and \
              `project` give the panes and the folder each cluster is on. Pass the instance ids you \
-             find here to the canvas server.",
+             find here to the canvas server. `export_blend` exports a .blend as its next version \
+             and never writes the .blend, even one the person has open; `list_blend_exports` \
+             shows the versions.",
         ),
         "canvas" => Some(
             "Design canvases. More than one can be open: call `list_canvases` to see them and which has \
@@ -184,7 +190,8 @@ pub fn instructions(id: &str) -> Option<&'static str> {
              reply. `list_comments` has what they asked of you; `resolve_comment` closes one. Call `get_selection` when they \
              say \"this\". Secrets and gitignored files are withheld and say so. Notes sent from \
              Play come with a packet.md: `list_play_notes` lists them, `start_play_note` says you \
-             are on one and `resolve_play_note` reports it fixed.",
+             are on one and `resolve_play_note` reports it fixed. `export_blend` exports a .blend as \
+             its next version without writing the .blend; `list_blend_exports` shows the versions.",
         ),
         "debug" => Some(
             "Read-only views of a running Veistra: its shell layout, recent errors and boot \

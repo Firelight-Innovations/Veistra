@@ -4,11 +4,11 @@
 //! more are the agent's half of Play's fix loop: the notes the person sent from a
 //! recorded take, and the two writes that report on one (`list_play_notes`,
 //! `start_play_note`, `resolve_play_note`; served from [`super::play_notes`],
-//! which `context` shares).
+//! which `context` shares). [`super::blender_exports`] adds `export_blend` and its list.
 //!
-//! **On in every build, and read-only but for the play notes.** Unlike [`super::debug`] there is no
-//! developer gate, because nothing here reaches past what the person can see on
-//! screen: no input, no `eval`, no failures buffer, no window geometry. What
+//! **On in every build, and read-only but for the play notes and the export.** Unlike
+//! [`super::debug`] there is no developer gate, because nothing here reaches past what
+//! the person can see on screen: no input, no `eval`, no failures buffer, no window geometry. What
 //! `shell_snapshot` carries that this leaves out (geometry, band heights,
 //! restore bookkeeping, agent-finished dots) is internal to the shell.
 //!
@@ -68,7 +68,7 @@ fn focus_answer(app: &AppHandle) -> Value {
 
 static TOOLS: &[McpTool] = &TOOL_LIST;
 
-const TOOL_LIST: [McpTool; 6] = [
+const TOOL_LIST: [McpTool; 8] = [
     McpTool {
         name: "focus",
         description: "What the person is looking at right now: the focused pane, the app and \
@@ -95,6 +95,9 @@ const TOOL_LIST: [McpTool; 6] = [
     super::play_notes::TOOLS[0],
     super::play_notes::TOOLS[1],
     super::play_notes::TOOLS[2],
+    // An agent exports what the person may have open in Blender (#317).
+    super::blender_exports::TOOLS[0],
+    super::blender_exports::TOOLS[1],
 ];
 
 fn no_params() -> Value {
@@ -104,6 +107,9 @@ fn no_params() -> Value {
 fn call(app: &AppHandle, tool: &str, params: Option<Value>) -> Result<ToolAnswer, RpcError> {
     if super::play_notes::serves(tool) {
         return super::play_notes::call(app, tool, &params);
+    }
+    if super::blender_exports::serves(tool) {
+        return super::blender_exports::call(app, tool, &params);
     }
     let snapshot = app.state::<ShellState>().snapshot();
     match tool {
@@ -744,7 +750,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_server_is_ordinary_and_only_the_play_note_reports_write() {
+    fn the_server_is_ordinary_and_only_the_play_note_reports_and_the_export_write() {
         assert!(!SERVER.dev_only, "workspace ships to everyone");
         let names: Vec<&str> = SERVER.tools.iter().map(|t| t.name).collect();
         assert_eq!(
@@ -755,11 +761,16 @@ mod tests {
                 "project",
                 "list_play_notes",
                 "start_play_note",
-                "resolve_play_note"
+                "resolve_play_note",
+                "export_blend",
+                "list_blend_exports"
             ]
         );
         for tool in SERVER.tools {
-            let writes = matches!(tool.name, "start_play_note" | "resolve_play_note");
+            let writes = matches!(
+                tool.name,
+                "start_play_note" | "resolve_play_note" | "export_blend"
+            );
             assert_eq!(
                 super::super::read_only_hint("workspace", tool.name),
                 Some(!writes),
