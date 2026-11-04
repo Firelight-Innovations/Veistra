@@ -601,9 +601,129 @@ describe("Review", () => {
       reply: "still clips at the door",
     });
     const play = screen.getByRole("button", { name: "Play hallway.tscn" });
-    expect(play.title).toBe("Run the game in res://levels/hallway.tscn with Record on");
+    // Play records that one run and leaves Record as it was (X9).
+    expect(play.title).toBe("Run the game in res://levels/hallway.tscn and record that run");
     fireEvent.click(play);
     expect(props.onPlayScene).toHaveBeenCalledWith("res://levels/hallway.tscn");
+  });
+
+  it("hands Still broken to Play mode, which runs the scene for it, when it can", async () => {
+    backend([{ n: 1, kind: "frame", atMs: 41_000, body: "door", commentId: "c2" }]);
+    const onStillBroken = vi.fn();
+    mount({ onStillBroken });
+    await screen.findByText("Rebaked the nav mesh");
+    fireEvent.change(screen.getByLabelText("What is still broken, for note 1"), {
+      target: { value: "still clips at the door" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Still broken" }));
+    expect(onStillBroken).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "c2" }),
+      "still clips at the door",
+    );
+    expect(calls("comments/verdict")).toHaveLength(0);
+  });
+
+  describe("a Still broken take", () => {
+    /** Note 2 of Take 3, sent to the agent tab, fixed, and found still broken. */
+    const CHECKED = {
+      id: "c9",
+      anchor: {
+        kind: "take",
+        take: "2026-10-29-1100-1b2c",
+        number: 3,
+        n: 2,
+        atMs: 102_180,
+        packet: ".veistra/feedback/2026-10-29-1100-1b2c-1",
+        scene: "res://levels/hallway.tscn",
+      },
+      author: "user",
+      body: "The enemy walks into the east wall",
+      status: "open",
+      sentTo: AGENTS[1],
+      replies: [
+        { by: "agent", body: "Rebaked the nav mesh", at: 5, commit: "3f2a1c9" },
+        { by: "user", body: "still clips at the door", at: 6 },
+      ],
+      created: 1,
+      updated: 6,
+    };
+    /** The draft Rust seeds the take with: the reply, at the first mark. */
+    const DRAFT = {
+      n: 1,
+      kind: "frame",
+      atMs: 12_000,
+      body: "still clips at the door",
+      followUp: "c9",
+    };
+    const history = () =>
+      within(screen.getByRole("list", { name: "Takes of note 1" }))
+        .getAllByRole("listitem")
+        .map((li) => li.textContent);
+
+    it("says which note it checks and lists that note's takes, this one last", async () => {
+      backend([DRAFT], { filed: [CHECKED] });
+      mount();
+      await waitFor(() => expect(screen.getByText("Still broken · note 2 of Take 3")).toBeTruthy());
+      expect(history()).toEqual([
+        "Take 3 · 1:42 · sent",
+        "Take 4 · 0:12 · this take, not sent yet",
+      ]);
+      // The old note's thread: the fix that did not hold, and what was said.
+      expect(screen.getByText("Rebaked the nav mesh")).toBeTruthy();
+      // SEND TO starts at the agent the note went to, not the default terminal.
+      const to = screen.getByRole("combobox", { name: "Send to" }) as HTMLSelectElement;
+      expect(to.value).toBe("agentTab:agent-2");
+    });
+
+    it("goes back to that agent as still broken, linked to the note it checks", async () => {
+      backend([DRAFT], { filed: [CHECKED] });
+      mount();
+      await screen.findByText("Still broken · note 2 of Take 3");
+      fireEvent.click(screen.getByRole("button", { name: "Send 1 note" }));
+      await waitFor(() => expect(calls("veistra/attach-to-agent")).toHaveLength(1));
+      const sent = calls("play/send")[0][1] as {
+        notes: Record<string, unknown>[];
+        sentTo: unknown;
+      };
+      expect(sent.notes[0]).toMatchObject({ n: 1, followUp: "c9" });
+      expect(sent.sentTo).toEqual(AGENTS[1]);
+      expect(calls("context/put")[0][1]).toMatchObject({
+        title: "Still broken: note 2 of Take 3, with Take 4. Read packet.md first.",
+      });
+      expect(calls("veistra/attach-to-agent")[0][1]).toMatchObject({
+        instanceId: "agent-2",
+        before: "Still broken after your fix: 1 note. Read ",
+      });
+      expect(calls("context/insert")).toHaveLength(0);
+      expect(tracked("notes_sent")[0]).toMatchObject({ notes: 1, followUp: true });
+    });
+
+    it("shows both takes in its history once Send has added this one", async () => {
+      const joined = {
+        ...CHECKED,
+        replies: [
+          CHECKED.replies[0],
+          {
+            ...CHECKED.replies[1],
+            take: {
+              take: TAKE.id,
+              number: 4,
+              packet: ".veistra/feedback/2026-10-30-1402-0f3a-1",
+              n: 1,
+              atMs: 12_000,
+            },
+          },
+        ],
+      };
+      backend([{ ...DRAFT, commentId: "c9", packet: "p" }], { filed: [joined] });
+      mount();
+      await screen.findByText("Still broken · note 2 of Take 3");
+      expect(history()).toEqual([
+        "Take 3 · 1:42 · sent",
+        "Take 4 · 0:12 · still broken · this take",
+      ]);
+      expect(screen.getByRole("button", { name: "Send 0 notes" })).toBeTruthy();
+    });
   });
 
   // Review saw an agent's fix only by its 2 s poll. The push comes at once,

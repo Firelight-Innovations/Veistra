@@ -23,7 +23,12 @@ import { invoke } from "@veistra/bridge";
 import { Pause, Play as PlayIcon, SkipBack, SkipForward, PenLine } from "lucide-react";
 import type { MarkupExport } from "@veistra/markup/layer";
 import { useCommentsChanged } from "../../../../shared/commentEvents";
-import { verdictComment, type Comment, type Verdict } from "../../../../shared/comments";
+import {
+  takeHistory,
+  verdictComment,
+  type Comment,
+  type Verdict,
+} from "../../../../shared/comments";
 import {
   contextKey,
   handToAgent,
@@ -39,8 +44,10 @@ import { clock, contactSheet, contactTimes, filmstrip, grab, STRIP_EVERY_MS } fr
 import { reviewAction, isTyping } from "./keys";
 import {
   addNote,
+  checkedOf,
   dismissMark,
   markSent,
+  noteName,
   normalize,
   pendingMarks,
   removeNote,
@@ -97,6 +104,11 @@ export interface ReviewProps {
   /** This take's live notes are in its notes now; the caller lets go of them. */
   onLiveNotesTaken: (take: string) => void;
   onPlayScene: (scene?: string) => void;
+  /**
+   * Still broken on a fixed note: Play mode gives the verdict and runs the
+   * scene again to record a take for it (#321). Unset, the verdict alone.
+   */
+  onStillBroken?: (comment: Comment, reply?: string) => void;
   onProblem: (message: string | null) => void;
   onDeleted: () => void;
   onNotice: (message: string) => void;
@@ -159,6 +171,7 @@ async function notePayload(
       contactPng: sheet,
     },
     contactMs: sheet ? times : undefined,
+    followUp: note.followUp,
   };
 }
 
@@ -200,7 +213,15 @@ export default function Review(props: ReviewProps) {
   const take = detail?.take ?? null;
   const duration = take?.durationMs ?? 0;
   const fps = take?.video.fps || 30;
-  const agent = agents.find((a) => agentKey(a) === picked) ?? agents[0] ?? null;
+  // A Still broken draft goes back to the agent its note was sent to, unless
+  // the person picks another; that agent gone, the default as for any note.
+  const checking = doc?.notes.find((n) => n.followUp && !n.commentId);
+  const sentTo = checking ? checkedOf(checking, comments)?.sentTo : undefined;
+  const agent =
+    agents.find((a) => agentKey(a) === picked) ??
+    (sentTo ? agents.find((a) => agentKey(a) === agentKey(sentTo)) : undefined) ??
+    agents[0] ??
+    null;
 
   const commit = useCallback((next: NotesDoc | null) => {
     docRef.current = next;
@@ -590,10 +611,15 @@ export default function Review(props: ReviewProps) {
         // disk, which would drop anything typed while Send ran.
         commit(markSent(docRef.current ?? d, sent.comments, sent.packet));
         const count = `${notes.length} ${notes.length === 1 ? "note" : "notes"}`;
+        const still = notes.filter((n) => n.followUp).length;
+        const checked = notes.length === 1 && still === 1 ? checkedOf(notes[0], comments) : null;
+        const first = checked ? takeHistory(checked)[0] : undefined;
         const item = await invoke<ContextRef>("context/put", {
           key: contextKey("play", takeId, "feedback"),
           kind: "file",
-          title: `Playtest feedback: ${count}. Read packet.md first.`,
+          title: first
+            ? `Still broken: ${noteName(first)}, with Take ${take.number}. Read packet.md first.`
+            : `Playtest feedback: ${count}${still > 0 ? `, ${still} still broken` : ""}. Read packet.md first.`,
           label: `Play - take ${take.number} feedback`,
           path: sent.packetMd,
         });
@@ -603,7 +629,7 @@ export default function Review(props: ReviewProps) {
               target,
               item.id,
               `${sent.packet}/packet.md`,
-              packetMessage(notes.length),
+              packetMessage(notes.length, still),
             ).catch((e: unknown) => ({ delivered: false as const, reason: errorText(e) }))
           : { delivered: false, reason: "no agent is running here" };
         track("notes_sent", {
@@ -614,6 +640,8 @@ export default function Review(props: ReviewProps) {
           clip,
           to: target?.kind ?? "none",
           delivered: delivery.delivered,
+          // Only on a Send with a Still broken note in it (X1), so earlier counts read the same.
+          ...(still > 0 ? { followUp: true } : {}),
         });
         await refreshComments();
         onNotice(
@@ -639,6 +667,7 @@ export default function Review(props: ReviewProps) {
       take,
       duration,
       takeId,
+      comments,
       clipUnavailable,
       onProblem,
       onNotice,
@@ -905,6 +934,7 @@ export default function Review(props: ReviewProps) {
         />
       </div>
       <NotesPanel
+        take={{ id: take.id, number: take.number }}
         notes={doc.notes}
         comments={comments}
         log={log}
@@ -930,7 +960,11 @@ export default function Review(props: ReviewProps) {
           newNote(ms, "mark", { fromMark: ms }, null);
         }}
         onDismiss={(ms) => change((d) => dismissMark(d, ms))}
-        onVerdict={(id, v, reply) => void verdict(id, v, reply)}
+        onVerdict={(id, v, reply) => {
+          const c = comments.find((x) => x.id === id);
+          if (v === "broken" && c && props.onStillBroken) props.onStillBroken(c, reply);
+          else void verdict(id, v, reply);
+        }}
         onPlayScene={props.onPlayScene}
         onSend={() => void send(options, agent)}
       />

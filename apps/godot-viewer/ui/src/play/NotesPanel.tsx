@@ -8,16 +8,21 @@
  * an error shows that line, because the error is the first lead for a note.
  * SEND TO lists `context/agents`, the default first (X8); Review keeps the
  * choice, because Ctrl Enter sends to it too.
+ *
+ * A Still broken take's draft (#321) says which note it checks and lists that
+ * note's takes, oldest first, this one last; its thread is the old note's.
  */
 import { useState } from "react";
 import type { Comment, Status, Verdict } from "../../../../shared/comments";
-import { statusView } from "../../../../shared/comments";
+import { statusView, takeHistory } from "../../../../shared/comments";
 import type { AgentTarget } from "../../../../shared/context";
 import { clock } from "./frames";
 import {
+  checkedOf,
   commentOf,
   errorsNear,
   nearWords,
+  noteName,
   noteStatus,
   span,
   type LogRow,
@@ -39,6 +44,8 @@ export interface SendOptions {
 export const agentKey = (a: AgentTarget) => `${a.kind}:${a.id}`;
 
 export interface NotesPanelProps {
+  /** The take under review, which a Still broken note's history ends with. */
+  take: { id: string; number: number };
   notes: NoteDraft[];
   comments: Comment[];
   log: LogRow[];
@@ -84,9 +91,38 @@ function StatusWord({ status }: { status: Status | "draft" }) {
   );
 }
 
+/**
+ * A Still broken note's takes: the one it was first sent from, each take sent
+ * as still broken since, and this take until Send adds it.
+ */
+function History(props: { checked: Comment; note: NoteDraft; take: NotesPanelProps["take"] }) {
+  const { checked, note, take } = props;
+  const history = takeHistory(checked);
+  const named = (number: number | undefined) =>
+    number !== undefined ? `Take ${number}` : "An earlier take";
+  return (
+    <ol className="pl-note__history" aria-label={`Takes of note ${note.n}`}>
+      {history.map((h, i) => (
+        <li key={`${h.take}:${h.n}`}>
+          {named(h.number)} · {clock(h.atMs)} · {i === 0 ? "sent" : "still broken"}
+          {h.take === take.id && " · this take"}
+        </li>
+      ))}
+      {!history.some((h) => h.take === take.id) && (
+        <li>
+          Take {take.number} · {clock(note.atMs)} · this take, not sent yet
+        </li>
+      )}
+    </ol>
+  );
+}
+
 function NoteCard(props: {
+  take: NotesPanelProps["take"];
   note: NoteDraft;
   comment: Comment | undefined;
+  /** The note a Still broken draft checks, before and after Send. */
+  checked: Comment | undefined;
   status: Status | "draft";
   /** The errors and warnings within 10 s, which Send attaches to the note. */
   near: LogRow[];
@@ -98,9 +134,11 @@ function NoteCard(props: {
   onVerdict: (verdict: Verdict, reply?: string) => void;
   onPlayScene: () => void;
 }) {
-  const { note, comment, status, selected } = props;
+  const { note, comment, checked, status, selected } = props;
   const [reply, setReply] = useState("");
   const draft = status === "draft";
+  const first = checked ? takeHistory(checked)[0] : undefined;
+  const thread = comment ?? checked;
   const scene = comment?.anchor.kind === "take" ? comment.anchor.scene : undefined;
   const near = nearWords(props.near);
   return (
@@ -119,6 +157,12 @@ function NoteCard(props: {
         <span className="pl-note__spacer" />
         <StatusWord status={status} />
       </button>
+      {checked && first && (
+        <div className="pl-note__checks">
+          <span className="pl-note__checks-title">Still broken · {noteName(first)}</span>
+          <History checked={checked} note={note} take={props.take} />
+        </div>
+      )}
       {draft && selected ? (
         <>
           <label className="pl-sr" htmlFor={`note-${note.n}`}>
@@ -178,9 +222,9 @@ function NoteCard(props: {
           </button>
         </div>
       )}
-      {comment && (comment.replies ?? []).length > 0 && (
+      {thread && (thread.replies ?? []).length > 0 && (
         <div className="pl-note__thread">
-          {(comment.replies ?? []).map((r) => (
+          {(thread.replies ?? []).map((r) => (
             <p key={r.at}>
               <strong>{r.by === "agent" ? "Agent" : "You"}:</strong> {r.body}
             </p>
@@ -204,7 +248,7 @@ function NoteCard(props: {
             <button
               type="button"
               className="k-btn k-btn--primary k-btn--sm"
-              title={`Run the game in ${scene ?? "the scene it ran"} with Record on`}
+              title={`Run the game in ${scene ?? "the scene it ran"} and record that run`}
               onClick={props.onPlayScene}
             >
               Play {scene ? scene.slice(scene.lastIndexOf("/") + 1) : "again"}
@@ -240,6 +284,7 @@ export function NotesPanel(props: NotesPanelProps) {
     note,
     status: noteStatus(note, props.comments),
     comment: commentOf(note, props.comments),
+    checked: checkedOf(note, props.comments),
   }));
   const open = rows.filter((r) => r.status !== "resolved");
   const resolved = rows.filter((r) => r.status === "resolved");
@@ -249,8 +294,10 @@ export function NotesPanel(props: NotesPanelProps) {
     return (
       <NoteCard
         key={r.note.n}
+        take={props.take}
         note={r.note}
         comment={r.comment}
+        checked={r.checked}
         status={r.status}
         near={errorsNear(props.log, from, to, NOTE_ERROR_MS)}
         selected={props.selected === r.note.n}
