@@ -60,4 +60,6 @@ export interface ModeProps {
   statusError: string | null;
   /** Read the status again; `refresh` searches for the engine afresh. */
   reloadStatus: (refresh: boolean) => Promise<void>;
+  /** Counts the cluster's project moves; what a mode read from the old root, it reads again. */
+  epoch: number;
 }

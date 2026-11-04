@@ -71,7 +71,7 @@ export interface SceneModeProps extends ModeProps {
   onPlay: (scene: string, project: string) => void;
 }
 
-export default function SceneMode({ modeSwitch, status, onPlay }: SceneModeProps) {
+export default function SceneMode({ modeSwitch, status, epoch, onPlay }: SceneModeProps) {
   const [state, setState] = useState<GodotViewerState | null>(null);
   const [scene, setScene] = useState<string | undefined>(undefined);
   const [image, setImage] = useState<string | null>(null);
@@ -108,14 +108,17 @@ export default function SceneMode({ modeSwitch, status, onPlay }: SceneModeProps
     }
   }, [scene]);
 
+  // Again after the cluster's project moves: the scenes and comments are the
+  // new root's.
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, epoch]);
 
   useEffect(() => {
     void refreshComments();
-    reportPainted();
-  }, [refreshComments]);
+  }, [refreshComments, epoch]);
+
+  useEffect(() => reportPainted(), []);
 
   // While a refresh runs, poll for its phase; when it stops, load the result.
   const jobRunning = state?.job?.running === true;

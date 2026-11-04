@@ -141,7 +141,8 @@ export interface PlayModeProps extends ModeProps {
 }
 
 export default function PlayMode(props: PlayModeProps) {
-  const { status, statusError, reloadStatus, frameRect, overlays, project, liveNotes } = props;
+  const { status, statusError, reloadStatus, epoch, frameRect, overlays, project, liveNotes } =
+    props;
   const { onProject: setProject, setLiveNotes, runRequest, onRunHandled } = props;
   const [info, setInfo] = useState<RunInfo | null>(null);
   const [live, setLive] = useState<Live | null>(null);
@@ -223,15 +224,18 @@ export default function PlayMode(props: PlayModeProps) {
     }
   }, []);
 
+  useEffect(() => reportPainted(), []);
+
+  // Again after the cluster's project moves: notes, takes and the addon are
+  // the new root's.
   useEffect(() => {
     void refreshComments();
     void loadTakes();
-    reportPainted();
-  }, [refreshComments, loadTakes]);
+  }, [refreshComments, loadTakes, epoch]);
 
   useEffect(() => {
     if (chosenRel !== undefined) void loadAddon(chosenRel);
-  }, [chosenRel, loadAddon]);
+  }, [chosenRel, loadAddon, epoch]);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);

@@ -13,7 +13,9 @@
  *
  * What both modes read, or what must outlive a switch, lives here too: the
  * Godot status, the project Play chose, and the notes drawn on the live game
- * for the take being recorded, which review folds in later.
+ * for the take being recorded, which review folds in later. The status is
+ * read again whenever the cluster's project moves: it says whether this is
+ * the read-only main checkout, and a move to a worktree changes that.
  */
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { OPENED_EVENT, on, session } from "@veistra/bridge";
@@ -50,6 +52,7 @@ export default function App() {
   const [liveNotes, setLiveNotes] = useState<LiveNote[]>([]);
   const [runRequest, setRunRequest] = useState<RunRequest | null>(null);
   const requests = useRef(0);
+  const [epoch, setEpoch] = useState(0);
   const { frameRect, overlays } = useShellPlacement();
 
   const switchMode = useCallback((next: GodotMode) => {
@@ -105,6 +108,21 @@ export default function App() {
     void reloadStatus(false);
   }, [reloadStatus]);
 
+  // The title bar's switcher, or an agent's `set_project`, can repoint this
+  // cluster while the pane is open, from the main checkout to a worktree. The
+  // backend works out read-only from the root on every call, so the answer
+  // kept from before the move is wrong until it is asked again, and so is
+  // whatever each mode read from the old root. The shell relays the event
+  // only into frames of the cluster it names.
+  useEffect(
+    () =>
+      on("project:changed", () => {
+        setEpoch((e) => e + 1);
+        void reloadStatus(false);
+      }),
+    [reloadStatus],
+  );
+
   // `veistra/open` reaches this pane with a payload: Play scene from another
   // pane, or an agent, asks for a scene in a project. An open of the `play`
   // id with nothing to run still means "show Play".
@@ -120,7 +138,7 @@ export default function App() {
 
   if (mode === null) return null;
   const modeSwitch = { value: mode, options: MODES, onChange: switchMode };
-  const shared = { modeSwitch, status, statusError, reloadStatus };
+  const shared = { modeSwitch, status, statusError, reloadStatus, epoch };
   return (
     <Suspense fallback={null}>
       {mode === "play" ? (

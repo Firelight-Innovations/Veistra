@@ -57,7 +57,12 @@ const STATE = {
 
 function backend(
   put: () => unknown = () => ({ key: "k" }),
-  opts: { state?: object; comments?: unknown[]; godotFound?: string | null } = {},
+  opts: {
+    state?: object;
+    comments?: unknown[];
+    godotFound?: string | null;
+    readOnly?: () => boolean;
+  } = {},
 ) {
   bridge.invoke.mockImplementation((method: string) => {
     switch (method) {
@@ -67,7 +72,7 @@ function backend(
         return Promise.resolve({ png: "AAAA" });
       case "godot/status":
         return Promise.resolve({
-          environment: { root: "C:/p", readOnly: false },
+          environment: { root: "C:/p", readOnly: opts.readOnly?.() ?? false },
           executable: { found: opts.godotFound ?? null, problems: [], setting: "" },
           projects: [],
         });
@@ -155,6 +160,24 @@ describe("Godot Viewer toolbar", () => {
     const open = inBar.getByRole("button", { name: "Open in Godot" });
     expect(container.querySelector(".k-send-footer")?.contains(open)).toBe(false);
     expect(screen.getAllByRole("button", { name: /Open in Godot/ })).toHaveLength(1);
+  });
+
+  // Read once at mount, the status kept the main checkout's read-only answer
+  // after the cluster moved to a worktree, and Open in Godot stayed disabled.
+  it("enables Open in Godot once the cluster moves to a worktree", async () => {
+    let readOnly = true;
+    backend(undefined, { godotFound: "C:/godot.exe", readOnly: () => readOnly });
+    render(<App />);
+    const open = (await screen.findByRole("button", {
+      name: "Open in Godot",
+    })) as HTMLButtonElement;
+    await waitFor(() => expect(open.title).toMatch(/read-only/));
+    expect(open.disabled).toBe(true);
+    readOnly = false;
+    events.get("project:changed")?.({ clusterId: "c1" });
+    await waitFor(() => expect(open.disabled).toBe(false));
+    expect(open.title).not.toMatch(/read-only/);
+    expect(calls("godot-viewer/state").length).toBeGreaterThan(1);
   });
 
   it("says when the tree was read in the chip", async () => {

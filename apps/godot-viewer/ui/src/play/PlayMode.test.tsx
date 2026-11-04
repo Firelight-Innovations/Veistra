@@ -183,6 +183,8 @@ interface World {
   embed: { kind: string; reason?: string; cause?: string };
   /** While set, `play/state` answers wait here, to be let go together. */
   held: (() => void)[] | null;
+  /** Whether the cluster is on the read-only main checkout, as `godot/status` says. */
+  readOnly: boolean;
 }
 
 function liveBackend(over: Partial<World> = {}): World {
@@ -195,6 +197,7 @@ function liveBackend(over: Partial<World> = {}): World {
     projects: [],
     embed: SESSION.embed,
     held: null,
+    readOnly: false,
     ...over,
   };
   const state = (keySince: number) => ({
@@ -249,10 +252,12 @@ function liveBackend(over: Partial<World> = {}): World {
         return Promise.resolve({ png: "AAAA", width: 4, height: 3, time: 1, scene: "" });
       case "godot/status":
         return Promise.resolve({
-          environment: { root: "C:/p", readOnly: false },
+          environment: { root: "C:/p", readOnly: world.readOnly },
           executable: { found: null, problems: [], setting: "" },
           projects: world.projects,
         });
+      case "play/addon-status":
+        return Promise.resolve({ addon: "no", needsRestart: false, readOnly: world.readOnly });
       case "comments/list":
         return Promise.resolve([]);
       case "play/takes":
@@ -316,6 +321,33 @@ describe("Play scene from the Godot viewer", () => {
     events.get("veistra:opened")?.({ scene: "C:/elsewhere.tscn", project: "games/b" });
     events.get("veistra:opened")?.(null);
     expect(calls("play/run")).toHaveLength(0);
+  });
+});
+
+// The banner and the read-only flag were read once, when the pane opened, and
+// stayed on the main checkout's answer after the cluster moved to a worktree,
+// which is where the banner tells people to go.
+describe("Play after the cluster's project moves", () => {
+  it("drops the read-only banner and offers capture once it is on a worktree", async () => {
+    const world = liveBackend({ readOnly: true, projects: [project("game")] });
+    render(<App />);
+    await screen.findByText(/This is the main checkout, which is read-only here/);
+    expect(screen.queryByRole("button", { name: "Enable capture" })).toBeNull();
+    world.readOnly = false;
+    events.get("project:changed")?.({ clusterId: "c1", projectPath: "C:/p-worktree" });
+    await waitFor(() => expect(screen.queryByText(/main checkout/)).toBeNull());
+    expect(await screen.findByRole("button", { name: "Enable capture" })).toBeTruthy();
+  });
+
+  it("reads the takes and notes of the new root again", async () => {
+    liveBackend();
+    render(<App />);
+    await screen.findByText("Playing");
+    const takes = calls("play/takes").length;
+    const notes = calls("comments/list").length;
+    events.get("project:changed")?.({ clusterId: "c1" });
+    await waitFor(() => expect(calls("play/takes").length).toBeGreaterThan(takes));
+    expect(calls("comments/list").length).toBeGreaterThan(notes);
   });
 });
 
