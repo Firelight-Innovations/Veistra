@@ -83,6 +83,10 @@ const BASE = {
   parts: [],
   renders: [],
   job,
+  // `blender-viewer/state` has answered with these since #317.
+  version: null,
+  versions: [],
+  locked: null,
 };
 
 const EXPORTED = {

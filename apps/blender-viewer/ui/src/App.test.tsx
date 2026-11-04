@@ -6,7 +6,7 @@
  * as a file.
  *
  * The header is the shared viewer toolbar: Editor · Renders · Compare (Compare
- * drawn but not chosen until #319), the file, a chip that says whether the
+ * drawn but not chosen until the file has two versions), the file, a chip that says whether the
  * export still matches the .blend, the Stills · 3D · Wire switch, and Open in
  * Blender, which starts Blender in Editor mode. Editor mode with Blender in the
  * pane is `editor/EditorMode.test.tsx`.
@@ -24,7 +24,7 @@ vi.mock("@veistra/bridge", () => ({
 }));
 
 import App from "./App";
-import { COMPARE_LATER } from "./modes";
+import { COMPARE_NEEDS_TWO } from "./modes";
 
 const STATE = {
   blender: {
@@ -189,15 +189,41 @@ describe("Blender Viewer toolbar", () => {
     expect(screen.getAllByRole("button", { name: /Open in Blender/ })).toHaveLength(1);
   });
 
-  it("draws Compare and says why it cannot be chosen yet, instead of leaving it out", async () => {
-    backend();
+  // Compare is built (#319); what is left of "cannot be chosen yet" is a file
+  // with fewer than two versions, where there is nothing to compare.
+  it("draws Compare and says why it cannot be chosen with one version, instead of leaving it out", async () => {
+    backend(undefined, { versions: [1] });
     await renders();
     const compare = screen.getByRole("tab", { name: "Compare" });
     expect(compare.getAttribute("aria-disabled")).toBe("true");
-    expect(compare.getAttribute("title")).toBe(COMPARE_LATER);
+    expect(compare.getAttribute("title")).toBe(COMPARE_NEEDS_TWO);
     fireEvent.click(compare);
     expect(screen.getByRole("tab", { name: "Renders" }).getAttribute("aria-selected")).toBe("true");
     expect(compare.getAttribute("aria-selected")).toBe("false");
+  });
+
+  it("lets Compare be chosen once the file has two versions", async () => {
+    backend(undefined, { versions: [2, 1] });
+    await renders();
+    const compare = screen.getByRole("tab", { name: "Compare" });
+    expect(compare.getAttribute("aria-disabled")).toBeNull();
+    expect(compare.getAttribute("title")).toBeNull();
+  });
+
+  it("posts a part's note with the file and the version it was made on", async () => {
+    const version = { n: 4, author: "agent", time: 1, commit: null, branch: null, triangles: 12 };
+    backend(undefined, { version: { ...version, sourceLocked: false }, versions: [4, 3] });
+    await renders("Wire");
+    fireEvent.click(await screen.findByRole("button", { name: /Frame/ }));
+    fireEvent.change(screen.getByPlaceholderText("What should change about this part?"), {
+      target: { value: "Thicker legs" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+    await waitFor(() => expect(calls("comments/create")).toHaveLength(1));
+    expect(calls("comments/create")[0][1]).toMatchObject({
+      anchor: { kind: "mesh", part: "Frame", material: "none", blend: "bed.blend", version: 4 },
+      body: "Thicker legs",
+    });
   });
 
   it("opens on Editor, which is Blender itself where Blender can open in the pane", async () => {

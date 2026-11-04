@@ -4,14 +4,24 @@
  * (`blender-viewer/state`'s `editor`, `editorSurface.ts`); on main, in a cloud
  * session or with no Blender it is the read-only viewer of the last export.
  * Renders is what an export made: the preview renders, the `.glb` in 3D, the
- * wireframe pass and the parts list, with comments and markup. Compare is drawn
- * and cannot be chosen until it is built (#319).
+ * wireframe pass and the parts list, with comments and markup. Compare is what
+ * changed between two kept versions (`compare/CompareMode.tsx`, #319), loaded
+ * lazily; it cannot be chosen until the file has two.
  *
  * The header is the shared `ViewerToolbar`, so it reads like Godot Editor and
  * Play: the environment and file, freshness, actions, leave; the backend's
  * reason is one line under it.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { reportPainted } from "@veistra/bridge";
 import {
   Box,
@@ -53,7 +63,7 @@ import {
 } from "./rpc";
 import ModelPreview from "./ModelPreview";
 import EditorMode from "./editor/EditorMode";
-import { EXPORT_VIEWS, MODES, viewFor, type BlenderMode, type ExportView } from "./modes";
+import { EXPORT_VIEWS, modesFor, viewFor, type BlenderMode, type ExportView } from "./modes";
 import { exportChip, hasExport } from "./chip";
 import { footerIsCompact } from "./layout";
 import { reconcileBlend, selectionWasDropped } from "./selection";
@@ -70,6 +80,8 @@ import { useMarkup } from "../../../shared/useMarkup";
 import { AUTO_SEND_KEY, BLENDER_TARGET, TIP_KEY } from "../../../shared/markupFlow";
 import { MarkupBar, MarkupTip, PreviousMarkup } from "../../../shared/MarkupPanels";
 import "./App.css";
+
+const CompareMode = lazy(() => import("./compare/CompareMode"));
 
 /**
  * Which Editor surfaces this app draws besides the viewer. Both are
@@ -152,6 +164,8 @@ export default function App() {
   const [posting, setPosting] = useState(false);
   const [copied, setCopied] = useState(false);
   const [trigger, setTrigger] = useState<MarkupTrigger | null>(null);
+  /** B as the Editor banner's "Compare with v<n>" asked for it. */
+  const [compareB, setCompareB] = useState<number | null>(null);
   const autoStartedFor = useRef<number | null>(null);
   const lastSeenMtime = useRef<number | null>(null);
   const [root, setRoot] = useState<HTMLDivElement | null>(null);
@@ -292,7 +306,15 @@ export default function App() {
     setPosting(true);
     try {
       await createComment({
-        anchor: { kind: "mesh", part: selected.name, material: selected.materials[0] ?? "none" },
+        // The file and the version it was made on, so Compare can find the
+        // notes from A (#319).
+        anchor: {
+          kind: "mesh",
+          part: selected.name,
+          material: selected.materials[0] ?? "none",
+          ...(state?.rel ? { blend: state.rel } : {}),
+          ...(state?.version ? { version: state.version.n } : {}),
+        },
         body: draft.trim(),
       });
       setDraft("");
@@ -361,18 +383,38 @@ export default function App() {
   };
 
   // Each mode opens on its own view; a mode drawn disabled is never chosen.
+  const modes = modesFor(state?.versions.length ?? 0);
   const switchMode = (next: BlenderMode) => {
-    if (MODES.find((m) => m.value === next)?.disabled) return;
+    if (modes.find((m) => m.value === next)?.disabled) return;
+    if (next === "compare") setCompareB(null);
     setMode(next);
     setView(viewFor(next));
   };
-  const modeSwitch = { value: mode, options: MODES, onChange: switchMode };
+  const modeSwitch = { value: mode, options: modes, onChange: switchMode };
 
   if (!state) {
     return (
       <div className="bv" ref={setRoot}>
         <p className="bv__hint">{error ?? "Loading…"}</p>
       </div>
+    );
+  }
+
+  if (mode === "compare") {
+    return (
+      <Suspense fallback={<p className="bv__hint">Loading Compare…</p>}>
+        <CompareMode
+          modeSwitch={modeSwitch}
+          viewer={state}
+          initialB={compareB}
+          comments={comments}
+          onCommentsChanged={refreshComments}
+          onOpenBlend={async (path) => {
+            await openEditor(path);
+            switchMode("editor");
+          }}
+        />
+      </Suspense>
     );
   }
 
@@ -386,6 +428,10 @@ export default function App() {
         onPick={setBlend}
         frameRect={frameRect}
         overlays={overlays}
+        onCompare={(n) => {
+          setCompareB(n);
+          setMode("compare");
+        }}
       />
     );
   }

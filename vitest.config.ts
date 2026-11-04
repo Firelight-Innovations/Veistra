@@ -95,6 +95,10 @@ import { defineConfig } from "vitest/config";
  * person reading the test sees it, rather than in a glob three directories up.
  */
 export default defineConfig({
+  // A `.glb` is a binary asset, so `?inline` hands a test its bytes as a data
+  // URL; Vite does not know the extension otherwise. Blender's Compare reads
+  // the cube pair this way (`apps/blender-viewer/ui/src/compare/`).
+  assetsInclude: ["**/*.glb"],
   test: {
     environment: "node",
     include: [

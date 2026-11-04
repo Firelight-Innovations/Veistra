@@ -59,9 +59,7 @@ export type Anchor =
  *  whether a screenshot exists is decided by whether {@link CreateCommentInput.screenshotBase64}
  *  actually wrote one, not by what a draft claims. */
 export type AnchorInput =
-  | { kind: "node"; path: string }
-  | MeshAnchor
-  | { kind: "scene"; scene: string; time: number };
+  { kind: "node"; path: string } | MeshAnchor | { kind: "scene"; scene: string; time: number };
 
 export type Author = "user" | "agent";
 
