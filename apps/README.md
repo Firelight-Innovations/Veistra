@@ -40,6 +40,7 @@ apps/
   agent-tab/ui/           Agent's frontend: one Claude session in this cluster's worktree
   agents/ui/              Agents' frontend: Veistra Cloud's agent machines and sessions
   costs/ui/               Cost Tracker's frontend: this month's Google Cloud spend and forecast
+  usage/ui/               Usage's frontend: the Veistra account's spend, runs and monthly limit
   projects/ui/            Projects' frontend: the project switcher and its embedded Plane workspace
   design/ui/              Design Mode's frontend
   schematify/ui/          Schematify's frontend
