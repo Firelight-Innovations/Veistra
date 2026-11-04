@@ -26,7 +26,11 @@ export const theWindow: Body = {
     { kind: "mock", view: "title-bar", caption: "The menu bar and the window controls beside it." },
     {
       kind: "text",
-      body: "Top of the window. Holds the menu bar — **File**, **Edit**, **Apps**, **View**, **Run**, **Terminal**, **Help** — the open cluster's environment, the **cluster switcher** pill in the middle, search and **Review & merge**, and the window controls. When the window is narrow the menus collapse behind a single hamburger button rather than wrapping.",
+      body: "Top of the window. On the left is the menu bar: **File**, **Edit**, **Apps**, **View**, **Run**, **Terminal**, **Help**. In the middle is the **cluster switcher** pill with search beside it, and the two stay centred on the window together. On the right are **Upgrade**, a `+` for a new agent session, the terminal, **Agents** and **Clusters** toggles, **Settings**, and then the window controls.",
+    },
+    {
+      kind: "text",
+      body: "As the window narrows, the bar folds up instead of overlapping. First the right-hand buttons fold into one **More actions** button. Each of its rows does what its button did and shows the same shortcut. Next, the menus fold behind a hamburger button. The window controls never fold. If space is still short, search shrinks to its magnifier and `Ctrl+K`, and then the pill shortens the cluster's name.",
     },
     {
       kind: "text",
@@ -53,7 +57,7 @@ export const theWindow: Body = {
     },
     {
       kind: "text",
-      body: "The title bar also holds a warning-triangle badge while any tool's health is not **ok** — **needs update**, **not tracked**, or **not installed**. It counts the stack's authoring tools. On a fresh machine they all read **not installed**, which is correct rather than broken; see **The stack, end to end** for why.",
+      body: "The title bar also holds a warning-triangle badge while any tool's health is not **ok** — **needs update**, **not tracked**, or **not installed**. It counts the stack's authoring tools. On a fresh machine they all read **not installed**, which is correct rather than broken; see **The stack, end to end** for why. In a narrow window the badge is the first row of **More actions** instead, and that button shows a dot.",
     },
 
     { kind: "heading", body: "3. The tool window" },

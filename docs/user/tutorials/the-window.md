@@ -16,14 +16,28 @@ _The five bands, each named by the arrow pointing at it._
 
 ## 1. The title bar
 
-<!-- SCREENSHOT: the title bar — menu bar and window controls, 1440x60 -->
+<!-- SCREENSHOT: the title bar — menu bar, project pill and search, right-hand buttons, window controls, 1440x60 -->
 
-_The menu bar and the window controls beside it._
+_The menus on the left, the project pill and search in the middle, the buttons and window controls on the right._
 
-Top of the window. Holds the menu bar — **File**, **Edit**, **Apps**, **View**,
-**Run**, **Terminal**, **Help** — and the window controls. When the window is
-narrow the menus collapse behind a single hamburger button rather than
-wrapping.
+Top of the window. On the left is the menu bar: **File**, **Edit**, **Apps**,
+**View**, **Run**, **Terminal**, **Help**. In the middle is the project pill,
+which names the project and the cluster you are in; click it to switch.
+The search field sits beside it, and the two stay centred on the window
+together. On the right are **Upgrade**, a `+` for a new agent session, the
+terminal, **Agents** and **Clusters** toggles, **Settings**, and then the window
+controls.
+
+As the window narrows, the bar folds up instead of overlapping. First the
+right-hand buttons fold into one **More actions** button (`…`). Each of its
+rows does what its button did and shows the same shortcut. Next, the menus
+fold behind a hamburger button. The window controls never fold. If space is
+still short, the search field shrinks to its magnifier and `Ctrl+K`, and then
+the pill shortens the cluster's name.
+
+A warning badge appears among the right-hand buttons only while a tool needs
+attention. In a narrow window it becomes the first row of **More actions**,
+and the button shows a dot.
 
 **Apps** and the switcher bar's `+` menu are the same list, built once.
 
