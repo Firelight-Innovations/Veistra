@@ -1,10 +1,11 @@
-//! The methods Play and the Godot Viewer answer, over the bridge.
+//! The methods the Godot app answers over the bridge, for both of its modes:
+//! Editor's `godot-viewer/*` and Play's `play/*`, with `godot/*` shared.
 //!
 //! [`Ctx`] carries everything a method needs - which cluster asked, its
 //! environment root, whether that environment is the read-only main checkout,
 //! and how to probe for the engine - so the handlers are plain functions the
-//! tests drive with a fake `godot` and a tempdir, and `apps::play` /
-//! `apps::godot_viewer` only have to build one from the live application.
+//! tests drive with a fake `godot` and a tempdir, and `apps::godot_viewer`
+//! only has to build one from the live application.
 //!
 //! What is allowed on the read-only main checkout (#163): **running and viewing
 //! are**, because they read the project. Installing the capture addon is not,
@@ -117,7 +118,19 @@ pub fn common(ctx: &Ctx, method: &str, raw: Option<&Value>) -> Option<Result<Val
     })
 }
 
-/// Play's methods.
+/// The Godot app's methods, whichever mode asked. One entry because the app id
+/// and its `play` alias are one frontend (DECISIONS X3): Editor mode calls
+/// `play/run` when F5 starts the scene it shows, and Play mode reads
+/// `godot-viewer/state` for its scene picker.
+pub fn godot(ctx: &Ctx, method: &str, raw: Option<&Value>) -> Option<Result<Value, RpcError>> {
+    if method.starts_with("godot-viewer/") || method.starts_with("godot/preview") {
+        viewer(ctx, method, raw)
+    } else {
+        play(ctx, method, raw)
+    }
+}
+
+/// Play mode's methods.
 pub fn play(ctx: &Ctx, method: &str, raw: Option<&Value>) -> Option<Result<Value, RpcError>> {
     if let Some(answer) = common(ctx, method, raw) {
         return Some(answer);
@@ -147,7 +160,7 @@ pub fn play(ctx: &Ctx, method: &str, raw: Option<&Value>) -> Option<Result<Value
     }))
 }
 
-/// The Godot Viewer's methods.
+/// Editor mode's methods: the headless scene dump, its render and markup.
 pub fn viewer(ctx: &Ctx, method: &str, raw: Option<&Value>) -> Option<Result<Value, RpcError>> {
     if let Some(answer) = common(ctx, method, raw) {
         return Some(answer);
@@ -828,22 +841,14 @@ fn preview_glb_bytes(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
     Ok(json!({ "base64": BASE64.encode(&bytes), "size": bytes.len() }))
 }
 
-/// Run `f` with a [`Ctx`] built from the live application: the cluster's
-/// environment, the `godot.executablePath` setting, and the real machine probe.
-pub fn with_live<R>(
-    app: &tauri::AppHandle,
-    context: &crate::apps::CallContext,
-    f: impl FnOnce(&Ctx) -> R,
-) -> R {
-    with_live_for(app, context, None, f)
-}
-
-/// The apps whose pane shows the game: Play, and the Godot app it moves into.
+/// The ids whose pane can show the game: the Godot app and its `play` alias.
 const GAME_APPS: &[&str] = &["play", "godot-viewer"];
 
-/// [`with_live`] for a call from a pane instance, which keys the game's box
-/// and window. With none, the cluster's Play pane that last reported a box
-/// stands in for it, so an agent's `play/run` lands in that pane.
+/// Run `f` with a [`Ctx`] built from the live application: the cluster's
+/// environment, the `godot.executablePath` setting, the real machine probe,
+/// and the pane instance that asked, which keys the game's box and window.
+/// With none, the cluster's Godot pane that last reported a box stands in for
+/// it, so an agent's `play/run` lands in that pane.
 pub fn with_live_for<R>(
     app: &tauri::AppHandle,
     context: &crate::apps::CallContext,
@@ -970,12 +975,7 @@ mod tests {
     }
 
     fn call(c: &Ctx, method: &str, params: Value) -> Result<Value, RpcError> {
-        let answer = if method.starts_with("godot-viewer/") || method.starts_with("godot/preview") {
-            viewer(c, method, Some(&params))
-        } else {
-            play(c, method, Some(&params))
-        };
-        answer.expect("a method these modules answer")
+        godot(c, method, Some(&params)).expect("a method these modules answer")
     }
 
     fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
@@ -1528,9 +1528,40 @@ mod tests {
             call(&c, "play/nope", json!({})).unwrap_err().code,
             METHOD_NOT_FOUND
         );
-        // Comments are answered before this module is asked (`apps::play::call`).
+        // Comments are answered before this module is asked (`apps::godot_viewer`).
         assert_eq!(
             call(&c, "comments/list", json!({})).unwrap_err().code,
+            METHOD_NOT_FOUND
+        );
+    }
+
+    /// Editor mode starts a run with F5 and Play mode lists scenes for its
+    /// picker, so one entry has to answer both prefixes for either id.
+    #[test]
+    fn one_entry_answers_both_modes() {
+        let w = world(false);
+        let c = ctx(&w, false, &real_check);
+        let status = godot(&c, "godot/status", Some(&json!({})))
+            .unwrap()
+            .unwrap();
+        assert_eq!(status["projects"][0]["rel"], "game");
+        let play = godot(&c, "play/state", Some(&json!({ "since": 0 })))
+            .unwrap()
+            .unwrap();
+        assert!(play["run"].is_null(), "nothing is running yet");
+        let scene = godot(&c, "godot-viewer/state", Some(&json!({})))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            scene["scene"], "res://main.tscn",
+            "the main scene by default"
+        );
+        assert_eq!(scene["scenes"], json!(["res://main.tscn"]));
+        assert_eq!(
+            godot(&c, "godot-viewer/nope", Some(&json!({})))
+                .unwrap()
+                .unwrap_err()
+                .code,
             METHOD_NOT_FOUND
         );
     }

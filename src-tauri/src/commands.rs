@@ -466,6 +466,10 @@ pub enum StartingLayout {
 /// rather than spelled out at each call site in [`starting_layout_preset`] —
 /// a different id from `ux/viewers` than the one guessed here is then a
 /// one-line fix rather than a hunt through a tree of `PresetNode::Split`s.
+///
+/// `godot` and `play` are one app since #313: `play` is the registry alias
+/// that opens the Godot app in Play mode, so the layout gets one pane in each
+/// mode without the frontend being told which pane is which.
 struct ViewerApps {
     godot: &'static str,
     blender: &'static str,
@@ -495,8 +499,8 @@ fn starting_layout_preset(layout: StartingLayout) -> presets::PresetNode {
             children: vec![app_pane("files"), terminal_pane()],
         },
         StartingLayout::WatchAgent => app_pane("agents"),
-        // Explorer · Godot viewer · Play · terminal — matches the New
-        // Cluster dialog's own description of this layout.
+        // Explorer · Godot in Editor mode · Godot in Play mode · terminal —
+        // matches the New Cluster dialog's own description of this layout.
         StartingLayout::Godot => PresetNode::Split {
             dir: SplitDir::Row,
             sizes: vec![0.2, 0.8],

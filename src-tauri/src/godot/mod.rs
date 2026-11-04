@@ -24,7 +24,7 @@ pub mod notes;
 pub mod preview;
 /// A run recorded to `take.mp4` (Windows).
 pub mod record;
-/// The methods `play` and `godot-viewer` answer.
+/// The methods the Godot app answers, in both modes and under both ids.
 pub mod rpc;
 /// A game run as a child process, with a bounded classified log.
 pub mod runner;
@@ -50,7 +50,7 @@ use std::sync::Mutex;
 pub static SETTINGS: crate::settings::Group = crate::settings::Group {
     id: "godot",
     title: "Godot",
-    description: "The engine Play and the Godot Viewer run, and how to reach it.",
+    description: "The engine the Godot app runs in both of its modes, and how to reach it.",
     order: 111,
     settings: SETTINGS_ROWS,
 };
@@ -68,7 +68,7 @@ static SETTINGS_ROWS: &[crate::settings::Setting] = &[crate::settings::Setting {
         placeholder: "C:\\Tools\\Godot\\Godot_v4.3-stable_win64.exe",
     },
     applies: crate::settings::Applies::Next {
-        what: "the next time Play or the Godot Viewer looks for it",
+        what: "the next time the Godot app looks for it",
     },
 }];
 

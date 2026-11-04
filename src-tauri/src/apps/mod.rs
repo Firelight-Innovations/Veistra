@@ -36,7 +36,6 @@ pub mod method_catalog;
 // project*` methods, rather than this having a `Dispatch` of its own — the
 // New Project page is still Home, and `REGISTRY` has one row for it.
 pub(crate) mod home_create;
-mod play;
 // `pub(crate)` rather than private: `lib.rs` needs `apps::projects::WakeManager`
 // to `.manage()` it, the same reason `design_comments::Comments` lives outside
 // `apps::design` altogether — this one stays nested because nothing else in
@@ -241,14 +240,13 @@ const REGISTRY: &[Registered] = &[
     },
     Registered {
         id: "godot-viewer",
-        name: "Godot Viewer",
-        description: "The scene an agent's headless Godot run last produced — read-only, node tree \
-                      plus a viewport render.",
-        // A fourth app sharing no dispatch with anything else: this is the
-        // first of three (with `blender-viewer` and `play`) whose only real
-        // work today is `crate::comments` — see `godot_viewer.rs`.
+        name: "Godot",
+        description: "Look at the scene an agent's headless run produced in Editor mode, or play \
+                      the game in the pane in Play mode and record what you see.",
+        // One app with two modes (DECISIONS X3). The id is the one saved
+        // layouts already hold; `play` below is the same frontend in Play mode.
         call: godot_viewer::call,
-        call_for: None,
+        call_for: Some(godot_viewer::call_for),
         places_window: true,
     },
     Registered {
@@ -263,10 +261,14 @@ const REGISTRY: &[Registered] = &[
     Registered {
         id: "play",
         name: "Play",
-        description: "Run the environment's debug build in a pane, and capture a comment on what \
-                      you see.",
-        call: play::call,
-        call_for: Some(play::call_for),
+        description: "The Godot app, opened in Play mode.",
+        // An alias, not a second app: [`ALIASES`] serves it the Godot app's
+        // frontend in Play mode, it shares that dispatch, and the Apps menu
+        // leaves it out. Still a row because layouts saved before the move, the
+        // Godot starting layout and agents' `veistra/open` all name `play`, and
+        // its pane keeps the game's box under its own instance id.
+        call: godot_viewer::call,
+        call_for: Some(godot_viewer::call_for),
         places_window: true,
     },
     Registered {
@@ -504,8 +506,9 @@ pub fn openables(app: &AppHandle) -> Vec<Openable> {
 fn compose_openables(installed: Vec<Openable>) -> Vec<Openable> {
     REGISTRY
         .iter()
-        // A page's app is reached through its chip, never opened into a pane.
-        .filter(|a| !crate::pages::is_page_app(a.id))
+        // A page's app is reached through its chip, never opened into a pane,
+        // and an alias would list its app twice.
+        .filter(|a| !crate::pages::is_page_app(a.id) && !is_alias(a.id))
         .map(|a| Openable {
             id: a.id.to_string(),
             name: a.name.to_string(),
@@ -533,8 +536,9 @@ fn compose_openables(installed: Vec<Openable>) -> Vec<Openable> {
 // pure function today and tested as one.
 
 /// What a new instance of `id` is called, before its own frontend renames the
-/// tab. Falls back to the id, which is what a surface with no registry entry
-/// would have shown anyway and is better than an untitled tab.
+/// tab. Falls back to the registry's name, for an alias the menu leaves out,
+/// and then to the id, which is what a surface with no registry entry would
+/// have shown anyway and is better than an untitled tab.
 ///
 /// Looks through [`openables`] rather than `REGISTRY` alone so a plugin surface
 /// gets its declared name too. The fallback still matters and is now more
@@ -546,7 +550,13 @@ pub fn display_name(app: &AppHandle, id: &str) -> String {
         .into_iter()
         .find(|o| o.id == id)
         .map(|o| o.name)
+        .or_else(|| registered_name(id).map(str::to_string))
         .unwrap_or_else(|| id.to_string())
+}
+
+/// The registry's name for `id`, which an alias has though the menu omits it.
+fn registered_name(id: &str) -> Option<&'static str> {
+    REGISTRY.iter().find(|a| a.id == id).map(|a| a.name)
 }
 
 /// Every app's id and display name, for boot.
@@ -576,7 +586,22 @@ pub fn roster() -> Vec<(&'static str, &'static str)> {
 /// message body or its origin — but a tool is untrusted code and an app is not,
 /// and only the first of those earns the cost of a separate origin.
 pub fn entry_url(id: &str) -> String {
-    format!("/apps/{id}/ui/index.html")
+    match ALIASES.iter().find(|(alias, _, _)| *alias == id) {
+        Some((_, target, query)) => format!("/apps/{target}/ui/index.html?{query}"),
+        None => format!("/apps/{id}/ui/index.html"),
+    }
+}
+
+/// Registry ids that open another app's frontend in one of its modes rather
+/// than having one of their own: the id, the app it opens, and the query that
+/// picks the mode. The frontend reads the query once, as the mode a new pane
+/// starts in; a pane that has been switched remembers its own.
+const ALIASES: &[(&str, &str, &str)] = &[("play", "godot-viewer", "mode=play")];
+
+/// Whether `id` is one of [`ALIASES`]: registered, so it mounts and dispatches,
+/// but not offered in the Apps menu beside the app it opens.
+pub fn is_alias(id: &str) -> bool {
+    ALIASES.iter().any(|(alias, _, _)| *alias == id)
 }
 
 /// Route one `invoke` from an app's frontend to that app's Rust half.
@@ -1126,23 +1151,24 @@ mod tests {
 
     // --- the terminal is offered like an app and is not one ------------------
 
-    /// How many registry rows the Apps menu offers: all of them but the pages'.
+    /// How many registry rows the Apps menu offers: all of them but the pages'
+    /// and the aliases'.
     fn offered_apps() -> usize {
         REGISTRY
             .iter()
-            .filter(|a| !crate::pages::is_page_app(a.id))
+            .filter(|a| !crate::pages::is_page_app(a.id) && !is_alias(a.id))
             .count()
     }
 
     #[test]
-    fn every_app_but_a_page_is_offered_plus_a_terminal() {
+    fn every_app_but_a_page_or_an_alias_is_offered_plus_a_terminal() {
         let composed = compose_openables(Vec::new());
         let offered: Vec<&str> = composed.iter().map(|o| o.id.as_str()).collect();
         for app in REGISTRY {
             assert_eq!(
                 offered.contains(&app.id),
-                !crate::pages::is_page_app(app.id),
-                "{} is offered if and only if it is not a page",
+                !crate::pages::is_page_app(app.id) && !is_alias(app.id),
+                "{} is offered if and only if it is neither a page nor an alias",
                 app.id
             );
         }
@@ -1168,10 +1194,46 @@ mod tests {
             placing,
             ["godot-viewer", "blender-viewer", "play", "projects"]
         );
-        let play = REGISTRY.iter().find(|a| a.id == "play").unwrap();
-        assert!(play.call_for.is_some(), "Play's box belongs to its pane");
+        for id in ["godot-viewer", "play"] {
+            let row = REGISTRY.iter().find(|a| a.id == id).unwrap();
+            assert!(
+                row.call_for.is_some(),
+                "{id}: the game's box belongs to its pane"
+            );
+        }
         let info = serde_json::to_value(&list()[0]).unwrap();
         assert_eq!(info["placesWindow"], false, "camelCase on the wire");
+    }
+
+    /// `play` opens the Godot app in Play mode (DECISIONS X3): same frontend,
+    /// same dispatch, a name of its own for the tab, and no second row in the
+    /// Apps menu.
+    #[test]
+    fn play_is_an_alias_of_the_godot_app_in_play_mode() {
+        assert_eq!(
+            entry_url("play"),
+            "/apps/godot-viewer/ui/index.html?mode=play"
+        );
+        assert_eq!(
+            entry_url("godot-viewer"),
+            "/apps/godot-viewer/ui/index.html"
+        );
+        let row = |id: &str| REGISTRY.iter().find(|a| a.id == id).unwrap();
+        assert_eq!(row("play").call as usize, row("godot-viewer").call as usize);
+        assert_eq!(
+            row("play").call_for.map(|f| f as usize),
+            row("godot-viewer").call_for.map(|f| f as usize)
+        );
+        assert!(is_app("play"), "a saved layout's `play` pane still mounts");
+        assert!(roster().iter().any(|(id, _)| *id == "play"));
+        let menu = compose_openables(Vec::new());
+        assert!(!menu.iter().any(|o| o.id == "play"));
+        assert!(menu
+            .iter()
+            .any(|o| o.id == "godot-viewer" && o.name == "Godot"));
+        assert_eq!(registered_name("play"), Some("Play"));
+        let listed = list().into_iter().find(|a| a.id == "play").unwrap();
+        assert_eq!(listed.url, entry_url("play"), "what the shell mounts");
     }
 
     /// Agents is a page: its chip in the cluster bar is the only way in.

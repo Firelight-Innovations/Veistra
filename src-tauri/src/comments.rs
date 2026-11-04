@@ -394,8 +394,8 @@ pub fn verdict(
 
 /// The methods every viewer app shares: `comments/list`, `comments/create`,
 /// `comments/resolve`, and `comments/verdict` for Looks good and Still broken
-/// on a fixed comment. Every one of `godot_viewer::call`,
-/// `blender_viewer::call` and `play::call` tries this first, on the same
+/// on a fixed comment. Both `godot_viewer::call_for` (the Godot app's Editor
+/// and Play modes) and `blender_viewer::call` try this first, on the same
 /// prefix-dispatch shape `files::call` uses for `trash::call` — one comment
 /// store, reached identically from whichever viewer's frame the request came
 /// from, because a comment belongs to the *environment* the call resolved to
