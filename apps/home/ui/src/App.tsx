@@ -2,9 +2,14 @@ import { useCallback, useEffect, useState } from "react";
 import { VeistraRpcError, invoke, on, openIn, reportPainted } from "@veistra/bridge";
 import { PRODUCT_NAME, TAGLINE, WORDMARK } from "./branding.generated";
 import { Book, Close, FolderOpen, FolderPlus, GitBranch, Mark, PackagePlus } from "./icons";
+import AccountPanel from "./AccountPanel";
 import NewProject from "./NewProjectPage";
+import SignInScreen from "./SignInScreen";
 import WorktreeDialog from "./WorktreeDialog";
+import { showsSignIn } from "./account";
+import { useAccount } from "./useAccount";
 import "./home.css";
+import "./account.css";
 
 /**
  * One project, as `home/state` reports it.
@@ -151,6 +156,7 @@ export default function App() {
    * for. The column says so rather than showing an error beside the projects.
    */
   const [tutorials, setTutorials] = useState<Tutorials | null>(null);
+  const account = useAccount();
 
   /**
    * Ask whether the project that just opened wants a worktree prompt. Fired
@@ -286,160 +292,187 @@ export default function App() {
 
   if (showNewProject) return <NewProject onDone={closeNewProject} />;
 
-  return (
-    <div className="home">
-      <div className="home__inner">
-        <header className="home__hero">
-          {/*
-           * The lockup from section 03 of the brand packet: the mark, then the
-           * name. Every measurement in it — the mark's own size included — is a
-           * ratio of one number, so it lives in `home.css` rather than being
-           * passed in here; `Mark` takes the size from the CSS. The word is set
-           * in mixed case and uppercased by the stylesheet, exactly as the
-           * packet sets it, which also keeps a screen reader saying a word
-           * rather than spelling out five letters — and is why the wordmark is
-           * a field of its own in `branding.toml` beside the product's name.
-           */}
-          <h1 className="home__lockup">
-            <Mark className="home__lockup-mark" />
-            <span className="home__lockup-word">{WORDMARK}</span>
-          </h1>
-          <p className="home__tagline">{TAGLINE}</p>
-        </header>
+  if (showsSignIn(account.status, account.welcoming) && account.status) {
+    return (
+      <SignInScreen
+        status={account.status}
+        me={account.me}
+        busy={account.busy}
+        error={account.error}
+        onSignIn={account.signIn}
+        onCancel={account.cancel}
+        onOwnSignIn={account.useOwnSignIn}
+        onContinue={account.finishWelcome}
+      />
+    );
+  }
 
-        {open && (
-          <div className="home__open">
-            <span className="home__open-label">Open</span>
-            <ProjectTile project={open} className="home__tile home__tile--open" />
-            <span className="home__open-name">{open.name}</span>
-            <span className="home__open-path" title={open.path}>
-              {open.path}
-            </span>
-            {!open.initialized && (
+  return (
+    <div className="home home--with-account">
+      <div className="home__main">
+        <div className="home__inner">
+          <header className="home__hero">
+            {/*
+             * The lockup from section 03 of the brand packet: the mark, then the
+             * name. Every measurement in it — the mark's own size included — is a
+             * ratio of one number, so it lives in `home.css` rather than being
+             * passed in here; `Mark` takes the size from the CSS. The word is set
+             * in mixed case and uppercased by the stylesheet, exactly as the
+             * packet sets it, which also keeps a screen reader saying a word
+             * rather than spelling out five letters — and is why the wordmark is
+             * a field of its own in `branding.toml` beside the product's name.
+             */}
+            <h1 className="home__lockup">
+              <Mark className="home__lockup-mark" />
+              <span className="home__lockup-word">{WORDMARK}</span>
+            </h1>
+            <p className="home__tagline">{TAGLINE}</p>
+          </header>
+
+          {open && (
+            <div className="home__open">
+              <span className="home__open-label">Open</span>
+              <ProjectTile project={open} className="home__tile home__tile--open" />
+              <span className="home__open-name">{open.name}</span>
+              <span className="home__open-path" title={open.path}>
+                {open.path}
+              </span>
+              {!open.initialized && (
+                <button
+                  type="button"
+                  className="home__ghost"
+                  disabled={pending !== null}
+                  onClick={() => run("home/initialize-project", { path: open.path })}
+                >
+                  Set up as a {PRODUCT_NAME} project
+                </button>
+              )}
               <button
                 type="button"
                 className="home__ghost"
                 disabled={pending !== null}
-                onClick={() => run("home/initialize-project", { path: open.path })}
+                onClick={() => run("home/close-project")}
               >
-                Set up as a {PRODUCT_NAME} project
+                Close
               </button>
-            )}
-            <button
-              type="button"
-              className="home__ghost"
-              disabled={pending !== null}
-              onClick={() => run("home/close-project")}
-            >
-              Close
-            </button>
-          </div>
-        )}
+            </div>
+          )}
 
-        {error && <p className="home__error">{error}</p>}
+          {error && <p className="home__error">{error}</p>}
 
-        <div className="home__columns">
-          <section className="home__column">
-            <h2 className="home__heading">Start</h2>
-            <ul className="home__actions">
-              {START.map(({ method, label, icon: Icon, unavailable }) => (
-                <li key={method}>
-                  <button
-                    type="button"
-                    className="home__action"
-                    // A clone button that opened a dialog to say "not yet" would
-                    // be a worse answer than one that never suggested it could.
-                    disabled={unavailable !== undefined || pending !== null}
-                    title={unavailable}
-                    // New Project no longer opens a native picker directly —
-                    // see `showNewProject` above — every other Start action
-                    // still goes straight through `run`.
-                    onClick={() =>
-                      method === "home/new-project" ? setShowNewProject(true) : run(method)
-                    }
-                  >
-                    <Icon size={18} className="home__action-icon" />
-                    <span>{label}</span>
-                    {pending === method && <span className="home__waiting">choose a folder…</span>}
-                    {unavailable && <span className="home__soon">soon</span>}
-                  </button>
-                </li>
-              ))}
-            </ul>
-
-            <h2 className="home__heading home__heading--spaced">Recent</h2>
-            {recents.length === 0 ? (
-              <p className="home__empty">
-                {state === null && !error
-                  ? "Reading…"
-                  : "Nothing yet. Open a folder and it will be waiting here next time."}
-              </p>
-            ) : (
-              <ul className="home__recents">
-                {recents.map((project) => (
-                  <Recent
-                    key={project.path}
-                    project={project}
-                    busy={pending !== null}
-                    onOpen={() => run("home/open-recent", { path: project.path })}
-                    onForget={() => run("home/forget-recent", { path: project.path })}
-                  />
+          <div className="home__columns">
+            <section className="home__column">
+              <h2 className="home__heading">Start</h2>
+              <ul className="home__actions">
+                {START.map(({ method, label, icon: Icon, unavailable }) => (
+                  <li key={method}>
+                    <button
+                      type="button"
+                      className="home__action"
+                      // A clone button that opened a dialog to say "not yet" would
+                      // be a worse answer than one that never suggested it could.
+                      disabled={unavailable !== undefined || pending !== null}
+                      title={unavailable}
+                      // New Project no longer opens a native picker directly —
+                      // see `showNewProject` above — every other Start action
+                      // still goes straight through `run`.
+                      onClick={() =>
+                        method === "home/new-project" ? setShowNewProject(true) : run(method)
+                      }
+                    >
+                      <Icon size={18} className="home__action-icon" />
+                      <span>{label}</span>
+                      {pending === method && (
+                        <span className="home__waiting">choose a folder…</span>
+                      )}
+                      {unavailable && <span className="home__soon">soon</span>}
+                    </button>
+                  </li>
                 ))}
               </ul>
-            )}
-          </section>
 
-          <section className="home__column">
-            <h2 className="home__heading">Tutorials</h2>
-            {tutorials === null || tutorials.cards.length === 0 ? (
-              <p className="home__empty">
-                {tutorials === null ? "Reading…" : "Nothing to read here."}
-              </p>
-            ) : (
-              <>
-                <ul className="home__cards">
-                  {tutorials.cards.map((tutorial) => (
-                    <li key={tutorial.id}>
-                      <button
-                        type="button"
-                        className={`home__card${tutorial.done ? " home__card--done" : ""}`}
-                        // `openIn` rather than a link: this pane cannot address
-                        // another surface, and must not be able to. It names a
-                        // *kind* of app and the shell decides which one answers
-                        // — see `docs/tool-protocol.md` §3.
-                        onClick={() => void openIn("tutorial", { tutorialId: tutorial.id })}
-                      >
-                        <span className="home__card-mark">
-                          <Book size={16} />
-                        </span>
-                        <span className="home__card-text">
-                          <span className="home__card-title">{tutorial.title}</span>
-                          <span className="home__card-blurb">{tutorial.blurb}</span>
-                        </span>
-                        <span className="home__card-min">{tutorial.minutes}m</span>
-                      </button>
-                    </li>
+              <h2 className="home__heading home__heading--spaced">Recent</h2>
+              {recents.length === 0 ? (
+                <p className="home__empty">
+                  {state === null && !error
+                    ? "Reading…"
+                    : "Nothing yet. Open a folder and it will be waiting here next time."}
+                </p>
+              ) : (
+                <ul className="home__recents">
+                  {recents.map((project) => (
+                    <Recent
+                      key={project.path}
+                      project={project}
+                      busy={pending !== null}
+                      onOpen={() => run("home/open-recent", { path: project.path })}
+                      onForget={() => run("home/forget-recent", { path: project.path })}
+                    />
                   ))}
                 </ul>
-                {/* The only door to the rest of them. The cards above open one
+              )}
+            </section>
+
+            <section className="home__column">
+              <h2 className="home__heading">Tutorials</h2>
+              {tutorials === null || tutorials.cards.length === 0 ? (
+                <p className="home__empty">
+                  {tutorials === null ? "Reading…" : "Nothing to read here."}
+                </p>
+              ) : (
+                <>
+                  <ul className="home__cards">
+                    {tutorials.cards.map((tutorial) => (
+                      <li key={tutorial.id}>
+                        <button
+                          type="button"
+                          className={`home__card${tutorial.done ? " home__card--done" : ""}`}
+                          // `openIn` rather than a link: this pane cannot address
+                          // another surface, and must not be able to. It names a
+                          // *kind* of app and the shell decides which one answers
+                          // — see `docs/tool-protocol.md` §3.
+                          onClick={() => void openIn("tutorial", { tutorialId: tutorial.id })}
+                        >
+                          <span className="home__card-mark">
+                            <Book size={16} />
+                          </span>
+                          <span className="home__card-text">
+                            <span className="home__card-title">{tutorial.title}</span>
+                            <span className="home__card-blurb">{tutorial.blurb}</span>
+                          </span>
+                          <span className="home__card-min">{tutorial.minutes}m</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                  {/* The only door to the rest of them. The cards above open one
                     tutorial each and there are three of them, so without this
                     the other seven are reachable only by opening one and using
                     the rail inside it — and Tutorials is deliberately absent
                     from the Apps menu and the switcher's `+`, being a surface
                     that covers the cluster rather than taking a pane. */}
-                <button
-                  type="button"
-                  className="home__all-tutorials"
-                  onClick={() => void openIn("tutorial")}
-                >
-                  All {tutorials.total} tutorials
-                  {tutorials.completed > 0 && ` · ${tutorials.completed} read`}
-                </button>
-              </>
-            )}
-          </section>
+                  <button
+                    type="button"
+                    className="home__all-tutorials"
+                    onClick={() => void openIn("tutorial")}
+                  >
+                    All {tutorials.total} tutorials
+                    {tutorials.completed > 0 && ` · ${tutorials.completed} read`}
+                  </button>
+                </>
+              )}
+            </section>
+          </div>
         </div>
       </div>
+
+      <AccountPanel
+        status={account.status}
+        busy={account.busy}
+        onSignIn={account.signIn}
+        onSignOut={account.signOut}
+        onSignedOutElsewhere={account.reread}
+      />
 
       {worktreePrompt && (
         <WorktreeDialog

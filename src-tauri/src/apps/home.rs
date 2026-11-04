@@ -46,6 +46,9 @@ pub fn call(
     match method {
         "home/state" => state(app, context),
 
+        // The account panel and the sign-in screen Home stands behind.
+        m if m.starts_with("account/") => crate::account::methods::call(app, m, params),
+
         // The tutorial column, from the same catalog the Tutorials app draws.
         // Home asks for it rather than holding its own list, because a second
         // copy would be a second place to add a tutorial and a first place to
