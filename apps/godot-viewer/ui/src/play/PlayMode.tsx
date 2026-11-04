@@ -68,7 +68,7 @@ import { isTyping, liveAction } from "./keys";
 import { LiveStrip, LiveView, LogView, type LiveMarking } from "./LiveView";
 import { newF8Marks, type MarkCount } from "./markTelemetry";
 import type { Target } from "./notes";
-import Review, { type LiveNote } from "./Review";
+import Review, { reportNote, type LiveNote } from "./Review";
 import {
   addonStatus,
   capture,
@@ -105,7 +105,8 @@ const POLL_MS = 500;
 const SAVING_WAIT_MS = 5_000;
 const SAVING_POLL_MS = 250;
 
-type View = { kind: "live" } | { kind: "review"; take: string };
+/** `openedAt` is when review was asked for, which review measures its opening from. */
+type View = { kind: "live" } | { kind: "review"; take: string; openedAt?: number };
 type Drawer = "closed" | "output" | "errors" | "notes";
 
 const PLAY_TARGET = { app: "play", label: "Play" };
@@ -195,7 +196,11 @@ export default function PlayMode(props: PlayModeProps) {
   /** The chosen project, for the poll, which outlives every render. */
   const projectRel = useRef<string | undefined>(undefined);
   /** What the poll's keys do, and the run the render that made them had drawn. */
-  const actions = useRef<{ run: number | null; review: () => void; markup: () => void }>({
+  const actions = useRef<{
+    run: number | null;
+    review: (at?: number) => void;
+    markup: () => void;
+  }>({
     run: null,
     review: () => undefined,
     markup: () => undefined,
@@ -376,7 +381,9 @@ export default function PlayMode(props: PlayModeProps) {
         if (actions.current.run !== s.run.id) return;
         for (const k of keys) {
           keyCursor.current = k.seq;
-          if (k.key === "F7") actions.current.review();
+          // From the press in the game, not this poll, which is up to a tick later.
+          if (k.key === "F7")
+            actions.current.review(k.t > 0 ? Math.min(k.t, Date.now()) : undefined);
           if (k.key === "Ctrl Shift M") actions.current.markup();
         }
       } catch {
@@ -428,6 +435,20 @@ export default function PlayMode(props: PlayModeProps) {
     [chosenRel, guarded, picked],
   );
 
+  // From review, Play again, F5 and a fixed note's Play run the reviewed
+  // take's project: the take picker lists every project's takes, so it need
+  // not be the one picked, and the picker follows it.
+  const reviewed = view.kind === "review" ? takes.find((t) => t.id === view.take) : undefined;
+  const reviewedRel =
+    reviewed && projects.some((p) => p.rel === reviewed.project) ? reviewed.project : chosenRel;
+  const playAgain = useCallback(
+    (scene?: string) => {
+      if (reviewedRel !== undefined && reviewedRel !== chosenRel) setProject(reviewedRel);
+      return start(scene, reviewedRel);
+    },
+    [reviewedRel, chosenRel, setProject, start],
+  );
+
   // Play scene, from Editor mode or another pane, names its project: a
   // `res://` path means nothing without one, so in an environment holding
   // several, running it against whichever project this pane last picked would
@@ -470,8 +491,8 @@ export default function PlayMode(props: PlayModeProps) {
   );
 
   const openReview = useCallback(
-    (id: string) => {
-      setView({ kind: "review", take: id });
+    (id: string, openedAt = Date.now()) => {
+      setView({ kind: "review", take: id, openedAt });
       void loadTakes();
     },
     [loadTakes],
@@ -479,8 +500,9 @@ export default function PlayMode(props: PlayModeProps) {
 
   /** F7 and Stop and review: stop, and open the take this run made. */
   const stopAndReview = useCallback(
-    () =>
+    (at?: number) =>
       guarded(async () => {
+        const askedAt = at ?? Date.now();
         const s = running ? await stop() : null;
         if (s) {
           setInfo(s.run);
@@ -495,7 +517,7 @@ export default function PlayMode(props: PlayModeProps) {
           t = (await getState(cursor.current, keyCursor.current, projectRel.current)).live?.session
             ?.take;
         }
-        if (t?.state === "saved") openReview(t.id);
+        if (t?.state === "saved") openReview(t.id, askedAt);
         else if (t?.state === "failed") setProblem(t.reason);
         else if (t?.state === "saving")
           setNotice("The take is still being saved. Open it from Takes in a moment.");
@@ -589,6 +611,8 @@ export default function PlayMode(props: PlayModeProps) {
         const atMs = m.atWall - session.zero;
         const note = { take: take.id, atMs, body: words, markup: json, markupPng, target };
         setLiveNotes((n) => [...n, note]);
+        // Made now, though the take's notes.json gets it when review opens.
+        reportNote("frame", "live");
         setNotice("Kept as a note on this take. It opens with the take in review.");
       } else {
         await guarded(() => sendMarkup(PLAY_TARGET, result.png, json, info?.scene ?? null));
@@ -601,7 +625,7 @@ export default function PlayMode(props: PlayModeProps) {
 
   actions.current = {
     run: info?.id ?? null,
-    review: () => void stopAndReview(),
+    review: (at) => void stopAndReview(at),
     markup: () => void startLiveMarkup(),
   };
 
@@ -679,7 +703,7 @@ export default function PlayMode(props: PlayModeProps) {
     if (view.kind === "review") {
       if (action === "run-or-restart" && canRun) {
         e.preventDefault();
-        void start();
+        void playAgain();
       }
       return;
     }
@@ -839,7 +863,7 @@ export default function PlayMode(props: PlayModeProps) {
         value={view.take}
         onFocus={() => setPickerOpen(true)}
         onBlur={() => setPickerOpen(false)}
-        onChange={(e) => setView({ kind: "review", take: e.target.value })}
+        onChange={(e) => setView({ kind: "review", take: e.target.value, openedAt: Date.now() })}
       >
         {takes.map((t) => (
           <option key={t.id} value={t.id}>
@@ -953,7 +977,7 @@ export default function PlayMode(props: PlayModeProps) {
         disabled={!canRun}
         title="Run the game again (F5)"
         icon={<PlayIcon size={14} strokeWidth={1.5} aria-hidden="true" />}
-        onClick={() => void start()}
+        onClick={() => void playAgain()}
       >
         Play again
       </ToolbarButton>
@@ -1058,13 +1082,14 @@ export default function PlayMode(props: PlayModeProps) {
         <Review
           key={view.take}
           takeId={view.take}
+          openedAt={view.openedAt}
           readOnly={readOnly}
           liveNotes={liveNotes}
           onLiveNotesTaken={onLiveNotesTaken}
           onPlayScene={(scene) =>
             void guarded(async () => {
-              if (!recordOn && !recordBlocked) await setRecord(true, chosenRel);
-              await start(scene);
+              if (!recordOn && !recordBlocked) await setRecord(true, reviewedRel);
+              await playAgain(scene);
             })
           }
           onProblem={setProblem}

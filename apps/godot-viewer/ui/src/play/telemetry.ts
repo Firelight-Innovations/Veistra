@@ -1,9 +1,10 @@
 /**
  * A take's `telemetry.jsonl` as the review page reads it: the ticks capture
  * addon v2 wrote ten times a second (`src-tauri/src/godot/telemetry.rs` has
- * the format). The page needs three things from them: the frame-time lane,
+ * the format). The page needs two things from them: the frame-time lane,
  * and the object under a pin drawn in review, which is the smallest tracked
- * box under the pin in the tick nearest the note (design §8.3.2).
+ * box under the pin in the tick nearest the note (design §8.3.2), lifted to
+ * the body it belongs to.
  */
 import type { Target } from "./notes";
 
@@ -126,10 +127,25 @@ export function toViewport(tick: Tick, x: number, y: number, shown: Size): [numb
   return [((wx - cx) / cw) * vw, ((wy - cy) / ch) * vh];
 }
 
+/** Physics bodies and areas: the node a person means by "the enemy". */
+const BODY = /(?:Body|Area)[23]D$|^PhysicalBone[23]D$/;
+
+function contains(n: TrackedNode, px: number, py: number): boolean {
+  const [rx, ry, rw, rh] = n.rect;
+  return px >= rx && py >= ry && px <= rx + rw && py <= ry + rh;
+}
+
 /**
- * The smallest tracked box under a point. `x` and `y` are in the displayed
- * frame's pixels, `shown` is that frame's size; the tick's boxes are in the
- * game's viewport pixels, so the point is mapped into them first.
+ * The object under a point: the smallest tracked box there, lifted to its
+ * nearest tracked body or area whose box also holds the point. A mesh is
+ * nearly always smaller than the body it belongs to, so without the lift a
+ * pin on the enemy would name `Enemy_02/Mesh` while a live pick, which hits
+ * the collider, names `Enemy_02`. A body itself, or a node with no tracked
+ * body above it (a mesh in a `veistra_track` set), keeps the smallest box.
+ *
+ * `x` and `y` are in the displayed frame's pixels, `shown` is that frame's
+ * size; the tick's boxes are in the game's viewport pixels, so the point is
+ * mapped into them first.
  */
 export function recordedTarget(
   tick: Tick | null,
@@ -141,9 +157,15 @@ export function recordedTarget(
   const [px, py] = toViewport(tick, x, y, shown);
   let best: TrackedNode | null = null;
   for (const n of tick.nodes) {
-    const [rx, ry, rw, rh] = n.rect;
-    if (px < rx || py < ry || px > rx + rw || py > ry + rh) continue;
-    if (!best || rw * rh < best.rect[2] * best.rect[3]) best = n;
+    if (!contains(n, px, py)) continue;
+    if (!best || n.rect[2] * n.rect[3] < best.rect[2] * best.rect[3]) best = n;
+  }
+  if (best && !BODY.test(best.type)) {
+    const path = best.path;
+    const body = tick.nodes
+      .filter((n) => path.startsWith(`${n.path}/`) && BODY.test(n.type) && contains(n, px, py))
+      .sort((a, b) => b.path.length - a.path.length)[0];
+    best = body ?? best;
   }
   if (!best) return null;
   const pos = best.pos && best.pos.length === 2 ? [best.pos[0], best.pos[1], 0] : best.pos;

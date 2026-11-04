@@ -73,6 +73,33 @@ export function normalize(raw: unknown): NotesDoc {
   };
 }
 
+/** A range being set with I and O, either end still missing. */
+export interface PendingRange {
+  inMs: number | null;
+  outMs: number | null;
+}
+
+export const NO_RANGE: PendingRange = { inMs: null, outMs: null };
+
+/**
+ * I at `ms`, from the key or the In button alike. An end at or before the
+ * new start is let go, so the range is never backwards.
+ */
+export function withIn(range: PendingRange, ms: number): PendingRange {
+  return { inMs: ms, outMs: range.outMs !== null && range.outMs > ms ? range.outMs : null };
+}
+
+/** O at `ms`; a start at or after it is let go. */
+export function withOut(range: PendingRange, ms: number): PendingRange {
+  return { inMs: range.inMs !== null && range.inMs < ms ? range.inMs : null, outMs: ms };
+}
+
+/** The range a new note covers: both ends set, in order. */
+export function settledRange(range: PendingRange): { inMs: number; outMs: number } | null {
+  const { inMs, outMs } = range;
+  return inMs !== null && outMs !== null && outMs > inMs ? { inMs, outMs } : null;
+}
+
 /** A new note at `atMs`, over `range` when one is set. */
 export function addNote(
   doc: NotesDoc,
@@ -171,6 +198,20 @@ export function parseLog(text: string): LogRow[] {
     }
   }
   return rows;
+}
+
+/**
+ * What a note's chip says about the lines near it, `1 error · 2 warnings`,
+ * since Send attaches both; `null` when there are none.
+ */
+export function nearWords(rows: readonly LogRow[]): string | null {
+  const errors = rows.filter((r) => r.level === "error").length;
+  const warnings = rows.length - errors;
+  const words = [
+    errors > 0 ? `${errors} ${errors === 1 ? "error" : "errors"}` : "",
+    warnings > 0 ? `${warnings} ${warnings === 1 ? "warning" : "warnings"}` : "",
+  ].filter(Boolean);
+  return words.length > 0 ? words.join(" · ") : null;
 }
 
 /** Errors and warnings within `windowMs` of the span `fromMs` to `toMs`. */

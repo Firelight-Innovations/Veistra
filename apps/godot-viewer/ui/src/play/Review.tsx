@@ -26,7 +26,8 @@ import { verdictComment, type Comment, type Verdict } from "../../../../shared/c
 import { contextKey, type ContextRef } from "../../../../shared/context";
 import { blobBase64 } from "../../../../shared/markupFlow";
 import { errorText } from "../../../../shared/godot";
-import { clock, contactSheet, contactTimes, filmstrip, grab } from "./frames";
+import { track } from "../../../../shared/telemetry";
+import { clock, contactSheet, contactTimes, filmstrip, grab, STRIP_EVERY_MS } from "./frames";
 import { reviewAction, isTyping } from "./keys";
 import {
   addNote,
@@ -36,12 +37,17 @@ import {
   pendingMarks,
   removeNote,
   sendable,
+  settledRange,
   updateNote,
   noteStatus,
   parseLog,
+  withIn,
+  withOut,
+  NO_RANGE,
   type LogRow,
   type NoteDraft,
   type NotesDoc,
+  type PendingRange,
   type Target,
 } from "./notes";
 import { NotesPanel, type SendOptions } from "./NotesPanel";
@@ -55,6 +61,14 @@ const FrameMarkup = lazy(() => import("./FrameMarkup"));
 const SAVE_AFTER_MS = 600;
 /** How often notes that went to an agent are checked for news. */
 const STATUS_POLL_MS = 2_000;
+
+/** Where a new note came from, as `note_created` reports it. */
+export type NoteFrom = "key" | "button" | "mark" | "markup" | "live";
+
+/** A note was made: one usage event, its kind and where from, never its words. */
+export function reportNote(kind: NoteDraft["kind"], from: NoteFrom): void {
+  track("note_created", { kind, from });
+}
 
 /** A note made by live mark up during the run, folded into the take when it opens. */
 export interface LiveNote {
@@ -77,6 +91,11 @@ export interface ReviewProps {
   onProblem: (message: string | null) => void;
   onDeleted: () => void;
   onNotice: (message: string) => void;
+  /**
+   * When the person asked for this take (F7's own time, or the click's), so
+   * the page can say how long review took to show its first frame.
+   */
+  openedAt?: number;
 }
 
 function useVideoRef() {
@@ -101,16 +120,17 @@ export default function Review(props: ReviewProps) {
   const [comments, setComments] = useState<Comment[]>([]);
   const [playhead, setPlayhead] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [range, setRange] = useState<{ inMs: number | null; outMs: number | null }>({
-    inMs: null,
-    outMs: null,
-  });
+  const [range, setRange] = useState<PendingRange>(NO_RANGE);
   const [selected, setSelected] = useState<number | null>(null);
   const [marking, setMarking] = useState<{ url: string; n: number } | null>(null);
   const [thumbs, setThumbs] = useState<string[]>([]);
   const [sending, setSending] = useState(false);
   const [options, setOptions] = useState<SendOptions>({ contact: true });
   const [aspect, setAspect] = useState(16 / 9);
+  /** The player can show a frame, so the filmstrip's seeks may start. */
+  const [playerReady, setPlayerReady] = useState(false);
+  /** How long review took to show its first frame, once it has. */
+  const [openMs, setOpenMs] = useState<number | null>(null);
   const video = useVideoRef();
   const grabber = useVideoRef();
   const root = useRef<HTMLDivElement | null>(null);
@@ -272,8 +292,10 @@ export default function Review(props: ReviewProps) {
   }, [refreshComments, waiting]);
 
   // The filmstrip, made by a video of its own so the player is never moved.
+  // It starts once the player can play: a seek every 2 s of the take, all on
+  // the same file, would otherwise compete with the first frame review waits for.
   useEffect(() => {
-    if (!detail || duration <= 0) return;
+    if (!detail || duration <= 0 || !playerReady) return;
     let cancelled = false;
     const strip = document.createElement("video");
     strip.crossOrigin = "anonymous";
@@ -289,9 +311,10 @@ export default function Review(props: ReviewProps) {
           (i, url) => {
             if (!cancelled) setThumbs((t) => Object.assign([...t], { [i]: url }));
           },
-          2000,
+          STRIP_EVERY_MS,
           96,
           () => cancelled,
+          aspect,
         ).catch(() => undefined);
       },
       { once: true },
@@ -301,7 +324,23 @@ export default function Review(props: ReviewProps) {
       strip.removeAttribute("src");
       strip.load();
     };
-  }, [detail, duration]);
+  }, [detail, duration, playerReady, aspect]);
+
+  // Review is open once its first frame shows (a take with no video: once
+  // it renders). Kept on the root as `data-open-ms`, for spec test 5.
+  const { openedAt } = props;
+  const openedOnce = useRef(false);
+  const opened = useCallback(() => {
+    if (openedAt === undefined || openedOnce.current) return;
+    openedOnce.current = true;
+    const ms = Math.max(0, Date.now() - openedAt);
+    setOpenMs(ms);
+    console.info(`veistra: review of take ${takeId} opened in ${ms} ms`);
+  }, [openedAt, takeId]);
+  const noVideo = detail !== null && !detail.take.hasVideo;
+  useEffect(() => {
+    if (noVideo && doc) opened();
+  }, [noVideo, doc, opened]);
 
   // The playhead follows the video while it plays.
   useEffect(() => {
@@ -355,23 +394,30 @@ export default function Review(props: ReviewProps) {
     [doc, pause, seekTo],
   );
 
+  /**
+   * A note at `at`, over `over` when that is a range (a pending I/O range is
+   * used up by it), reported as made `from` there. A mark's note passes no
+   * range, so a range set for something else stays for it.
+   */
   const newNote = useCallback(
-    (extra: Partial<NoteDraft> = {}, at = playhead) => {
+    (
+      at: number,
+      from: NoteFrom,
+      extra: Partial<NoteDraft> = {},
+      over: { inMs: number; outMs: number } | null = settledRange(range),
+    ) => {
       const d = docRef.current;
       if (!d) return;
-      const r =
-        range.inMs !== null && range.outMs !== null && range.outMs > range.inMs
-          ? { inMs: range.inMs, outMs: range.outMs }
-          : null;
-      const atMs = r && (at < r.inMs || at > r.outMs) ? (r.inMs + r.outMs) / 2 : at;
-      const made = addNote(d, atMs, r, extra);
+      const atMs = over && (at < over.inMs || at > over.outMs) ? (over.inMs + over.outMs) / 2 : at;
+      const made = addNote(d, atMs, over, extra);
       edit(made.doc);
       setSelected(made.note.n);
-      setRange({ inMs: null, outMs: null });
+      if (over) setRange(NO_RANGE);
       pause();
+      reportNote(made.note.kind, from);
       return made.note;
     },
-    [playhead, range, pause, edit],
+    [range, pause, edit],
   );
 
   const tickAt = useCallback(
@@ -379,12 +425,21 @@ export default function Review(props: ReviewProps) {
     [ticks, take],
   );
 
+  /**
+   * Mark up the frame at the playhead: the selected draft's when the playhead
+   * is on it, else a new note there (over the pending range only if that
+   * holds the playhead, so the frame drawn on is the one on screen).
+   */
   const startMarkup = useCallback(async () => {
     const v = video.current;
     if (!v || !doc) return;
     pause();
-    const current = doc.notes.find((n) => n.n === selected && !n.commentId);
-    const note = current ?? newNote();
+    const current = doc.notes.find(
+      (n) => n.n === selected && !n.commentId && Math.abs(playhead - n.atMs) < 1000 / fps,
+    );
+    const r = settledRange(range);
+    const holds = r && playhead >= r.inMs && playhead <= r.outMs ? r : null;
+    const note = current ?? newNote(playhead, "markup", {}, holds);
     if (!note) return;
     try {
       const png = await grab(v, note.atMs);
@@ -392,7 +447,7 @@ export default function Review(props: ReviewProps) {
     } catch (e) {
       onProblem(`Couldn't take the frame: ${errorText(e)}`);
     }
-  }, [doc, selected, newNote, pause, onProblem, video]);
+  }, [doc, selected, playhead, fps, range, newNote, pause, onProblem, video]);
 
   const endMarkup = useCallback(() => {
     setMarking((m) => {
@@ -565,22 +620,17 @@ export default function Review(props: ReviewProps) {
         seekTo(playhead + frameMs);
         break;
       case "in":
-        setRange((r) => ({
-          inMs: playhead,
-          outMs: r.outMs !== null && r.outMs > playhead ? r.outMs : null,
-        }));
+        setRange((r) => withIn(r, playhead));
         break;
       case "out":
-        setRange((r) => ({
-          inMs: r.inMs !== null && r.inMs < playhead ? r.inMs : null,
-          outMs: playhead,
-        }));
+        setRange((r) => withOut(r, playhead));
         break;
       case "note":
-        newNote();
+        newNote(playhead, "key");
         break;
       case "send":
-        void send(options);
+        // Main is read-only: `play/send` would be refused, so it is not tried.
+        if (!props.readOnly) void send(options);
         break;
     }
   };
@@ -601,14 +651,24 @@ export default function Review(props: ReviewProps) {
     );
   }
 
+  // The frame being marked up is the note's, named in markup.json as the
+  // take's video at that time (a media fragment), wherever the take lives.
+  const markedAt = doc.notes.find((n) => n.n === marking?.n)?.atMs ?? playhead;
+
   return (
-    <div className="pl-review" ref={root} tabIndex={-1} onKeyDown={onKeyDown}>
+    <div
+      className="pl-review"
+      ref={root}
+      tabIndex={-1}
+      onKeyDown={onKeyDown}
+      data-open-ms={openMs ?? undefined}
+    >
       <div className="pl-review__main">
         <div className="pl-review__tools" role="toolbar" aria-label="Markup tools">
           <button
             type="button"
             className="k-btn k-btn--secondary k-btn--sm"
-            disabled={marking !== null || props.readOnly}
+            disabled={marking !== null}
             title="Draw on this frame and pin what is wrong (the note at the playhead, or a new one)"
             onClick={() => void startMarkup()}
           >
@@ -637,6 +697,8 @@ export default function Review(props: ReviewProps) {
                   if (v.videoWidth > 0 && v.videoHeight > 0)
                     setAspect(v.videoWidth / v.videoHeight);
                 }}
+                onLoadedData={opened}
+                onCanPlay={() => setPlayerReady(true)}
                 onPause={() => setPlaying(false)}
                 onEnded={() => setPlaying(false)}
                 onSeeked={(e) => !playing && setPlayhead(e.currentTarget.currentTime * 1000)}
@@ -655,10 +717,9 @@ export default function Review(props: ReviewProps) {
               <Suspense fallback={null}>
                 <FrameMarkup
                   src={marking.url}
-                  path={`.veistra/takes/${takeId}/take.mp4`}
+                  path={`${take.path.replace(/\\/g, "/")}/take.mp4#t=${(markedAt / 1000).toFixed(3)}`}
                   pick={(x, y, shown) => {
-                    const note = doc.notes.find((n) => n.n === marking.n);
-                    const hit = recordedTarget(tickAt(note?.atMs ?? playhead), x, y, shown);
+                    const hit = recordedTarget(tickAt(markedAt), x, y, shown);
                     const p = hit?.worldPoint;
                     return hit && p && p.length === 3
                       ? { nodePath: hit.nodePath, worldPoint: [p[0], p[1], p[2]] }
@@ -676,7 +737,7 @@ export default function Review(props: ReviewProps) {
             className="pl-review__grabber"
             src={detail.urls.video}
             crossOrigin="anonymous"
-            preload="auto"
+            preload="metadata"
             muted
             aria-hidden="true"
           />
@@ -727,7 +788,7 @@ export default function Review(props: ReviewProps) {
             type="button"
             className="k-btn k-btn--secondary k-btn--sm"
             title="Set the range start at the playhead (I)"
-            onClick={() => setRange((r) => ({ ...r, inMs: playhead }))}
+            onClick={() => setRange((r) => withIn(r, playhead))}
           >
             In <kbd>I</kbd>
           </button>
@@ -735,7 +796,7 @@ export default function Review(props: ReviewProps) {
             type="button"
             className="k-btn k-btn--secondary k-btn--sm"
             title="Set the range end at the playhead (O)"
-            onClick={() => setRange((r) => ({ ...r, outMs: playhead }))}
+            onClick={() => setRange((r) => withOut(r, playhead))}
           >
             Out <kbd>O</kbd>
           </button>
@@ -743,8 +804,7 @@ export default function Review(props: ReviewProps) {
             type="button"
             className="k-btn k-btn--primary k-btn--sm"
             title="Add a note at the playhead or range (N)"
-            disabled={props.readOnly}
-            onClick={() => newNote()}
+            onClick={() => newNote(playhead, "button")}
           >
             Add note <kbd>N</kbd>
           </button>
@@ -754,6 +814,7 @@ export default function Review(props: ReviewProps) {
           playheadMs={playhead}
           range={range}
           thumbs={thumbs}
+          stripEveryMs={STRIP_EVERY_MS}
           notes={doc.notes.map((n) => ({
             n: n.n,
             atMs: n.atMs,
@@ -792,7 +853,7 @@ export default function Review(props: ReviewProps) {
         onDone={() => setSelected(null)}
         onMakeNote={(ms) => {
           seekTo(ms);
-          newNote({ fromMark: ms }, ms);
+          newNote(ms, "mark", { fromMark: ms }, null);
         }}
         onDismiss={(ms) => change((d) => dismissMark(d, ms))}
         onVerdict={(id, v, reply) => void verdict(id, v, reply)}

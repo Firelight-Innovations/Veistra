@@ -45,6 +45,35 @@ vi.mock("@veistra/bridge", () => ({
   session: () => Promise.resolve({ projectPath: null, instanceId: "i1" }),
 }));
 
+/**
+ * The markup layer needs a canvas jsdom lacks. This one shows the frame as
+ * the layer does, and its button finishes with no pins drawn.
+ */
+vi.mock("./FrameMarkup", () => ({
+  default: (p: {
+    src: string;
+    onDone: (result: unknown, shown: { width: number; height: number }) => void;
+  }) => (
+    <div>
+      <img src={p.src} alt="The frame being marked up" />
+      <button
+        type="button"
+        onClick={() =>
+          p.onDone(
+            {
+              json: { version: 1, pins: [], annotations: [], excalidraw: { elements: [] } },
+              png: new Blob([new Uint8Array([1])], { type: "image/png" }),
+            },
+            { width: 640, height: 360 },
+          )
+        }
+      >
+        Keep the markup
+      </button>
+    </div>
+  ),
+}));
+
 import App from "../App";
 // The shell loads Play lazily; loading it here keeps that import inside a
 // test's first wait.
@@ -982,6 +1011,101 @@ describe("Play output drawer", () => {
       from: "fixed",
     });
     await waitFor(() => expect(tab("Notes").textContent).toBe("Notes"));
+  });
+});
+
+describe("Play review", () => {
+  const noted = () =>
+    calls("veistra/track")
+      .map((c) => c[1] as { event: string; props: Record<string, unknown> })
+      .filter((p) => p.event === "note_created")
+      .map((p) => p.props);
+
+  beforeEach(() => {
+    URL.createObjectURL = vi.fn(() => "blob:frame");
+    URL.revokeObjectURL = vi.fn();
+  });
+
+  it("reports a live markup kept for the take being recorded as a note", async () => {
+    liveBackend();
+    render(<App />);
+    await screen.findByText("Playing");
+    fireEvent.click(screen.getByRole("button", { name: /^Mark up/ }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Keep the markup" }, { timeout: 5000 }),
+    );
+    await waitFor(() => expect(noted()).toEqual([{ kind: "frame", from: "live" }]));
+    expect(calls("context/put")).toHaveLength(0);
+  });
+
+  // The Take menu lists every project's takes, and Play again ran whichever
+  // project the pane had picked, so another project's take played the wrong game.
+  it("plays the reviewed take's project again, and the picker follows it", async () => {
+    liveBackend({
+      ...IDLE,
+      found: true,
+      projects: [project("game"), project("demo")],
+      takes: [{ ...LISTED, project: "demo" }],
+    });
+    render(<App />);
+    const picker = (await screen.findByRole("combobox", {
+      name: "Godot project",
+    })) as HTMLSelectElement;
+    expect(picker.value).toBe("game");
+    fireEvent.click(await screen.findByRole("button", { name: /Takes · 1/ }));
+    await screen.findByText("Reviewing");
+    const again = screen.getByRole("button", { name: /^Play again/ }) as HTMLButtonElement;
+    await waitFor(() => expect(again.disabled).toBe(false));
+    fireEvent.click(again);
+    await waitFor(() => expect(calls("play/run")).toHaveLength(1));
+    expect(calls("play/run")[0][1]).toMatchObject({ project: "demo" });
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("combobox", { name: "Godot project" }) as HTMLSelectElement).value,
+      ).toBe("demo"),
+    );
+  });
+
+  // Spec §13 test 5 times review from F7. The poll sees the key up to a tick
+  // after it was pressed, so the press's own time is what review counts from.
+  it("counts review's opening from the F7 press in the game", async () => {
+    const world = liveBackend();
+    const answer = bridge.invoke.getMockImplementation()!;
+    bridge.invoke.mockImplementation((method: string, params?: unknown) =>
+      method === "play/take"
+        ? Promise.resolve({
+            take: {
+              ...LISTED,
+              version: 1,
+              environment: { branch: null, commit: null },
+              project: ".",
+              godot: "4.5",
+              video: { width: 1280, height: 720, fps: 30 },
+              scenes: [],
+              marks: [],
+              counts: { errors: 0, warnings: 0 },
+              ticks: 0,
+              path: "C:/p/.veistra/takes/2026-10-30-1402-0f3a",
+              bytes: 1,
+              hasVideo: true,
+              drafts: 0,
+            },
+            urls: { video: "asset://v", telemetry: "asset://t", log: "asset://l" },
+            notes: { version: 1, notes: [], nextN: 1, dismissed: [] },
+          })
+        : answer(method, params),
+    );
+    render(<App />);
+    await screen.findByText("Playing");
+    world.keys = [{ seq: 1, key: "F7", t: Date.now() - 1500 }];
+    await screen.findByText("Reviewing");
+    await waitFor(() => expect(document.querySelector("video.pl-review__video")).not.toBeNull(), {
+      timeout: 2000,
+    });
+    fireEvent.loadedData(document.querySelector("video.pl-review__video")!);
+    const root = document.querySelector(".pl-review") as HTMLElement;
+    await waitFor(() => expect(Number(root.dataset.openMs)).toBeGreaterThanOrEqual(1500));
+    expect(Number(root.dataset.openMs)).toBeLessThan(10_000);
   });
 });
 

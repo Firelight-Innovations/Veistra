@@ -13,13 +13,18 @@ import {
   emptyDoc,
   errorsNear,
   markSent,
+  nearWords,
+  NO_RANGE,
   noteStatus,
   normalize,
   parseLog,
   pendingMarks,
   removeNote,
   sendable,
+  settledRange,
   updateNote,
+  withIn,
+  withOut,
 } from "./notes";
 import { frameSeries, nearestTick, parseTicks, recordedTarget, toViewport } from "./telemetry";
 
@@ -95,6 +100,38 @@ describe("notes", () => {
   });
 });
 
+describe("the pending range", () => {
+  it("keep the other end only while it is still on its own side", () => {
+    let r = withIn(NO_RANGE, 5_000);
+    expect(r).toEqual({ inMs: 5_000, outMs: null });
+    expect(settledRange(r)).toBeNull();
+    r = withOut(r, 9_000);
+    expect(settledRange(r)).toEqual({ inMs: 5_000, outMs: 9_000 });
+    // In moved past Out drops Out, and Out before In drops In.
+    expect(withIn(r, 9_500)).toEqual({ inMs: 9_500, outMs: null });
+    expect(withOut(r, 4_000)).toEqual({ inMs: null, outMs: 4_000 });
+    expect(settledRange(withOut(withIn(NO_RANGE, 3_000), 3_000))).toBeNull();
+  });
+});
+
+describe("the log near a note", () => {
+  it("count errors and warnings in words, and say nothing for none", () => {
+    const row = (level: "error" | "warning", ms: number) => ({
+      t: ms,
+      ms,
+      level,
+      stream: "",
+      text: "x",
+    });
+    expect(nearWords([row("error", 1), row("warning", 2)])).toBe("1 error · 1 warning");
+    expect(
+      nearWords([row("error", 1), row("error", 2), row("warning", 3), row("warning", 4)]),
+    ).toBe("2 errors · 2 warnings");
+    expect(nearWords([row("warning", 1)])).toBe("1 warning");
+    expect(nearWords([])).toBeNull();
+  });
+});
+
 describe("telemetry", () => {
   const text = [
     '{"t":1000,"kind":"tick","scene":"res://a.tscn","frameMs":16,"viewport":[1280,720],"nodes":[{"path":"A/Big","type":"Node3D","rect":[0,0,1280,720]},{"path":"A/Enemy","type":"CharacterBody3D","rect":[900,200,250,400],"pos":[14.2,0,-6.8]}]}',
@@ -132,6 +169,42 @@ describe("telemetry", () => {
     });
     expect(recordedTarget(tick, 10, 10, { width: 640, height: 360 })?.nodePath).toBe("A/Big");
     expect(recordedTarget(null, 0, 0, { width: 1, height: 1 })).toBeNull();
+  });
+
+  // Spec §13 test 5: a pin on the enemy names Enemy_02. Its mesh's box is
+  // the smallest under the pin, but a person means the body, as a live pick
+  // (which hits the collider) says.
+  const hallway = (enemyBox: string) =>
+    parseTicks(
+      `{"t":1,"kind":"tick","scene":"res://levels/hallway.tscn","viewport":[1280,720],"nodes":[` +
+        '{"path":"Hallway/Walls","type":"StaticBody3D","rect":[0,0,1280,720]},' +
+        `{"path":"Hallway/Enemy_02","type":"CharacterBody3D","rect":${enemyBox},"pos":[14.2,0,-6.8]},` +
+        '{"path":"Hallway/Enemy_02/Mesh","type":"MeshInstance3D","rect":[915,220,230,390],"pos":[14.2,1,-6.8]}]}',
+    )[0];
+
+  it("lift a pin on a mesh to the body it belongs to", () => {
+    const tick = hallway("[905,210,250,410]");
+    const full = { width: 1280, height: 720 };
+    expect(recordedTarget(tick, 1000, 400, full)).toEqual({
+      nodePath: "Hallway/Enemy_02",
+      type: "CharacterBody3D",
+      worldPoint: [14.2, 0, -6.8],
+      source: "recorded",
+    });
+    // Off the enemy, the walls' body is the smallest box and is itself a body.
+    expect(recordedTarget(tick, 100, 100, full)?.nodePath).toBe("Hallway/Walls");
+  });
+
+  it("keep the mesh when the body's box does not hold the pin, or nothing above it is a body", () => {
+    // A body box that has fallen behind its mesh (a tick apart) is not lifted to.
+    const behind = hallway("[600,210,250,410]");
+    const full = { width: 1280, height: 720 };
+    expect(recordedTarget(behind, 1000, 400, full)?.nodePath).toBe("Hallway/Enemy_02/Mesh");
+    // A mesh tracked through `veistra_track` with no body above it.
+    const [lamp] = parseTicks(
+      '{"t":1,"kind":"tick","scene":"","viewport":[1280,720],"nodes":[{"path":"Hallway/Lamp","type":"Node3D","rect":[0,0,400,400]},{"path":"Hallway/Lamp/Bulb","type":"MeshInstance3D","rect":[100,100,50,50]}]}',
+    );
+    expect(recordedTarget(lamp, 120, 120, full)?.nodePath).toBe("Hallway/Lamp/Bulb");
   });
 
   // Base 640x360 under stretch aspect "keep" in a 1000x700 window: Godot
