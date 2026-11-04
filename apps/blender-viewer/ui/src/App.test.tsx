@@ -311,7 +311,7 @@ describe("Blender Viewer toolbar", () => {
       updated: 1,
     });
     backend(undefined, {}, [note("open")]);
-    render(<App />);
+    await renders();
     expect(await screen.findByText("Comments · 1 open")).toBeTruthy();
     await waitFor(() => expect(bridge.handlers.has("comments:changed")).toBe(true));
     const lists = () => bridge.invoke.mock.calls.filter((c) => c[0] === "comments/list").length;
@@ -329,7 +329,7 @@ describe("Blender Viewer toolbar", () => {
     bridge.invoke.mockImplementation((method: string, ...rest: unknown[]) =>
       method === "comments/list" ? Promise.reject(new Error("busy")) : listed(method, ...rest),
     );
-    render(<App />);
+    await renders();
     fireEvent.click(await screen.findByRole("button", { name: "Comments" }));
     expect(await screen.findByText("Couldn't load comments.")).toBeTruthy();
     await waitFor(() => expect(bridge.handlers.has("comments:changed")).toBe(true));
