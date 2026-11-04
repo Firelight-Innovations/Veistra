@@ -6,6 +6,8 @@
 //! `play/*` here. The split is by what the method touches: those four drive
 //! the process, these drive the session around it ([`super::session`]).
 
+use super::detect;
+use super::encode::Quality;
 use super::feedback;
 use super::record;
 use super::rpc::{fail, pick_project_for, Ctx};
@@ -15,10 +17,10 @@ use crate::embed::host::{self, Slot};
 use crate::embed::{Cause, Kind, Owner, State as EmbedState};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use veistra_rpc::{RpcError, INVALID_PARAMS};
 
@@ -29,6 +31,10 @@ struct P {
     x: f64,
     y: f64,
     on: bool,
+    /// `play/record`: `"720p30"` or `"1080p60"`, kept as it was when absent.
+    quality: Option<String>,
+    /// `play/record`: takes each environment keeps, kept as it was when absent.
+    keep: Option<usize>,
     id: Option<String>,
     take: Option<String>,
     notes: Option<Value>,
@@ -172,7 +178,7 @@ fn replan(ctx: &Ctx, s: &Session) {
         .filter(|r| !r.is_empty())
         .unwrap_or_else(|| ".".to_string());
     let godot = ctx.godot.version_for_takes();
-    if let Some(plan) = plan_for(ctx, &run.spec.project, &rel, &godot) {
+    if let Some(plan) = plan_for(ctx, &run.spec.project, &rel, &godot, false) {
         s.plan(plan);
         if let Some(hwnd) = s.embed.hwnd() {
             s.begin_take(hwnd);
@@ -187,7 +193,7 @@ pub fn record_blocked(ctx: &Ctx, project_dir: &Path) -> Option<String> {
     if let Some(why) = record::unavailable() {
         return Some(why.to_string());
     }
-    if super::addon::status(project_dir) != super::addon::Installed::Yes {
+    if !super::addon::status(project_dir).usable() {
         return Some(
             "Recording needs the capture addon, version 2. Enable capture, then run the game."
                 .to_string(),
@@ -197,39 +203,81 @@ pub fn record_blocked(ctx: &Ctx, project_dir: &Path) -> Option<String> {
     None
 }
 
+/// Record's settings for a project on this computer (X9): whether it is on,
+/// the video's quality, and how many takes each environment keeps. Off
+/// until switched on (open decision 2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RecSettings {
+    pub on: bool,
+    pub quality: String,
+    pub keep: usize,
+}
+
+impl Default for RecSettings {
+    fn default() -> Self {
+        Self {
+            on: false,
+            quality: "720p30".into(),
+            keep: takes::KEEP,
+        }
+    }
+}
+
+/// Every project's settings are one file; two panes saving at once would
+/// each write back the other's old value.
+static SETTINGS_WRITE: Mutex<()> = Mutex::new(());
+
 fn setting_file(ctx: &Ctx) -> PathBuf {
     ctx.cache_root.join("play-record.json")
 }
 
-/// Whether Record is on for this environment: per project, on this
-/// computer, off until switched on (open decision 2).
-pub fn record_on(ctx: &Ctx) -> bool {
-    let Some(root) = ctx.root.as_ref() else {
-        return false;
-    };
-    std::fs::read_to_string(setting_file(ctx))
-        .ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .and_then(|v| v[root.to_string_lossy().as_ref()].as_bool())
-        .unwrap_or(false)
+/// What the settings are kept under: the cluster's project, so all its
+/// environments share them, or the environment when no project is known.
+fn setting_key(ctx: &Ctx) -> Option<String> {
+    let key = ctx.project_root.as_ref().or(ctx.root.as_ref())?;
+    Some(key.to_string_lossy().into_owned())
 }
 
-fn write_record_on(ctx: &Ctx, on: bool) -> Result<(), RpcError> {
-    let root = ctx
-        .root
-        .as_ref()
-        .ok_or_else(|| fail("open a project first"))?;
+/// This project's Record settings. The file once held a bare `on` per
+/// environment, which an environment with nothing newer still reads.
+pub fn rec_settings(ctx: &Ctx) -> RecSettings {
+    let Some(key) = setting_key(ctx) else {
+        return RecSettings::default();
+    };
+    let all: Value = std::fs::read_to_string(setting_file(ctx))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or(Value::Null);
+    if let Ok(saved) = serde_json::from_value::<RecSettings>(all[&key].clone()) {
+        if all[&key].is_object() {
+            return saved;
+        }
+    }
+    let env = ctx.root.as_ref().map(|r| r.to_string_lossy().into_owned());
+    RecSettings {
+        on: env.is_some_and(|env| all[&env].as_bool() == Some(true)),
+        ..RecSettings::default()
+    }
+}
+
+fn write_rec_settings(ctx: &Ctx, settings: &RecSettings) -> Result<(), RpcError> {
+    let key = setting_key(ctx).ok_or_else(|| fail("open a project first"))?;
+    let _one = SETTINGS_WRITE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let path = setting_file(ctx);
     let mut all: Value = std::fs::read_to_string(&path)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .filter(Value::is_object)
         .unwrap_or_else(|| json!({}));
-    all[root.to_string_lossy().as_ref()] = json!(on);
+    all[key] = to_value(settings)?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| fail(format!("could not save Record: {e}")))?;
     }
-    std::fs::write(&path, all.to_string()).map_err(|e| fail(format!("could not save Record: {e}")))
+    super::scene::write_atomic(&path, all.to_string().as_bytes())
+        .map_err(|e| fail(format!("could not save Record: {e}")))
 }
 
 /// Where this environment's takes live: inside it, or for the read-only main
@@ -249,9 +297,18 @@ pub fn takes_dir(ctx: &Ctx) -> Result<PathBuf, RpcError> {
     })
 }
 
-/// The take a run started now will be, if Record is on and possible.
-pub fn plan_for(ctx: &Ctx, project_dir: &Path, project_rel: &str, godot: &str) -> Option<Plan> {
-    if !record_on(ctx) || record_blocked(ctx, project_dir).is_some() {
+/// The take a run started now will be, if Record is on (or `once`, a run
+/// recorded without changing the setting) and possible. `godot` is the
+/// engine's `--version` line.
+pub fn plan_for(
+    ctx: &Ctx,
+    project_dir: &Path,
+    project_rel: &str,
+    godot: &str,
+    once: bool,
+) -> Option<Plan> {
+    let settings = rec_settings(ctx);
+    if !(settings.on || once) || record_blocked(ctx, project_dir).is_some() {
         return None;
     }
     let root = ctx.root.clone()?;
@@ -259,13 +316,19 @@ pub fn plan_for(ctx: &Ctx, project_dir: &Path, project_rel: &str, godot: &str) -
         takes_dir: takes_dir(ctx).ok()?,
         env_root: (!ctx.read_only).then(|| root.clone()),
         project: project_rel.to_string(),
-        godot: godot.to_string(),
+        godot: detect::short_version(godot),
+        godot_build: godot.trim().to_string(),
         environment: super::session::env_info(&root),
+        quality: Quality::named(&settings.quality).unwrap_or(Quality::DEFAULT),
+        keep: settings.keep.max(1),
+        usage: ctx.usage.clone(),
     })
 }
 
-/// Record on or off. While a game runs, on starts a take now and off saves
-/// the one going, so the toggle means "from now", not "from the next run".
+/// Record on or off, with its quality and how many takes to keep. While a
+/// game runs, on starts a take now and off saves the one going, so the
+/// toggle means "from now", not "from the next run". The quality and keep
+/// apply from the next take.
 fn set_record(ctx: &Ctx, p: &P) -> Result<Value, RpcError> {
     let project = pick_project_for(ctx, p.project.as_deref())?;
     if p.on {
@@ -273,11 +336,28 @@ fn set_record(ctx: &Ctx, p: &P) -> Result<Value, RpcError> {
             return Err(fail(why));
         }
     }
-    write_record_on(ctx, p.on)?;
+    let mut settings = rec_settings(ctx);
+    settings.on = p.on;
+    if let Some(quality) = &p.quality {
+        if Quality::named(quality).is_none() {
+            return Err(RpcError::new(
+                INVALID_PARAMS,
+                format!("quality is \"720p30\" or \"1080p60\", not {quality:?}"),
+            ));
+        }
+        settings.quality.clone_from(quality);
+    }
+    if let Some(keep) = p.keep {
+        if keep == 0 {
+            return Err(RpcError::new(INVALID_PARAMS, "keep at least one take"));
+        }
+        settings.keep = keep;
+    }
+    write_rec_settings(ctx, &settings)?;
     if let (Some(s), Some(run)) = (session(ctx), ctx.godot.runner.get(&ctx.key)) {
         if p.on {
             let godot = ctx.godot.version_for_takes();
-            if let Some(plan) = plan_for(ctx, &project.dir, &project.rel, &godot) {
+            if let Some(plan) = plan_for(ctx, &project.dir, &project.rel, &godot, false) {
                 s.plan(plan);
                 if let Some(hwnd) = s.embed.hwnd() {
                     s.begin_take(hwnd);
@@ -287,7 +367,7 @@ fn set_record(ctx: &Ctx, p: &P) -> Result<Value, RpcError> {
             s.finish_take(&run);
         }
     }
-    Ok(json!({ "on": p.on }))
+    Ok(json!({ "on": settings.on, "quality": settings.quality, "keep": settings.keep }))
 }
 
 // --- marks, picks and stills ---------------------------------------------------
@@ -427,10 +507,12 @@ fn one_take(ctx: &Ctx, p: &P) -> Result<Value, RpcError> {
 fn delete_take(ctx: &Ctx, p: &P) -> Result<Value, RpcError> {
     let dir = takes_dir(ctx)?;
     let id = take_id(p)?;
-    if session(ctx).is_some_and(
-        |s| matches!(s.take_state(), TakeState::Recording { id: ref now, .. } if *now == id),
-    ) {
-        return Err(fail("that take is still recording"));
+    let busy = |s: &Session| match s.take_state() {
+        TakeState::Recording { id: now, .. } | TakeState::Saving { id: now, .. } => now == id,
+        _ => false,
+    };
+    if session(ctx).is_some_and(|s| busy(&s)) {
+        return Err(fail("that take is still being recorded or saved"));
     }
     takes::delete(&dir, &id).map_err(fail)?;
     Ok(json!({ "deleted": id }))
@@ -513,7 +595,9 @@ pub fn record_project(
 }
 
 /// The `live` part of `play/state`. `project` is the page's chosen project,
-/// as `godot/status` names it.
+/// as `godot/status` names it. `marks` holds F8's and the toolbar's together;
+/// `f8Marks` counts F8's alone, so the page can tell a mark made in the game.
+/// `mouseCaptured` is the last tick's mouse mode.
 pub fn state(ctx: &Ctx, key_since: u64, project: Option<&str>) -> Value {
     let run = ctx.godot.runner.get(&ctx.key);
     let s = run
@@ -528,8 +612,11 @@ pub fn state(ctx: &Ctx, key_since: u64, project: Option<&str>) -> Value {
         run.as_ref().map(|r| r.spec.project.as_path()),
     );
     let blocked = dir.as_ref().and_then(|d| record_blocked(ctx, d));
+    let settings = rec_settings(ctx);
     let record = json!({
-        "on": record_on(ctx),
+        "on": settings.on,
+        "quality": settings.quality,
+        "keep": settings.keep,
         "blocked": blocked,
     });
     let Some(s) = s else {
@@ -550,8 +637,10 @@ pub fn state(ctx: &Ctx, key_since: u64, project: Option<&str>) -> Value {
             "take": s.take_state(),
             "zero": s.zero(started),
             "marks": s.marks(),
+            "f8Marks": s.f8_count(),
             "keys": s.keys_since(key_since),
             "ticks": s.ticks(),
+            "mouseCaptured": s.mouse_captured(),
             "addon": s.channel.as_deref().and_then(super::addon::running_version),
         },
     })
@@ -588,6 +677,7 @@ mod tests {
             godot: &w.godot,
             key: "c1".into(),
             root: Some(w.dir.path().to_path_buf()),
+            project_root: Some(w.dir.path().to_path_buf()),
             read_only: false,
             probe: super::super::detect::Probe::default(),
             check: &|_| Err("no engine here".into()),
@@ -600,6 +690,63 @@ mod tests {
             shown: &|_| true,
             usage: Arc::new(|_, _| {}),
         }
+    }
+
+    /// X9: Record is the project's, so each of its environments has it on
+    /// at once, and an environment switched on before that is still on.
+    #[test]
+    fn record_is_off_until_switched_on_and_shared_by_a_project_s_environments() {
+        let w = world();
+        let c = ctx(&w);
+        assert_eq!(rec_settings(&c), RecSettings::default());
+        assert!(!rec_settings(&c).on);
+
+        let record = |c: &Ctx, params: Value| call(c, "play/record", Some(&params)).unwrap();
+        let saved = record(
+            &c,
+            json!({ "project": "game", "on": false, "quality": "1080p60", "keep": 3 }),
+        )
+        .unwrap();
+        assert_eq!(
+            saved,
+            json!({ "on": false, "quality": "1080p60", "keep": 3 })
+        );
+        for bad in [
+            json!({ "project": "game", "quality": "4k" }),
+            json!({ "project": "game", "keep": 0 }),
+        ] {
+            let e = record(&c, bad.clone()).unwrap_err();
+            assert_eq!(e.code, INVALID_PARAMS, "{bad}");
+        }
+        let on = RecSettings {
+            on: true,
+            ..rec_settings(&c)
+        };
+        write_rec_settings(&c, &on).unwrap();
+        let other_env = w.dir.path().join("other");
+        let sibling = Ctx {
+            root: Some(other_env.clone()),
+            ..ctx(&w)
+        };
+        assert_eq!(
+            rec_settings(&sibling),
+            on,
+            "the project's, not the environment's"
+        );
+        assert_eq!(state(&sibling, 0, None)["record"]["keep"], 3);
+
+        let elsewhere = Ctx {
+            root: Some(other_env.clone()),
+            project_root: Some(w.dir.path().join("another-project")),
+            ..ctx(&w)
+        };
+        assert!(!rec_settings(&elsewhere).on, "another project's is its own");
+        let mut legacy = serde_json::Map::new();
+        legacy.insert(other_env.to_string_lossy().into_owned(), json!(true));
+        std::fs::write(setting_file(&c), Value::Object(legacy).to_string()).unwrap();
+        let read = rec_settings(&elsewhere);
+        assert!(read.on, "the old per-environment switch still counts");
+        assert_eq!((read.quality.as_str(), read.keep), ("720p30", takes::KEEP));
     }
 
     #[test]
@@ -739,6 +886,44 @@ mod tests {
             w.hosts.box_of(&Slot::new("play-2", Kind::Game)).is_none(),
             "another pane's box is its own"
         );
+    }
+
+    #[test]
+    fn state_counts_f8_marks_apart_and_says_when_the_game_holds_the_mouse() {
+        let w = world();
+        let c = ctx(&w);
+        let channel = w.dir.path().join("chan");
+        std::fs::create_dir_all(&channel).unwrap();
+        let spec = super::super::runner::RunSpec {
+            program: super::super::testing::fake_godot(w.dir.path(), true),
+            project: w.dir.path().join("game"),
+            scene: None,
+            channel: Some(channel.clone()),
+            window: None,
+        };
+        let run = w.godot.runner.start("c1", spec).unwrap();
+        let s = Arc::new(Session::new(run.id, Some(channel.clone()), None));
+        w.godot.set_session("c1", s.clone());
+        s.mark();
+        let file = channel.join(super::super::telemetry::FILE);
+        std::fs::write(
+            &file,
+            "{\"t\":5,\"kind\":\"mark\"}\n{\"t\":6,\"kind\":\"tick\",\"mouse\":2}\n",
+        )
+        .unwrap();
+        let first = state(&c, 0, None)["session"].clone();
+        std::fs::write(
+            &file,
+            "{\"t\":5,\"kind\":\"mark\"}\n{\"t\":6,\"kind\":\"tick\",\"mouse\":2}\n\
+             {\"t\":7,\"kind\":\"tick\",\"mouse\":0}\n",
+        )
+        .unwrap();
+        let then = state(&c, 0, None)["session"].clone();
+        assert_eq!(w.godot.runner.stop("c1"), Ok(true));
+        assert_eq!(first["marks"].as_array().map(Vec::len), Some(2));
+        assert_eq!(first["f8Marks"], 1, "the toolbar's is not F8's");
+        assert_eq!(first["mouseCaptured"], true);
+        assert_eq!(then["mouseCaptured"], false, "the last tick decides");
     }
 
     #[test]

@@ -50,6 +50,9 @@ pub struct Ctx<'a> {
     pub key: String,
     /// The environment's folder, `None` before a project is open.
     pub root: Option<PathBuf>,
+    /// The cluster's project, which every one of its environments belongs
+    /// to; Record's settings are kept under it.
+    pub project_root: Option<PathBuf>,
     pub read_only: bool,
     pub probe: Probe,
     pub check: Check<'a>,
@@ -90,6 +93,9 @@ struct Params {
     png_base64: Option<String>,
     /// `godot-viewer/markup-save`: the markup JSON as text.
     json: Option<String>,
+    /// `play/run`, `play/restart`: record this run whatever Record is set
+    /// to, and leave the setting as it is.
+    record_once: bool,
 }
 
 fn params(raw: Option<&Value>) -> Result<Params, RpcError> {
@@ -336,7 +342,7 @@ fn valid_scene(scene: &str) -> bool {
 }
 
 fn channel_for(ctx: &Ctx, project: &GodotProject) -> Result<Option<PathBuf>, RpcError> {
-    if addon::status(&project.dir) != addon::Installed::Yes {
+    if !addon::status(&project.dir).usable() {
         return Ok(None);
     }
     let base = ctx.scratch.join("play");
@@ -350,7 +356,12 @@ fn channel_for(ctx: &Ctx, project: &GodotProject) -> Result<Option<PathBuf>, Rpc
     Ok(Some(dir))
 }
 
-fn start_run(ctx: &Ctx, project: &GodotProject, scene: Option<String>) -> Result<Value, RpcError> {
+fn start_run(
+    ctx: &Ctx,
+    project: &GodotProject,
+    scene: Option<String>,
+    record_once: bool,
+) -> Result<Value, RpcError> {
     let found = require_engine(ctx)?;
     if project.engine_major < 4 {
         return Err(fail(format!(
@@ -387,10 +398,14 @@ fn start_run(ctx: &Ctx, project: &GodotProject, scene: Option<String>) -> Result
     let run = ctx.godot.runner.start(&ctx.key, spec).map_err(fail)?;
     let plan = channel
         .is_some()
-        .then(|| super::live::plan_for(ctx, &project.dir, &project.rel, &found.version))
+        .then(|| {
+            let (dir, rel) = (&project.dir, &project.rel);
+            super::live::plan_for(ctx, dir, rel, &found.version, record_once)
+        })
         .flatten();
     let embed = ctx.hosts.embed(Kind::Game);
     let session = Arc::new(Session::with_embed(run.id, channel, plan, embed.clone()));
+    run.set_tap(Some(session.log_tap()));
     ctx.godot.set_session(&ctx.key, session.clone());
     {
         let (session, run) = (session.clone(), run.clone());
@@ -449,7 +464,7 @@ fn launch_window(pane: Option<&Pane>, owner: Option<&Owner>) -> WindowArgs {
 
 fn play_run(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
     let project = pick_project(ctx, p)?;
-    start_run(ctx, &project, p.scene.clone())
+    start_run(ctx, &project, p.scene.clone(), p.record_once)
 }
 
 /// Stop, then start again with the same project and scene. The channel is made
@@ -465,7 +480,7 @@ fn play_restart(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
         None => pick_project(ctx, p)?,
     };
     let scene = previous.and_then(|s| s.scene).or_else(|| p.scene.clone());
-    start_run(ctx, &project, scene)
+    start_run(ctx, &project, scene, p.record_once)
 }
 
 fn live_channel(
@@ -544,7 +559,7 @@ fn addon_status(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
         .is_some_and(|r| r.is_running() && r.spec.channel.is_none());
     Ok(json!({
         "addon": to_value(&addon::status(&project.dir))?,
-        "needsRestart": running_without && addon::status(&project.dir) == addon::Installed::Yes,
+        "needsRestart": running_without && addon::status(&project.dir).usable(),
         "readOnly": ctx.read_only,
     }))
 }
@@ -882,10 +897,15 @@ pub fn with_live_for<R>(
             crate::veistra_log!("play: could not serve {}: {e}", dir.display());
         }
     };
+    let project_root = context
+        .cluster_id
+        .as_deref()
+        .and_then(|c| crate::project::cluster_pointer(app, c));
     let ctx = Ctx {
         godot: &godot,
         key,
         root: context.project.clone(),
+        project_root,
         read_only,
         probe: Probe::from_system(&setting),
         check: &check,
@@ -948,6 +968,7 @@ mod tests {
             godot: &w.godot,
             key: "c1".to_string(),
             root: Some(w.root.clone()),
+            project_root: Some(w.root.clone()),
             read_only,
             probe: Probe {
                 setting: w.exe.display().to_string(),
@@ -1204,6 +1225,62 @@ mod tests {
 
         call(&c, "play/addon-remove", json!({})).unwrap();
         assert!(!w.root.join("game/addons").exists());
+        w.godot.shutdown();
+    }
+
+    /// Design §13 test 8: with the addon removed, Play still runs and nothing
+    /// throws. What needs the addon says so; the rest answers as before.
+    #[test]
+    fn a_run_after_the_addon_is_removed_has_no_channel_and_still_answers() {
+        let w = world(true);
+        let c = ctx(&w, false, &real_check);
+        call(&c, "play/addon-install", json!({})).unwrap();
+        let removed = call(&c, "play/addon-remove", json!({})).unwrap();
+        assert_eq!(removed["addon"], "no");
+
+        let started = call(&c, "play/run", json!({})).unwrap();
+        assert_eq!(started["run"]["state"]["kind"], "running");
+        assert_eq!(started["run"]["captureReady"], false);
+        let run = w.godot.runner.get("c1").unwrap();
+        assert_eq!(run.spec.channel, None);
+        wait_until("the fake's arguments", || {
+            run.log_since(0)
+                .lines
+                .iter()
+                .any(|l| l.text.starts_with("args:"))
+        });
+        assert!(run
+            .log_since(0)
+            .lines
+            .iter()
+            .all(|l| !l.text.contains("--veistra-dir")));
+
+        let state = call(&c, "play/state", json!({ "since": 0 })).unwrap();
+        let session = &state["live"]["session"];
+        assert_eq!(session["addon"], Value::Null);
+        assert_eq!(session["ticks"], 0);
+        assert_eq!(session["f8Marks"], 0);
+        assert_eq!(session["mouseCaptured"], false);
+        assert_eq!(session["take"]["state"], "off");
+        assert!(state["live"]["record"]["blocked"].is_string());
+        let marked = call(&c, "play/mark", json!({})).unwrap();
+        assert_eq!(marked["marks"].as_array().map(Vec::len), Some(1));
+        let pick = json!({ "x": 10, "y": 10 });
+        for (method, params) in [
+            ("play/pick", pick),
+            ("play/still", json!({})),
+            ("play/capture", json!({})),
+            ("play/pause", json!({ "paused": true })),
+        ] {
+            let err = call(&c, method, params).unwrap_err();
+            assert!(
+                err.message.contains("capture addon"),
+                "{method}: {}",
+                err.message
+            );
+        }
+        let stopped = call(&c, "play/stop", json!({})).unwrap();
+        assert_eq!(stopped["run"]["state"]["kind"], "stopped");
         w.godot.shutdown();
     }
 

@@ -2,20 +2,22 @@
 //!
 //! A take is a folder, `.veistra/takes/<yyyy-mm-dd-hhmm>-<4 hex>/`, holding the
 //! five files the design lists: `take.mp4`, `telemetry.jsonl`, `log.jsonl`,
-//! `take.json` (written on stop) and `notes.json` (drafts, written as the
-//! person types). The video is written by [`super::record`]; everything else is
-//! here, and nothing here needs Windows, so all of it is tested on any host.
+//! `take.json` and `notes.json` (drafts, rewritten as the person types). The
+//! video is written by [`super::record`]; everything else is here, and nothing
+//! here needs Windows, so all of it is tested on any host.
+//!
+//! **The video is the last file to arrive.** It is recorded as
+//! [`VIDEO_PART`] and renamed once the encoder has closed it, which can be a
+//! second after the rest of the take is written: a listed take without
+//! `take.mp4` is one whose video is still closing, or failed to.
 //!
 //! **Kept out of git through `.git/info/exclude`**, not the project's
-//! `.gitignore`: a take is one person's local recording, and a line in a
-//! tracked file would be a change to the repository nobody asked for. In a
-//! linked worktree the exclude file is the shared one, which covers every
-//! worktree of the repository at once.
+//! `.gitignore`: a take is one person's recording, not a change to the
+//! repository. A linked worktree's exclude file is the shared one.
 //!
-//! **Retention**: the last [`KEEP`] takes per environment. A take with draft
-//! notes is kept until they are sent or deleted, because deleting it would
-//! lose words the person wrote. A sent packet holds its own copies of the
-//! frames, so deleting a take never breaks one.
+//! **Retention** is per environment ([`retain`]): the newest takes, any with
+//! draft notes, and none that never got its `take.json` once it has sat for
+//! [`ORPHAN_AFTER`].
 
 use super::runner::{Level, LogLine};
 use super::telemetry::{self, Line, SceneSpan};
@@ -24,17 +26,30 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::{Duration, SystemTime};
 
 /// Takes kept per environment (open decision 7: ten).
 pub const KEEP: usize = 10;
 
 pub const VIDEO: &str = "take.mp4";
+/// The video while it is being written.
+pub const VIDEO_PART: &str = "take.mp4.part";
 pub const SUMMARY: &str = "take.json";
 pub const LOG: &str = "log.jsonl";
 pub const NOTES: &str = "notes.json";
 
 /// What `.git/info/exclude` gets, once.
 const EXCLUDE_LINE: &str = ".veistra/takes/";
+
+/// How long a take folder without `take.json` is left before it is taken for
+/// the remains of a take that never finished. Far longer than closing a video
+/// takes, and a take being recorded writes its video all the time.
+pub const ORPHAN_AFTER: Duration = Duration::from_secs(60 * 60);
+
+/// The empty drafts document every take starts with.
+fn no_notes() -> Value {
+    json!({ "version": 1, "notes": [] })
+}
 
 /// `<root>/.veistra/takes`.
 pub fn dir_in(root: &Path) -> PathBuf {
@@ -106,10 +121,14 @@ pub struct Counts {
     pub warnings: u32,
 }
 
-/// `take.json`, the shape in design §5.4. `number` (Take 4, Take 5), `ticks`
-/// and `project` are additions: the toolbar names takes by number, the
-/// ticks-a-second check reads `ticks`, and `project` says which Godot project
-/// of a multi-project environment ran.
+/// `take.json`, the shape in design §5.4. `number` (Take 4, Take 5), the
+/// tick fields, `project` and `godotBuild` are additions: the toolbar names
+/// takes by number, the acceptance checks for the capture addon read
+/// `tickRate` (nine a second or more) and `tickUsP95` (500 or less when
+/// `tickNodes` is 64), `project` says which Godot project of a multi-project
+/// environment ran, and `godotBuild` keeps the whole version line `godot`
+/// shortens to "4.5.1". `ticks` counts only the take's own, not the run's
+/// before Record went on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Summary {
@@ -121,6 +140,8 @@ pub struct Summary {
     #[serde(default)]
     pub project: String,
     pub godot: String,
+    #[serde(default)]
+    pub godot_build: String,
     pub started_at: u64,
     pub duration_ms: u64,
     pub video: VideoInfo,
@@ -129,6 +150,16 @@ pub struct Summary {
     pub counts: Counts,
     #[serde(default)]
     pub ticks: u64,
+    /// Ticks a second over the take, to one decimal.
+    #[serde(default)]
+    pub tick_rate: f64,
+    /// The 95th percentile of the addon's `tickUs`.
+    #[serde(default)]
+    pub tick_us_p95: u32,
+    /// The most nodes one tick tracked: the cost above is only the budget's
+    /// answer when this reached the addon's cap of 64.
+    #[serde(default)]
+    pub tick_nodes: usize,
 }
 
 /// [`SceneSpan`] as `take.json` spells it.
@@ -157,7 +188,9 @@ pub struct Finish<'a> {
     pub number: u32,
     pub project: &'a str,
     pub environment: EnvInfo,
+    /// The version as take.json shows it ("4.5.1"), and the line it came from.
     pub godot: &'a str,
+    pub godot_build: &'a str,
     /// Wall time of the first video frame: take time zero.
     pub started_at: u64,
     pub ended_at: u64,
@@ -169,18 +202,25 @@ pub struct Finish<'a> {
     pub marks: &'a [u64],
 }
 
-/// Write `telemetry.jsonl`, `log.jsonl` and `take.json`, and answer the summary.
+/// How far either side of the take its telemetry copy reaches, so the tick
+/// nearest a mark at either end is still in it.
+const TELEMETRY_MARGIN: u64 = 200;
+
+/// Write `telemetry.jsonl`, `log.jsonl`, an empty `notes.json` and then
+/// `take.json`, last because it is what makes the folder a take to the list,
+/// and answer the summary.
 pub fn finish(f: &Finish) -> std::io::Result<Summary> {
     std::fs::create_dir_all(f.dir)?;
     let duration = f.ended_at.saturating_sub(f.started_at);
     let inside = |t: u64| t >= f.started_at && t <= f.ended_at;
 
     let lines = match f.channel {
-        Some(channel) => {
-            telemetry::copy_into(channel, f.dir)?;
-            let text = std::fs::read_to_string(f.dir.join(telemetry::FILE)).unwrap_or_default();
-            telemetry::parse_all(&text)
-        }
+        Some(channel) => telemetry::copy_window(
+            channel,
+            f.dir,
+            f.started_at.saturating_sub(TELEMETRY_MARGIN),
+            f.ended_at.saturating_add(TELEMETRY_MARGIN),
+        )?,
         None => {
             std::fs::write(f.dir.join(telemetry::FILE), "")?;
             Vec::new()
@@ -219,8 +259,18 @@ pub fn finish(f: &Finish) -> std::io::Result<Summary> {
         log.push('\n');
     }
     std::fs::write(f.dir.join(LOG), log)?;
+    // Never over drafts: the page may have saved some already.
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(f.dir.join(NOTES))
+    {
+        Ok(file) => serde_json::to_writer_pretty(file, &no_notes())?,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
 
-    let ticks = lines.iter().filter(|l| matches!(l, Line::Tick(_))).count() as u64;
+    let ticks = telemetry::tick_stats(&lines, f.started_at, f.ended_at);
     let summary = Summary {
         version: 1,
         id: f.id.to_string(),
@@ -228,6 +278,7 @@ pub fn finish(f: &Finish) -> std::io::Result<Summary> {
         environment: f.environment.clone(),
         project: f.project.to_string(),
         godot: f.godot.to_string(),
+        godot_build: f.godot_build.to_string(),
         started_at: f.started_at,
         duration_ms: duration,
         video: f.video,
@@ -237,10 +288,24 @@ pub fn finish(f: &Finish) -> std::io::Result<Summary> {
             .collect(),
         marks,
         counts,
-        ticks,
+        ticks: ticks.count,
+        tick_rate: (ticks.per_second * 10.0).round() / 10.0,
+        tick_us_p95: ticks.tick_us_p95,
+        tick_nodes: ticks.max_nodes,
     };
     write_json(&f.dir.join(SUMMARY), &summary)?;
     Ok(summary)
+}
+
+/// Correct `take.json`'s video once the file is closed and its size is known
+/// from the file itself rather than from what the encoder was asked for.
+pub fn set_video(dir: &Path, video: VideoInfo) -> Result<(), String> {
+    let path = dir.join(SUMMARY);
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("no take.json: {e}"))?;
+    let mut summary: Summary =
+        serde_json::from_str(&text).map_err(|e| format!("take.json: {e}"))?;
+    summary.video = video;
+    write_json(&path, &summary).map_err(|e| format!("could not write take.json: {e}"))
 }
 
 /// Written through a temporary file of its own, so two writes of one file at
@@ -338,12 +403,12 @@ pub fn next_number(takes: &Path) -> u32 {
 /// Draft notes as the page wrote them, or an empty document.
 pub fn load_notes(takes: &Path, id: &str) -> Value {
     if !valid_id(id) {
-        return json!({ "version": 1, "notes": [] });
+        return no_notes();
     }
     std::fs::read_to_string(takes.join(id).join(NOTES))
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_else(|| json!({ "version": 1, "notes": [] }))
+        .unwrap_or_else(no_notes)
 }
 
 /// Replace a take's `notes.json`. The page owns the document's shape; this
@@ -445,10 +510,15 @@ pub fn delete(takes: &Path, id: &str) -> Result<(), String> {
     std::fs::remove_dir_all(&dir).map_err(failed)
 }
 
-/// Keep the newest `keep` takes, plus any older one with drafts. Answers the
-/// ids it deleted. A take that will not delete (a file open in a player) is
-/// skipped and tried again next time.
+/// Keep the newest `keep` takes, plus any older one with drafts, and remove
+/// what is left of takes that never finished. Answers the ids it deleted. A
+/// take that will not delete (a file open in a player) is skipped and tried
+/// again next time.
 pub fn retain(takes: &Path, keep: usize) -> Vec<String> {
+    retain_at(takes, keep, SystemTime::now())
+}
+
+fn retain_at(takes: &Path, keep: usize, now: SystemTime) -> Vec<String> {
     let mut gone = Vec::new();
     for old in list(takes).into_iter().skip(keep) {
         if old.drafts > 0 {
@@ -458,7 +528,42 @@ pub fn retain(takes: &Path, keep: usize) -> Vec<String> {
             gone.push(old.summary.id);
         }
     }
+    let Ok(entries) = std::fs::read_dir(takes) else {
+        return gone;
+    };
+    for entry in entries.flatten() {
+        let id = entry.file_name().to_string_lossy().into_owned();
+        let dir = entry.path();
+        if !valid_id(&id) || dir.join(SUMMARY).exists() {
+            continue;
+        }
+        let idle = now
+            .duration_since(last_written(&dir))
+            .unwrap_or(Duration::ZERO);
+        if idle >= ORPHAN_AFTER && std::fs::remove_dir_all(&dir).is_ok() {
+            gone.push(id);
+        }
+    }
     gone
+}
+
+/// When anything in a take folder was last written: the folder's own time,
+/// or a newer one of a file in it (a video being recorded). Each file is
+/// asked itself: Windows's listing can lag behind a file still open.
+fn last_written(dir: &Path) -> SystemTime {
+    let modified = |m: std::fs::Metadata| m.modified().ok();
+    let files = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| std::fs::metadata(e.path()).ok().and_then(modified));
+    std::fs::metadata(dir)
+        .ok()
+        .and_then(modified)
+        .into_iter()
+        .chain(files)
+        .max()
+        .unwrap_or(SystemTime::UNIX_EPOCH)
 }
 
 /// Make sure the repository at `root` ignores takes, through its
@@ -529,9 +634,11 @@ mod tests {
         std::fs::write(
             channel.join(telemetry::FILE),
             format!(
-                "{{\"t\":{a},\"kind\":\"tick\",\"scene\":\"res://a.tscn\",\"frameMs\":16}}\n\
+                "{{\"t\":{early},\"kind\":\"tick\",\"scene\":\"res://a.tscn\",\"tickUs\":9000,\"nodes\":[{{}},{{}},{{}}]}}\n\
+                 {{\"t\":{a},\"kind\":\"tick\",\"scene\":\"res://a.tscn\",\"frameMs\":16,\"tickUs\":310,\"nodes\":[{{}}]}}\n\
                  {{\"t\":{b},\"kind\":\"mark\"}}\n\
-                 {{\"t\":{c},\"kind\":\"tick\",\"scene\":\"res://a.tscn\",\"frameMs\":16}}\n",
+                 {{\"t\":{c},\"kind\":\"tick\",\"scene\":\"res://a.tscn\",\"frameMs\":16,\"tickUs\":420}}\n",
+                early = started - 3_000,
                 a = started + 100,
                 b = started + 41_060,
                 c = started + 50_000,
@@ -554,6 +661,7 @@ mod tests {
                 commit: Some("8c41e07".into()),
             },
             godot: "4.5.1",
+            godot_build: "4.5.1.stable.official.f62fdbde1",
             started_at: started,
             ended_at: started + 151_400,
             video: VideoInfo {
@@ -588,7 +696,10 @@ mod tests {
             },
             "only lines inside the take count"
         );
-        assert_eq!(s.ticks, 2);
+        assert_eq!(s.ticks, 2, "a tick from before the take is not the take's");
+        assert_eq!(s.tick_rate, 0.0, "two ticks in 151 s round to nothing");
+        assert_eq!(s.tick_us_p95, 420, "the early tick's cost is not counted");
+        assert_eq!(s.tick_nodes, 1, "nor its three nodes");
         assert_eq!(s.scenes.len(), 1);
         assert_eq!(s.scenes[0].to_ms, 151_400);
 
@@ -600,12 +711,17 @@ mod tests {
             "id",
             "environment",
             "godot",
+            "godotBuild",
             "startedAt",
             "durationMs",
             "video",
             "scenes",
             "marks",
             "counts",
+            "ticks",
+            "tickRate",
+            "tickUsP95",
+            "tickNodes",
         ] {
             assert!(json.get(key).is_some(), "take.json has `{key}`");
         }
@@ -615,7 +731,103 @@ mod tests {
         let first: Value = serde_json::from_str(log.lines().next().unwrap()).unwrap();
         assert_eq!(first["ms"], 2_000);
         assert_eq!(first["level"], "error");
-        assert!(take.join(telemetry::FILE).is_file());
+        let telemetry = std::fs::read_to_string(take.join(telemetry::FILE)).unwrap();
+        assert_eq!(
+            telemetry.lines().count(),
+            3,
+            "the tick from before the take is not copied"
+        );
+        assert_eq!(load_notes(&takes, "2026-10-30-1402-0f3a"), no_notes());
+        assert!(
+            !take.join(VIDEO).exists(),
+            "the video is the recorder's, renamed in once it is closed"
+        );
+    }
+
+    #[test]
+    fn finishing_again_keeps_drafts_already_written() {
+        let dir = TempDir::new().unwrap();
+        let takes = dir.path().join("takes");
+        let id = "2026-10-30-1402-0f3a";
+        finish_one(&takes, id, 1_000_000, 1);
+        let draft = json!({ "version": 1, "notes": [{ "n": 1, "body": "door" }] });
+        save_notes(&takes, id, &draft).unwrap();
+        finish_one(&takes, id, 1_000_000, 1);
+        assert_eq!(load_notes(&takes, id), draft);
+    }
+
+    #[test]
+    fn two_takes_of_one_run_each_keep_only_their_own_telemetry() {
+        let dir = TempDir::new().unwrap();
+        let channel = dir.path().join("chan");
+        std::fs::create_dir_all(&channel).unwrap();
+        let tick = |t: u64, scene: &str| {
+            format!(
+                "{{\"t\":{t},\"kind\":\"tick\",\"scene\":\"res://{scene}.tscn\",\"tickUs\":300}}\n"
+            )
+        };
+        let text: String = (0..20)
+            .map(|i| tick(10_000 + i * 100, "a"))
+            .chain((0..30).map(|i| tick(20_000 + i * 100, "b")))
+            .collect();
+        std::fs::write(channel.join(telemetry::FILE), text).unwrap();
+        let take = |id: &str, started: u64, ended: u64| {
+            finish(&Finish {
+                dir: &dir.path().join(id),
+                id,
+                number: 1,
+                project: ".",
+                environment: EnvInfo::default(),
+                godot: "4.5.1",
+                godot_build: "4.5.1.stable",
+                started_at: started,
+                ended_at: ended,
+                video: VideoInfo::default(),
+                channel: Some(&channel),
+                log: &[],
+                marks: &[],
+            })
+            .unwrap()
+        };
+        let one = take("2026-10-30-1402-0001", 10_000, 11_900);
+        let two = take("2026-10-30-1403-0002", 20_000, 22_900);
+        assert_eq!((one.ticks, two.ticks), (20, 30));
+        assert_eq!(one.scenes.len(), 1);
+        assert_eq!(one.scenes[0].path, "res://a.tscn");
+        assert_eq!(
+            two.scenes[0].path, "res://b.tscn",
+            "not the first take's scene"
+        );
+        let lines = |id: &str| {
+            std::fs::read_to_string(dir.path().join(id).join(telemetry::FILE))
+                .unwrap()
+                .lines()
+                .count()
+        };
+        assert_eq!(lines("2026-10-30-1402-0001"), 20);
+        assert_eq!(lines("2026-10-30-1403-0002"), 30);
+    }
+
+    #[test]
+    fn the_video_size_is_corrected_from_the_closed_file() {
+        let dir = TempDir::new().unwrap();
+        let takes = dir.path().to_path_buf();
+        let id = "2026-10-30-1402-0f3a";
+        finish_one(&takes, id, 1_000_000, 1);
+        let video = VideoInfo {
+            width: 1280,
+            height: 718,
+            fps: 30,
+        };
+        set_video(&takes.join(id), video).unwrap();
+        let listed = read(&takes, id).unwrap();
+        assert_eq!(listed.summary.video, video);
+        assert_eq!(
+            listed.summary.marks,
+            vec![41_060, 72_010],
+            "the rest is kept"
+        );
+        assert!(set_video(&takes.join("2026-10-30-1402-ffff"), video).is_err());
     }
 
     #[test]
@@ -661,6 +873,35 @@ mod tests {
     }
 
     #[test]
+    fn a_take_that_never_finished_is_removed_once_it_has_sat_for_an_hour() {
+        let dir = TempDir::new().unwrap();
+        let takes = dir.path().to_path_buf();
+        finish_one(&takes, "2026-10-30-1402-0001", 1_000_000, 1);
+        let orphan = takes.join("2026-10-30-1403-0002");
+        std::fs::create_dir_all(&orphan).unwrap();
+        std::fs::write(orphan.join(VIDEO_PART), b"half a video").unwrap();
+        std::fs::create_dir_all(takes.join("not-a-take")).unwrap();
+
+        let now = SystemTime::now();
+        assert!(
+            retain_at(&takes, 10, now).is_empty(),
+            "it may still be recording"
+        );
+        assert!(orphan.is_dir());
+        let later = now + ORPHAN_AFTER + Duration::from_secs(60);
+        assert_eq!(
+            retain_at(&takes, 10, later),
+            vec!["2026-10-30-1403-0002".to_string()]
+        );
+        assert!(!orphan.exists());
+        assert!(
+            takes.join("not-a-take").is_dir(),
+            "only take folders are touched"
+        );
+        assert_eq!(list(&takes).len(), 1, "a finished take is not an orphan");
+    }
+
+    #[test]
     fn notes_must_be_a_document_with_a_notes_array_on_a_real_take() {
         let dir = TempDir::new().unwrap();
         let takes = dir.path().to_path_buf();
@@ -698,6 +939,46 @@ mod tests {
 
         let bare = TempDir::new().unwrap();
         ensure_excluded(bare.path()).unwrap();
+    }
+
+    /// The same, against git itself: a take folder in a linked worktree, and
+    /// one in the main tree, are both left out of `git status`.
+    #[test]
+    fn takes_in_a_linked_worktree_are_left_out_of_git_status_in_every_tree() {
+        let dir = TempDir::new().unwrap();
+        let main = dir.path().join("main");
+        let wt = dir.path().join("wt");
+        std::fs::create_dir_all(&main).unwrap();
+        let git = |cwd: &Path, args: &[&str]| {
+            let out = crate::git::git_command()
+                .current_dir(cwd)
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .output()
+                .unwrap();
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(out.status.success(), "git {args:?}: {stderr}");
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        git(&main, &["init", "-q"]);
+        std::fs::write(main.join("project.godot"), "").unwrap();
+        git(&main, &["add", "."]);
+        git(&main, &["commit", "-qm", "init"]);
+        git(&main, &["worktree", "add", "-q", &wt.to_string_lossy()]);
+
+        ensure_excluded(&wt).unwrap();
+        ensure_excluded(&wt).unwrap();
+        for root in [&main, &wt] {
+            let take = dir_in(root).join("2026-10-30-1402-0f3a");
+            std::fs::create_dir_all(&take).unwrap();
+            std::fs::write(take.join(SUMMARY), "{}").unwrap();
+            std::fs::write(take.join(VIDEO_PART), "").unwrap();
+        }
+        assert_eq!(git(&wt, &["status", "--porcelain"]), "");
+        assert_eq!(git(&main, &["status", "--porcelain"]), "");
+        let exclude = std::fs::read_to_string(main.join(".git/info/exclude")).unwrap();
+        assert_eq!(exclude.matches(EXCLUDE_LINE).count(), 1);
     }
 
     #[test]
@@ -745,6 +1026,7 @@ mod tests {
             project: ".",
             environment: EnvInfo::default(),
             godot: "4.5.1",
+            godot_build: "4.5.1.stable.official.f62fdbde1",
             started_at: 1_000,
             ended_at: 9_000,
             video: VideoInfo::default(),
