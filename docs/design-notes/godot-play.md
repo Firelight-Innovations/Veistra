@@ -121,6 +121,30 @@ script, or an earlier v2, whose game keeps its channel until the update). Stop s
 `tickUsP95` and `tickNodes` count only the take's own ticks. `examples/godot-demo` is the game
 the acceptance runs use, and its README is the procedure (#312).
 
+**Review** (`play/Review.tsx`, `Timeline.tsx`, `NotesPanel.tsx`) plays `take.mp4` through the
+asset protocol. Under it are six lanes, top to bottom: Frames, Notes, Marks, Log, Scenes and
+Frame time. The filmstrip is drawn from a video of its own, one frame every 2 s at the video's
+shape, each over the 2 s it stands for. It starts once the player can play, so its seeks never
+compete with the first frame. The keys are Space, Left and Right (one frame, 1/fps), I and O
+(an end set on the wrong side of the other drops it), N, and Ctrl Enter to send. On read-only
+main notes are written and edited as anywhere; only Send is refused. The toolbar has the take
+menu and Play again (F5),
+which runs the reviewed take's project. Notes follow §8.3: `n` is never reused, and a mark's
+note goes at the mark, leaving a pending range alone. A pin's target is the smallest tracked
+box under it in the tick nearest the note, lifted to the nearest tracked physics body or area
+above it whose box also holds the pin. `markup.json` is the existing format, with `source.path`
+the take's video at `#t=<seconds>`. Errors and warnings within 10 s of a note go with it and
+are counted on its card; an error within 2 s of a mark shows beside the mark. The page fires
+`note_created` `{kind, from}` and `mark_dropped` `{source, recording}` (#314).
+
+Opening review from F7 waits for, in order: Stop's telemetry flush (600 ms at most), `take.json`,
+the encoder closing the MP4 (its index grows with the take), `play/take`, and the player's first
+frame. The telemetry, the log and the filmstrip load after that. The time from the F7 press,
+taken from the addon's key event, to that first frame is on the review's root as
+`data-open-ms`, and logged as `review of take … opened in N ms`. Read it with
+`pnpm probe --agent --server agent eval` inside the Play frame:
+`document.querySelector('.pl-review').dataset.openMs`.
+
 **Send** (`feedback.rs`) writes `.veistra/feedback/<take>-<n>/` with `packet.md` and per note
 `markup.png`, `markup.json`, `contact.png`, `frames/` and `context.json`, files each note as a
 comment with a `take` anchor, and the page attaches `packet.md` at the agent's prompt. Agents
@@ -189,6 +213,11 @@ check it". The same chokepoint reports `godot:note_fixed` and `godot:note_resolv
 | How note status reaches open panes (#311) | Pushed: `comments:changed` from the comment store's write chokepoint, relayed by the shell to the frames of every cluster on that environment | Polling in each pane was rejected: Review polls every 2 s and the other panes never saw an agent's fix. The file watcher was rejected: it watches only roots a Files frame asked for and fires on every write. Review's poll stays as the fallback. |
 | Where note_fixed and note_resolved fire (#311) | Rust, from the same chokepoint, through `telemetry::track` to the main window's shell, checked against the `godot` feature there | Tracking in a frame misses a fix made while no Play pane is open, and a broadcast is counted once per window. Capture stays in the webview (`docs/telemetry.md` §9). |
 | "Only the user sets resolved" (#311) | Enforced in `comments::resolve_with_commit`, with one write lock across read, edit and rename | Checks only in the MCP tools let a future caller undo a Looks good, and an agent's resolve racing a verdict lost one of them. |
+| Review's markup (#314) | `@veistra/markup`'s `MarkupLayer` over the paused frame, through `FrameMarkup.tsx`, which live mark up shares; not `useMarkup` | Decision X11. `useMarkup` owns the send to an agent, and a note's markup is kept in the note until Send. The layer gives the same `markup.json` and PNG, and `pick` names what a pin is on. |
+| A pin's recorded target (#314) | The smallest tracked box under the pin, lifted to the nearest tracked body or area above it whose box also holds the pin | Decision X11. The mesh's box is nearly always the smallest, so a pin on the enemy named `Enemy_02/Mesh` while a live pick, which hits the collider, names `Enemy_02`. A body whose box does not hold the pin is not lifted to. |
+| `note_created` and `mark_dropped` (#314) | Fired in the page through `apps/shared/telemetry.ts`: `{kind, from}` with `from` one of key, button, mark, markup or live; `{source, recording}` with `source` game, button or pane_key | Decision X1: short scalars, never a note's words. A live markup counts when it is kept, not when review folds it into the take. The game's F8 marks are counted by the poll from `f8Marks`, none from before the pane opened. |
+| Retention at Stop (#314) | On its own thread once the take is written; a note with no words and no markup is not a draft | Retention reads every take and can delete a video, which review was waiting behind. One N pressed and left empty kept a take past `keep` for good. |
+| Play again from review (#314) | The reviewed take's project, and the project picker follows | The take menu lists every project's takes, so Play again could run another game than the one reviewed. |
 | One `godot` telemetry feature (#311) | `features/godot.ts`, apps `godot-viewer` and `play`, all eight §13 events declared at once | One feature per app was rejected: `play` becomes a mode of the Godot app (#313), and an app may report for one feature only. Declared whole so later issues add calls, not list edits. |
 
 ### Not verified on a real machine
@@ -262,6 +291,18 @@ From #313, tested in jsdom and type-checked for Windows only; no WebView2 or God
   from the main checkout to a worktree.
 - The captured-mouse hint with a real game: it needs #312's backend, which sends
   `mouseCaptured`, and a game that captures the mouse.
+
+From #314, tested in jsdom and type-checked only; no WebView2, video decoder or Godot ran:
+
+- Spec test 5: review within 2 s of F7 for a two-minute take of the demo (`data-open-ms`, above),
+  and in which step the time goes if not.
+- A pin on the enemy in a demo take naming `Hallway/Enemy_02`: the lift was tested on a tick
+  written by hand, not one the addon wrote.
+- The filmstrip drawn from a real take, through the asset protocol's CORS, with frames under
+  their times while it fills in; the player and Send's pictures not disturbed by it.
+- Arrow keys landing on the next decoded frame (WebView2 seeks to the nearest frame, which
+  may not be the next one when the video's timestamps are not on the 30 fps grid).
+- `godot:note_created` and `godot:mark_dropped` reaching PostHog.
 
 From #311, not yet run in a real Veistra (unit-tested only):
 
