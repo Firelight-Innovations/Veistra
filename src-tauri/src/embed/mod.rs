@@ -326,6 +326,9 @@ pub trait WindowSystem: Send + Sync {
     /// Start keeping the window's last frame, or `None` where that cannot be
     /// done cleanly.
     fn watch(&self, hwnd: isize) -> Option<Box<dyn Still>>;
+    /// Ask the window to close, as its own close button does. Returns once
+    /// the request is posted; the program may ask to save, or refuse.
+    fn request_close(&self, hwnd: isize) -> Result<(), String>;
 }
 
 struct Native;
@@ -359,6 +362,9 @@ impl WindowSystem for Native {
     }
     fn watch(&self, hwnd: isize) -> Option<Box<dyn Still>> {
         capture::Watcher::start(hwnd).map(|w| Box::new(w) as Box<dyn Still>)
+    }
+    fn request_close(&self, hwnd: isize) -> Result<(), String> {
+        sys::request_close(hwnd)
     }
 }
 
@@ -870,6 +876,17 @@ impl Embed {
     /// The frame to show while an overlay covers the box, from the window's
     /// own capture; `None` before the first frame, off Windows, or where
     /// Windows would draw its capture border around the window.
+    /// Ask the window to close as its close button would, so an editor asks
+    /// to save its work first and the person may cancel. `Ok(false)` when
+    /// there is no window to ask. Never kills anything.
+    pub fn request_close(&self) -> Result<bool, String> {
+        let _ops = self.inner.ops.lock_or_panic();
+        let Some(hwnd) = self.hwnd() else {
+            return Ok(false);
+        };
+        self.inner.win.request_close(hwnd).map(|()| true)
+    }
+
     pub fn still_png(&self) -> Option<Vec<u8>> {
         self.inner.still.lock_or_panic().as_ref()?.png()
     }
@@ -1010,6 +1027,10 @@ pub mod sys {
     }
 
     pub fn show_near(_hwnd: isize, _near: Option<ScreenRect>) -> Result<(), String> {
+        Err(NONE.into())
+    }
+
+    pub fn request_close(_hwnd: isize) -> Result<(), String> {
         Err(NONE.into())
     }
 }

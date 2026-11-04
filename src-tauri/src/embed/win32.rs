@@ -5,12 +5,12 @@ use windows_sys::Win32::Foundation::{GetLastError, SetLastError, HWND, LPARAM, R
 use windows_sys::Win32::System::Threading::AttachThreadInput;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetPropW, GetWindow, GetWindowLongPtrW, GetWindowRect,
-    GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, RemovePropW, SetPropW,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, GWLP_HWNDPARENT, GWL_EXSTYLE, GWL_STYLE,
+    GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, PostMessageW, RemovePropW,
+    SetPropW, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWLP_HWNDPARENT, GWL_EXSTYLE, GWL_STYLE,
     GW_HWNDPREV, GW_OWNER, HWND_TOP, SWP_FRAMECHANGED, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE,
     SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, WINDOW_LONG_PTR_INDEX,
-    WS_CAPTION, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_MAXIMIZE, WS_MAXIMIZEBOX, WS_MINIMIZE,
-    WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME, WS_VISIBLE,
+    WM_CLOSE, WS_CAPTION, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_MAXIMIZE, WS_MAXIMIZEBOX,
+    WS_MINIMIZE, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME, WS_VISIBLE,
 };
 
 const _: () = assert!(
@@ -304,6 +304,19 @@ pub fn show_near(hwnd: isize, near: Option<ScreenRect>) -> Result<(), String> {
 /// one with Godot's class, standing in for the game, and one for Veistra.
 /// Messages sent to a window of this thread are handled in the call, so the
 /// test needs no message loop. Never run off Windows.
+/// Post `WM_CLOSE`, what the title bar's close button sends: Godot answers it
+/// with its own "save before closing?" prompt, Blender likewise. Posted, not
+/// sent, so a window that is busy cannot stall the caller.
+pub fn request_close(hwnd: isize) -> Result<(), String> {
+    // SAFETY: as in `embed`; posting to a handle that has since closed fails
+    // and is reported, it does not reach another window's queue unless the
+    // value was reused, which `Embed::forget` guards against.
+    if unsafe { PostMessageW(hwnd as HWND, WM_CLOSE, 0, 0) } == 0 {
+        return Err(last_error("PostMessageW"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
