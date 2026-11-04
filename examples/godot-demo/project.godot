@@ -1,0 +1,21 @@
+; The demo game for Veistra's Play acceptance tests (README.md here).
+; No [autoload] section on purpose: Play's Enable capture adds the capture
+; addon's line, and Disable capture takes it out again.
+
+config_version=5
+
+[application]
+
+config/name="Godot demo"
+run/main_scene="res://levels/hallway.tscn"
+config/features=PackedStringArray("4.3", "GL Compatibility")
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"

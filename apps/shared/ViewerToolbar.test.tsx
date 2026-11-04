@@ -89,6 +89,17 @@ describe("ToolbarButton", () => {
     expect(screen.getByRole("button", { name: "Rec" }).getAttribute("aria-pressed")).toBe("true");
   });
 
+  it("says it opens a dialog, and whether that is open", () => {
+    const { rerender } = render(<ToolbarButton label="Record settings" icon={<i />} />);
+    const button = screen.getByRole("button", { name: "Record settings" });
+    expect(button.getAttribute("aria-haspopup")).toBeNull();
+    rerender(<ToolbarButton label="Record settings" icon={<i />} expanded={false} />);
+    expect(button.getAttribute("aria-haspopup")).toBe("dialog");
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+    rerender(<ToolbarButton label="Record settings" icon={<i />} expanded />);
+    expect(button.getAttribute("aria-expanded")).toBe("true");
+  });
+
   it("shows the key after the label", () => {
     render(<ToolbarButton kbd="F8">Mark</ToolbarButton>);
     expect(screen.getByRole("button").textContent).toBe("MarkF8");

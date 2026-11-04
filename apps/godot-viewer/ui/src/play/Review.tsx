@@ -11,39 +11,62 @@
  * another, and none runs while Send does, so an older copy never lands on
  * top of the stamps Send writes.
  *
- * Send (§9) is in the page because the pictures are: each note's frame, its
- * in and out frames, and its contact sheet are drawn here and handed to
- * `play/send` in one call. Then the packet's `packet.md` goes to the agent
- * the way every viewer's markup does: a context item, and its reference typed
- * at the agent's prompt.
+ * Send (§9) is in the page because the pictures are: each note's frames and
+ * contact sheet are drawn here and handed to `play/send` in one call (a
+ * ticked clip is cut by Rust). Then `packet.md` becomes a context item and
+ * goes to the one agent SEND TO names, as one line left at its prompt, never
+ * sent (X8). Each comment keeps that agent as `sentTo` (X7); `notes_sent`
+ * counts the Send.
  */
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@veistra/bridge";
 import { Pause, Play as PlayIcon, SkipBack, SkipForward, PenLine } from "lucide-react";
 import type { MarkupExport } from "@veistra/markup/layer";
-import { verdictComment, type Comment, type Verdict } from "../../../../shared/comments";
-import { contextKey, type ContextRef } from "../../../../shared/context";
+import { useCommentsChanged } from "../../../../shared/commentEvents";
+import {
+  takeHistory,
+  verdictComment,
+  type Comment,
+  type Verdict,
+} from "../../../../shared/comments";
+import {
+  contextKey,
+  handToAgent,
+  listAgents,
+  type AgentTarget,
+  type ContextRef,
+  type Delivery,
+} from "../../../../shared/context";
 import { blobBase64 } from "../../../../shared/markupFlow";
 import { errorText } from "../../../../shared/godot";
-import { clock, contactSheet, contactTimes, filmstrip, grab } from "./frames";
+import { track } from "../../../../shared/telemetry";
+import { clock, contactSheet, contactTimes, filmstrip, grab, STRIP_EVERY_MS } from "./frames";
 import { reviewAction, isTyping } from "./keys";
 import {
   addNote,
+  checkedOf,
   dismissMark,
   markSent,
+  noteName,
   normalize,
   pendingMarks,
   removeNote,
   sendable,
+  settledRange,
   updateNote,
   noteStatus,
+  packetMessage,
   parseLog,
+  withIn,
+  withOut,
+  NO_RANGE,
   type LogRow,
   type NoteDraft,
   type NotesDoc,
+  type PendingRange,
   type Target,
 } from "./notes";
-import { NotesPanel, type SendOptions } from "./NotesPanel";
+import { agentKey, NotesPanel, type SendOptions } from "./NotesPanel";
 import { getTake, listNotes, saveNotes, sendNotes, deleteTake, type TakeDetail } from "./rpc";
 import { nearestTick, parseTicks, recordedTarget, frameSeries, type Tick } from "./telemetry";
 import { Timeline } from "./Timeline";
@@ -54,6 +77,14 @@ const FrameMarkup = lazy(() => import("./FrameMarkup"));
 const SAVE_AFTER_MS = 600;
 /** How often notes that went to an agent are checked for news. */
 const STATUS_POLL_MS = 2_000;
+
+/** Where a new note came from, as `note_created` reports it. */
+export type NoteFrom = "key" | "button" | "mark" | "markup" | "live";
+
+/** A note was made: one usage event, its kind and where from, never its words. */
+export function reportNote(kind: NoteDraft["kind"], from: NoteFrom): void {
+  track("note_created", { kind, from });
+}
 
 /** A note made by live mark up during the run, folded into the take when it opens. */
 export interface LiveNote {
@@ -73,9 +104,19 @@ export interface ReviewProps {
   /** This take's live notes are in its notes now; the caller lets go of them. */
   onLiveNotesTaken: (take: string) => void;
   onPlayScene: (scene?: string) => void;
+  /**
+   * Still broken on a fixed note: Play mode gives the verdict and runs the
+   * scene again to record a take for it (#321). Unset, the verdict alone.
+   */
+  onStillBroken?: (comment: Comment, reply?: string) => void;
   onProblem: (message: string | null) => void;
   onDeleted: () => void;
   onNotice: (message: string) => void;
+  /**
+   * When the person asked for this take (F7's own time, or the click's), so
+   * the page can say how long review took to show its first frame.
+   */
+  openedAt?: number;
 }
 
 function useVideoRef() {
@@ -91,6 +132,49 @@ async function text(url: string): Promise<string> {
   }
 }
 
+/**
+ * One note as `play/send` takes it, with its pictures drawn from `video`: the
+ * frame, the in and out frames of a range, and the contact sheet when
+ * `contact` is on, with the times on it. A take with no video sends the
+ * picture live mark up kept, and nothing drawn.
+ */
+async function notePayload(
+  note: NoteDraft,
+  video: HTMLVideoElement | null,
+  contact: boolean,
+  durationMs: number,
+) {
+  const at = async (ms: number | undefined) =>
+    video && ms !== undefined ? blobBase64(await grab(video, ms)) : undefined;
+  const frame = await at(note.atMs);
+  const ranged = note.kind === "range" && note.inMs !== undefined && note.outMs !== undefined;
+  const times = contactTimes(note.inMs ?? note.atMs, note.outMs ?? note.atMs, durationMs);
+  const sheet =
+    video && contact && times.length > 0
+      ? await blobBase64(await contactSheet(video, times))
+      : undefined;
+  return {
+    n: note.n,
+    kind: note.kind,
+    atMs: note.atMs,
+    inMs: note.inMs,
+    outMs: note.outMs,
+    body: note.body,
+    target: note.target ?? null,
+    markup: note.markup ?? null,
+    doneWhen: note.doneWhen?.trim() || undefined,
+    images: {
+      markupPng: note.markupPng ?? frame,
+      notePng: frame,
+      inPng: ranged ? await at(note.inMs) : undefined,
+      outPng: ranged ? await at(note.outMs) : undefined,
+      contactPng: sheet,
+    },
+    contactMs: sheet ? times : undefined,
+    followUp: note.followUp,
+  };
+}
+
 export default function Review(props: ReviewProps) {
   const { takeId, onProblem } = props;
   const [detail, setDetail] = useState<TakeDetail | null>(null);
@@ -100,16 +184,20 @@ export default function Review(props: ReviewProps) {
   const [comments, setComments] = useState<Comment[]>([]);
   const [playhead, setPlayhead] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [range, setRange] = useState<{ inMs: number | null; outMs: number | null }>({
-    inMs: null,
-    outMs: null,
-  });
+  const [range, setRange] = useState<PendingRange>(NO_RANGE);
   const [selected, setSelected] = useState<number | null>(null);
   const [marking, setMarking] = useState<{ url: string; n: number } | null>(null);
   const [thumbs, setThumbs] = useState<string[]>([]);
   const [sending, setSending] = useState(false);
-  const [options, setOptions] = useState<SendOptions>({ contact: true });
+  const [options, setOptions] = useState<SendOptions>({ contact: true, clip: false });
+  const [agents, setAgents] = useState<AgentTarget[]>([]);
+  /** The agent the person picked in SEND TO; unset, the listing's first. */
+  const [picked, setPicked] = useState<string | null>(null);
   const [aspect, setAspect] = useState(16 / 9);
+  /** The player can show a frame, so the filmstrip's seeks may start. */
+  const [playerReady, setPlayerReady] = useState(false);
+  /** How long review took to show its first frame, once it has. */
+  const [openMs, setOpenMs] = useState<number | null>(null);
   const video = useVideoRef();
   const grabber = useVideoRef();
   const root = useRef<HTMLDivElement | null>(null);
@@ -125,6 +213,15 @@ export default function Review(props: ReviewProps) {
   const take = detail?.take ?? null;
   const duration = take?.durationMs ?? 0;
   const fps = take?.video.fps || 30;
+  // A Still broken draft goes back to the agent its note was sent to, unless
+  // the person picks another; that agent gone, the default as for any note.
+  const checking = doc?.notes.find((n) => n.followUp && !n.commentId);
+  const sentTo = checking ? checkedOf(checking, comments)?.sentTo : undefined;
+  const agent =
+    agents.find((a) => agentKey(a) === picked) ??
+    (sentTo ? agents.find((a) => agentKey(a) === agentKey(sentTo)) : undefined) ??
+    agents[0] ??
+    null;
 
   const commit = useCallback((next: NotesDoc | null) => {
     docRef.current = next;
@@ -214,6 +311,17 @@ export default function Review(props: ReviewProps) {
     };
   }, [takeId, onProblem, commit]);
 
+  // Who Send can go to, read when the take opens and again whenever the
+  // window comes back, since agents start and stop in other panes.
+  const refreshAgents = useCallback(() => {
+    listAgents().then(setAgents, () => setAgents([]));
+  }, []);
+  useEffect(() => {
+    refreshAgents();
+    window.addEventListener("focus", refreshAgents);
+    return () => window.removeEventListener("focus", refreshAgents);
+  }, [refreshAgents, takeId]);
+
   // Notes made by live mark up during this take's run join it once it opens.
   // They are written at once: the caller has let go of its copy.
   const { liveNotes, onLiveNotesTaken } = props;
@@ -245,7 +353,9 @@ export default function Review(props: ReviewProps) {
     if (ready && el && (!active || active.contains(el))) el.focus({ preventScroll: true });
   }, [ready]);
 
-  // The notes Send filed, polled while any of them could still change.
+  // The notes Send filed. A change to one of this take's is pushed, so an
+  // agent's fix shows at once; the poll while any could still change is the
+  // fallback for a push that never came.
   const refreshComments = useCallback(async () => {
     try {
       setComments((await listNotes(takeId)).notes);
@@ -253,6 +363,9 @@ export default function Review(props: ReviewProps) {
       // A failed poll is tried again on the next tick.
     }
   }, [takeId]);
+  useCommentsChanged((changes) => {
+    if (changes.some((c) => c.take === takeId)) void refreshComments();
+  });
   const waiting =
     doc?.notes.some((n) => {
       const s = noteStatus(n, comments);
@@ -266,8 +379,10 @@ export default function Review(props: ReviewProps) {
   }, [refreshComments, waiting]);
 
   // The filmstrip, made by a video of its own so the player is never moved.
+  // It starts once the player can play: a seek every 2 s of the take, all on
+  // the same file, would otherwise compete with the first frame review waits for.
   useEffect(() => {
-    if (!detail || duration <= 0) return;
+    if (!detail || duration <= 0 || !playerReady) return;
     let cancelled = false;
     const strip = document.createElement("video");
     strip.crossOrigin = "anonymous";
@@ -283,9 +398,10 @@ export default function Review(props: ReviewProps) {
           (i, url) => {
             if (!cancelled) setThumbs((t) => Object.assign([...t], { [i]: url }));
           },
-          2000,
+          STRIP_EVERY_MS,
           96,
           () => cancelled,
+          aspect,
         ).catch(() => undefined);
       },
       { once: true },
@@ -295,7 +411,23 @@ export default function Review(props: ReviewProps) {
       strip.removeAttribute("src");
       strip.load();
     };
-  }, [detail, duration]);
+  }, [detail, duration, playerReady, aspect]);
+
+  // Review is open once its first frame shows (a take with no video: once
+  // it renders). Kept on the root as `data-open-ms`, for spec test 5.
+  const { openedAt } = props;
+  const openedOnce = useRef(false);
+  const opened = useCallback(() => {
+    if (openedAt === undefined || openedOnce.current) return;
+    openedOnce.current = true;
+    const ms = Math.max(0, Date.now() - openedAt);
+    setOpenMs(ms);
+    console.info(`veistra: review of take ${takeId} opened in ${ms} ms`);
+  }, [openedAt, takeId]);
+  const noVideo = detail !== null && !detail.take.hasVideo;
+  useEffect(() => {
+    if (noVideo && doc) opened();
+  }, [noVideo, doc, opened]);
 
   // The playhead follows the video while it plays.
   useEffect(() => {
@@ -349,23 +481,30 @@ export default function Review(props: ReviewProps) {
     [doc, pause, seekTo],
   );
 
+  /**
+   * A note at `at`, over `over` when that is a range (a pending I/O range is
+   * used up by it), reported as made `from` there. A mark's note passes no
+   * range, so a range set for something else stays for it.
+   */
   const newNote = useCallback(
-    (extra: Partial<NoteDraft> = {}, at = playhead) => {
+    (
+      at: number,
+      from: NoteFrom,
+      extra: Partial<NoteDraft> = {},
+      over: { inMs: number; outMs: number } | null = settledRange(range),
+    ) => {
       const d = docRef.current;
       if (!d) return;
-      const r =
-        range.inMs !== null && range.outMs !== null && range.outMs > range.inMs
-          ? { inMs: range.inMs, outMs: range.outMs }
-          : null;
-      const atMs = r && (at < r.inMs || at > r.outMs) ? (r.inMs + r.outMs) / 2 : at;
-      const made = addNote(d, atMs, r, extra);
+      const atMs = over && (at < over.inMs || at > over.outMs) ? (over.inMs + over.outMs) / 2 : at;
+      const made = addNote(d, atMs, over, extra);
       edit(made.doc);
       setSelected(made.note.n);
-      setRange({ inMs: null, outMs: null });
+      if (over) setRange(NO_RANGE);
       pause();
+      reportNote(made.note.kind, from);
       return made.note;
     },
-    [playhead, range, pause, edit],
+    [range, pause, edit],
   );
 
   const tickAt = useCallback(
@@ -373,12 +512,21 @@ export default function Review(props: ReviewProps) {
     [ticks, take],
   );
 
+  /**
+   * Mark up the frame at the playhead: the selected draft's when the playhead
+   * is on it, else a new note there (over the pending range only if that
+   * holds the playhead, so the frame drawn on is the one on screen).
+   */
   const startMarkup = useCallback(async () => {
     const v = video.current;
     if (!v || !doc) return;
     pause();
-    const current = doc.notes.find((n) => n.n === selected && !n.commentId);
-    const note = current ?? newNote();
+    const current = doc.notes.find(
+      (n) => n.n === selected && !n.commentId && Math.abs(playhead - n.atMs) < 1000 / fps,
+    );
+    const r = settledRange(range);
+    const holds = r && playhead >= r.inMs && playhead <= r.outMs ? r : null;
+    const note = current ?? newNote(playhead, "markup", {}, holds);
     if (!note) return;
     try {
       const png = await grab(v, note.atMs);
@@ -386,7 +534,7 @@ export default function Review(props: ReviewProps) {
     } catch (e) {
       onProblem(`Couldn't take the frame: ${errorText(e)}`);
     }
-  }, [doc, selected, newNote, pause, onProblem, video]);
+  }, [doc, selected, playhead, fps, range, newNote, pause, onProblem, video]);
 
   const endMarkup = useCallback(() => {
     setMarking((m) => {
@@ -429,13 +577,22 @@ export default function Review(props: ReviewProps) {
   );
 
   const { onNotice } = props;
+  const clipUnavailable = detail?.clipUnavailable ?? null;
   const send = useCallback(
-    async (options: SendOptions) => {
-      const v = grabber.current;
+    async (options: SendOptions, to: AgentTarget | null) => {
       const d = docRef.current;
-      if (!d || !take || !v || sendingNow.current) return;
+      if (!d || !take || sendingNow.current) return;
       const notes = sendable(d);
       if (notes.length === 0) return;
+      const v = take.hasVideo ? grabber.current : null;
+      const bare = v ? undefined : notes.find((n) => !n.markupPng);
+      if (bare) {
+        onProblem(
+          `This take has no video, so note ${bare.n} has no frame to send. Only a note marked up during the run has a picture of its own.`,
+        );
+        return;
+      }
+      const clip = options.clip && v !== null && clipUnavailable === null;
       // From here until `finally` no write of the notes starts but Send's own.
       sendingNow.current = true;
       setSending(true);
@@ -444,58 +601,57 @@ export default function Review(props: ReviewProps) {
         // What is sent is on disk first: `play/send` stamps the notes it finds there.
         await flush();
         const payload = [];
-        for (const note of notes) {
-          const frame = await blobBase64(await grab(v, note.atMs));
-          const ranged =
-            note.kind === "range" && note.inMs !== undefined && note.outMs !== undefined;
-          const inPng = ranged ? await blobBase64(await grab(v, note.inMs as number)) : undefined;
-          const outPng = ranged ? await blobBase64(await grab(v, note.outMs as number)) : undefined;
-          const times = contactTimes(note.inMs ?? note.atMs, note.outMs ?? note.atMs, duration);
-          const contact = options.contact
-            ? await blobBase64(await contactSheet(v, times))
-            : undefined;
-          payload.push({
-            n: note.n,
-            kind: note.kind,
-            atMs: note.atMs,
-            inMs: note.inMs,
-            outMs: note.outMs,
-            body: note.body,
-            target: note.target ?? null,
-            markup: note.markup ?? null,
-            doneWhen: note.doneWhen?.trim() || undefined,
-            images: {
-              markupPng: note.markupPng ?? frame,
-              notePng: frame,
-              inPng,
-              outPng,
-              contactPng: contact,
-            },
-          });
-        }
-        const sent = await sendNotes(takeId, payload);
+        for (const note of notes)
+          payload.push(await notePayload(note, v, options.contact, duration));
+        // Nothing picked and none listed yet (Ctrl Enter as the take opens):
+        // the default is asked for now rather than told to nobody.
+        const target = to ?? (await listAgents().catch(() => []))[0] ?? null;
+        const sent = await sendNotes(takeId, payload, { clip, sentTo: target });
         // The page's copy is stamped the same way rather than read back from
         // disk, which would drop anything typed while Send ran.
         commit(markSent(docRef.current ?? d, sent.comments, sent.packet));
+        const count = `${notes.length} ${notes.length === 1 ? "note" : "notes"}`;
+        const still = notes.filter((n) => n.followUp).length;
+        const checked = notes.length === 1 && still === 1 ? checkedOf(notes[0], comments) : null;
+        const first = checked ? takeHistory(checked)[0] : undefined;
         const item = await invoke<ContextRef>("context/put", {
           key: contextKey("play", takeId, "feedback"),
           kind: "file",
-          title: `Playtest feedback: ${notes.length} ${notes.length === 1 ? "note" : "notes"}. Read packet.md first.`,
+          title: first
+            ? `Still broken: ${noteName(first)}, with Take ${take.number}. Read packet.md first.`
+            : `Playtest feedback: ${count}${still > 0 ? `, ${still} still broken` : ""}. Read packet.md first.`,
           label: `Play - take ${take.number} feedback`,
           path: sent.packetMd,
         });
-        try {
-          await invoke("context/insert", { itemIds: [item.id] });
-        } catch (e) {
-          console.error("veistra: could not type the packet reference at the prompt", e);
-        }
-        void invoke("veistra/attach-to-agent", {
-          contextId: item.id,
-          label: `Playtest feedback · Take ${take.number}`,
-        }).catch(() => undefined);
+        // The one message, to the one agent chosen and nowhere else.
+        const delivery: Delivery = target
+          ? await handToAgent(
+              target,
+              item.id,
+              `${sent.packet}/packet.md`,
+              packetMessage(notes.length, still),
+            ).catch((e: unknown) => ({ delivered: false as const, reason: errorText(e) }))
+          : { delivered: false, reason: "no agent is running here" };
+        track("notes_sent", {
+          notes: notes.length,
+          ranged: notes.filter((n) => n.kind === "range").length,
+          markedUp: notes.filter((n) => n.markup).length,
+          contact: options.contact && v !== null,
+          clip,
+          to: target?.kind ?? "none",
+          delivered: delivery.delivered,
+          // Only on a Send with a Still broken note in it (X1), so earlier counts read the same.
+          ...(still > 0 ? { followUp: true } : {}),
+        });
         await refreshComments();
         onNotice(
-          `Sent ${notes.length} ${notes.length === 1 ? "note" : "notes"}: ${sent.packet}/packet.md`,
+          [
+            `Sent ${count}: ${sent.packet}/packet.md.`,
+            delivery.delivered
+              ? `It is waiting at ${target?.label ?? "the agent"}'s prompt; press Enter there to send it.`
+              : `No agent was told: ${delivery.reason}. The packet is in the context strip.`,
+            ...(sent.problems ?? []),
+          ].join(" "),
         );
       } catch (e) {
         onProblem(`Couldn't send the notes: ${errorText(e)}`);
@@ -511,6 +667,8 @@ export default function Review(props: ReviewProps) {
       take,
       duration,
       takeId,
+      comments,
+      clipUnavailable,
       onProblem,
       onNotice,
       refreshComments,
@@ -559,22 +717,17 @@ export default function Review(props: ReviewProps) {
         seekTo(playhead + frameMs);
         break;
       case "in":
-        setRange((r) => ({
-          inMs: playhead,
-          outMs: r.outMs !== null && r.outMs > playhead ? r.outMs : null,
-        }));
+        setRange((r) => withIn(r, playhead));
         break;
       case "out":
-        setRange((r) => ({
-          inMs: r.inMs !== null && r.inMs < playhead ? r.inMs : null,
-          outMs: playhead,
-        }));
+        setRange((r) => withOut(r, playhead));
         break;
       case "note":
-        newNote();
+        newNote(playhead, "key");
         break;
       case "send":
-        void send(options);
+        // Main is read-only: `play/send` would be refused, so it is not tried.
+        if (!props.readOnly) void send(options, agent);
         break;
     }
   };
@@ -595,14 +748,24 @@ export default function Review(props: ReviewProps) {
     );
   }
 
+  // The frame being marked up is the note's, named in markup.json as the
+  // take's video at that time (a media fragment), wherever the take lives.
+  const markedAt = doc.notes.find((n) => n.n === marking?.n)?.atMs ?? playhead;
+
   return (
-    <div className="pl-review" ref={root} tabIndex={-1} onKeyDown={onKeyDown}>
+    <div
+      className="pl-review"
+      ref={root}
+      tabIndex={-1}
+      onKeyDown={onKeyDown}
+      data-open-ms={openMs ?? undefined}
+    >
       <div className="pl-review__main">
         <div className="pl-review__tools" role="toolbar" aria-label="Markup tools">
           <button
             type="button"
             className="k-btn k-btn--secondary k-btn--sm"
-            disabled={marking !== null || props.readOnly}
+            disabled={marking !== null}
             title="Draw on this frame and pin what is wrong (the note at the playhead, or a new one)"
             onClick={() => void startMarkup()}
           >
@@ -631,6 +794,8 @@ export default function Review(props: ReviewProps) {
                   if (v.videoWidth > 0 && v.videoHeight > 0)
                     setAspect(v.videoWidth / v.videoHeight);
                 }}
+                onLoadedData={opened}
+                onCanPlay={() => setPlayerReady(true)}
                 onPause={() => setPlaying(false)}
                 onEnded={() => setPlaying(false)}
                 onSeeked={(e) => !playing && setPlayhead(e.currentTarget.currentTime * 1000)}
@@ -649,10 +814,9 @@ export default function Review(props: ReviewProps) {
               <Suspense fallback={null}>
                 <FrameMarkup
                   src={marking.url}
-                  path={`.veistra/takes/${takeId}/take.mp4`}
+                  path={`${take.path.replace(/\\/g, "/")}/take.mp4#t=${(markedAt / 1000).toFixed(3)}`}
                   pick={(x, y, shown) => {
-                    const note = doc.notes.find((n) => n.n === marking.n);
-                    const hit = recordedTarget(tickAt(note?.atMs ?? playhead), x, y, shown);
+                    const hit = recordedTarget(tickAt(markedAt), x, y, shown);
                     const p = hit?.worldPoint;
                     return hit && p && p.length === 3
                       ? { nodePath: hit.nodePath, worldPoint: [p[0], p[1], p[2]] }
@@ -665,15 +829,17 @@ export default function Review(props: ReviewProps) {
               </Suspense>
             )}
           </div>
-          <video
-            ref={grabber}
-            className="pl-review__grabber"
-            src={detail.urls.video}
-            crossOrigin="anonymous"
-            preload="auto"
-            muted
-            aria-hidden="true"
-          />
+          {take.hasVideo && (
+            <video
+              ref={grabber}
+              className="pl-review__grabber"
+              src={detail.urls.video}
+              crossOrigin="anonymous"
+              preload="metadata"
+              muted
+              aria-hidden="true"
+            />
+          )}
         </div>
         <div className="pl-review__transport">
           <button
@@ -721,7 +887,7 @@ export default function Review(props: ReviewProps) {
             type="button"
             className="k-btn k-btn--secondary k-btn--sm"
             title="Set the range start at the playhead (I)"
-            onClick={() => setRange((r) => ({ ...r, inMs: playhead }))}
+            onClick={() => setRange((r) => withIn(r, playhead))}
           >
             In <kbd>I</kbd>
           </button>
@@ -729,7 +895,7 @@ export default function Review(props: ReviewProps) {
             type="button"
             className="k-btn k-btn--secondary k-btn--sm"
             title="Set the range end at the playhead (O)"
-            onClick={() => setRange((r) => ({ ...r, outMs: playhead }))}
+            onClick={() => setRange((r) => withOut(r, playhead))}
           >
             Out <kbd>O</kbd>
           </button>
@@ -737,8 +903,7 @@ export default function Review(props: ReviewProps) {
             type="button"
             className="k-btn k-btn--primary k-btn--sm"
             title="Add a note at the playhead or range (N)"
-            disabled={props.readOnly}
-            onClick={() => newNote()}
+            onClick={() => newNote(playhead, "button")}
           >
             Add note <kbd>N</kbd>
           </button>
@@ -748,6 +913,7 @@ export default function Review(props: ReviewProps) {
           playheadMs={playhead}
           range={range}
           thumbs={thumbs}
+          stripEveryMs={STRIP_EVERY_MS}
           notes={doc.notes.map((n) => ({
             n: n.n,
             atMs: n.atMs,
@@ -768,6 +934,7 @@ export default function Review(props: ReviewProps) {
         />
       </div>
       <NotesPanel
+        take={{ id: take.id, number: take.number }}
         notes={doc.notes}
         comments={comments}
         log={log}
@@ -777,6 +944,10 @@ export default function Review(props: ReviewProps) {
         readOnly={props.readOnly}
         options={options}
         onOptions={setOptions}
+        agents={agents}
+        agent={agent}
+        onAgent={(a) => setPicked(agentKey(a))}
+        clipUnavailable={clipUnavailable}
         onSelect={select}
         onChange={(n, patch) => change((d) => updateNote(d, n, patch))}
         onDelete={(n) => {
@@ -786,12 +957,16 @@ export default function Review(props: ReviewProps) {
         onDone={() => setSelected(null)}
         onMakeNote={(ms) => {
           seekTo(ms);
-          newNote({ fromMark: ms }, ms);
+          newNote(ms, "mark", { fromMark: ms }, null);
         }}
         onDismiss={(ms) => change((d) => dismissMark(d, ms))}
-        onVerdict={(id, v, reply) => void verdict(id, v, reply)}
+        onVerdict={(id, v, reply) => {
+          const c = comments.find((x) => x.id === id);
+          if (v === "broken" && c && props.onStillBroken) props.onStillBroken(c, reply);
+          else void verdict(id, v, reply);
+        }}
         onPlayScene={props.onPlayScene}
-        onSend={() => void send(options)}
+        onSend={() => void send(options, agent)}
       />
       <div className="pl-review__footer">
         <span>

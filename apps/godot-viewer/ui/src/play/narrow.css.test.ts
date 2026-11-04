@@ -36,6 +36,15 @@ describe("narrow panes", () => {
     expect(rule(play, ".pl-review__transport")).toContain("flex-wrap: wrap");
   });
 
+  it("Record settings opens under its chevron and never past the pane's edge", () => {
+    expect(rule(play, ".pl-recset")).toContain("position: relative");
+    const pop = rule(play, ".pl-recset__pop");
+    expect(pop).toContain("position: absolute");
+    expect(pop).toContain("right: 0");
+    expect(pop).toContain("max-width: calc(100vw - 24px)");
+    expect(rule(play, ".pl-recset__row")).toContain("flex-wrap: wrap");
+  });
+
   it("Play footer buttons keep their labels on one line", () => {
     expect(rule(play, ".pl__footer-btn")).toContain("white-space: nowrap");
     expect(rule(play, ".pl__footer-time")).toContain("white-space: nowrap");

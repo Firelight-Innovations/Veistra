@@ -12,6 +12,7 @@ mod boot;
 mod branding;
 mod cloud;
 mod commands;
+mod comment_events;
 mod comments;
 mod context;
 mod context_commands;
@@ -392,6 +393,10 @@ pub fn run() {
                 app.manage(Comments::default());
                 app.state::<Comments>().hydrate(app.handle());
             }
+
+            // Before the MCP listener, the first thing that can write a comment
+            // without a frame: an agent's resolve must reach open panes too.
+            comment_events::install(app.handle());
 
             // Immediately after seeding and **before any terminal is spawned**,
             // because a terminal inherits the port and token as environment
