@@ -4,7 +4,7 @@
  * "Cluster N" creation. Two steps behind the shared `Dialog` frame:
  *
  * 1. **Environment** — a new local worktree, an existing environment already
- *    in this project, browsing main read-only, or a cloud session (this
+ *    in this project, working on main directly, or a cloud session (this
  *    build has none to offer, and says so rather than pretending).
  * 2. **Starting layout** — which pane arrangement the cluster opens with.
  *
@@ -60,7 +60,7 @@ interface LayoutOption {
 const LAYOUTS: LayoutOption[] = [
   { value: "code", title: "Code", panes: "Explorer · editor · terminal" },
   { value: "godot", title: "Godot", panes: "Explorer · Godot Editor · Godot Play · terminal" },
-  { value: "blender", title: "Blender", panes: "Explorer · Blender viewer · terminal" },
+  { value: "blender", title: "Blender", panes: "Explorer · Blender · terminal" },
   { value: "watchAgent", title: "Watch an agent", panes: "Streamed terminal · explorer · viewer" },
 ];
 
@@ -282,7 +282,7 @@ function submitLabel(kind: EnvironmentKind): string {
     case "cloud":
       return "Open cluster";
     case "main":
-      return "Browse main";
+      return "Work on main";
   }
 }
 
@@ -421,11 +421,9 @@ function EnvironmentStep({
           checked={kind === "main"}
           onChange={() => onKind("main")}
         />
-        <span className="new-cluster__card-title">
-          Browse {defaultBranch ?? "main"} (read-only)
-        </span>
+        <span className="new-cluster__card-title">Work on {defaultBranch ?? "main"}</span>
         <span className="new-cluster__card-text">
-          No agent, no writable terminal, nothing to merge.
+          Edits land in the main checkout itself, with no branch to merge.
         </span>
       </label>
     </div>

@@ -1,16 +1,22 @@
-/* Agents page: each cluster's agent sessions, live. */
+/* Agents page: each cluster's agent sessions, live.
+
+   Three tiers, top to bottom: the actions, one card per cluster, and the
+   previous sessions under a rule. Space grows outward: 2px between rows,
+   6px under a heading, 8px between cards, 12px around a tier. */
 
 .k-agents {
   display: flex;
   flex-direction: column;
-  padding: 6px 0 12px;
+  gap: var(--space-2);
+  padding: var(--space-1-5) 0 var(--space-4);
 }
 
 .k-agents__actions {
   display: flex;
   flex-direction: column;
-  gap: 1px;
-  padding: 2px 8px 8px;
+  gap: 2px;
+  margin-bottom: var(--space-1);
+  padding: 2px var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--line);
 }
 
@@ -60,15 +66,25 @@
   color: var(--txt-secondary);
 }
 
+/* A cluster: a card on the page's surface, so where one ends is plain. */
 .k-agents__cluster {
-  padding: 6px 8px;
+  margin: 0 var(--space-2);
+  padding: var(--space-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-layer-1);
+}
+
+.k-agents__cluster[data-active] {
+  border-color: var(--border-subtle-1);
 }
 
 .k-agents__head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 4px 4px;
+  gap: var(--space-1-5);
+  min-height: var(--control-sm);
+  padding: 2px 0 var(--space-1-5) var(--space-2);
 }
 
 .k-agents__name {
@@ -77,19 +93,28 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  font: var(--type-label);
+  letter-spacing: var(--type-label-tracking);
   text-transform: uppercase;
-  color: var(--txt-secondary);
+  color: var(--txt-primary);
 }
 
+/* A tag beside the name, kept to one line: the name gives way to it, not the
+   other way round. */
 .k-agents__current {
+  flex: none;
+  padding: 1px var(--space-1-5);
+  border-radius: var(--radius-sm);
+  background: var(--accent-subtle);
+  color: var(--txt-accent);
   font-size: 11px;
-  color: var(--txt-tertiary);
+  font-weight: 500;
+  line-height: 16px;
+  white-space: nowrap;
 }
 
 .k-agents__new {
+  flex: none;
   margin-left: auto;
   width: 22px;
   height: 22px;
@@ -113,15 +138,15 @@
   list-style: none;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
 }
 
 .k-agents__row {
   width: 100%;
   display: flex;
   align-items: flex-start;
-  gap: 8px;
-  padding: 6px 8px;
+  gap: var(--space-2);
+  padding: var(--space-2);
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -181,7 +206,7 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
 }
 
 .k-agents__title {
@@ -227,11 +252,13 @@
   font-size: 12.5px;
 }
 
-/* Previous sessions: saved conversations of the current cluster's project. */
+/* Previous sessions: saved conversations of the current cluster's project.
+   History, not a live cluster, so it sits on the page under a rule rather
+   than in a card. Its rows line up with the cards' rows. */
 .k-agents__previous {
+  margin-top: var(--space-1);
+  padding: var(--space-3) calc(var(--space-2) + 1px + var(--space-1)) 0;
   border-top: 1px solid var(--line);
-  margin-top: 6px;
-  padding-top: 10px;
 }
 
 .k-agents__saved {
@@ -264,8 +291,9 @@
   opacity: 1;
 }
 
+/* One step past the row's own hover, which it always sits on. */
 .k-agents__archive:hover {
-  background: var(--bg-layer-1-hover);
+  background: var(--bg-layer-1-selected);
   color: var(--txt-primary);
 }
 
@@ -305,7 +333,7 @@
 
 .k-agents__empty {
   margin: 0;
-  padding: 4px 8px;
+  padding: var(--space-1) var(--space-2) var(--space-1-5);
   font-size: 12px;
   color: var(--txt-tertiary);
 }

@@ -1,7 +1,7 @@
 /**
  * The environment model — display side only. Every cluster is exactly one of
  * a local worktree, a cloud session, the standing design-canvas worktree, or
- * main itself, read-only (`docs/VEISTRA-UX-REWORK.md` §1-2). [`environmentOf`]
+ * main itself (`docs/VEISTRA-UX-REWORK.md` §1-2). [`environmentOf`]
  * reads `Cluster.environment` when the backend has set it, falling back to
  * the older `worktree`/`project` fields for a cluster that predates it.
  * Every caller goes through it rather than either field directly.
@@ -74,7 +74,7 @@ export const DESIGN_WORKTREE_BRANCH = "wt/design";
  * derivation from `worktree`: a worktree on `wt/design` reads as `design`;
  * any other worktree reads as `worktree`; a cluster with no worktree at all
  * is working directly in the project folder, which this model calls `main`
- * — read-only, per the written spec's "nobody works on main" rule. `cloud`
+ * and which is written like any worktree. `cloud`
  * cannot come out of the fallback path — nothing in the legacy fields names
  * a cloud session — only out of a real `cluster.environment`.
  */
@@ -131,18 +131,14 @@ export const ENVIRONMENT_BAR_LABEL: Record<EnvironmentKind, string> = {
 };
 
 /** The sentence every disabled write affordance carries as its tooltip. The
- *  backend's refusal (`AppError::ReadOnlyMain`) says the same thing. */
-export const READ_ONLY_HINT = "The default branch is read-only — open a worktree to edit";
-
-/** The same sentence naming the real default branch (`master`, `trunk`, ...). `branch`
- *  comes from `git_default_branch`; unknown falls back to "main". */
-export function readOnlyHint(branch: string | null | undefined): string {
-  return `${branch || "The default branch"} is read-only — open a worktree to edit`;
-}
+ *  backend's refusal (`AppError::ReadOnly`) says the same thing. */
+export const READ_ONLY_HINT = "This environment is read-only — open a worktree to edit";
 
 /** Whether writes are refused in this environment. Cosmetic: Rust is the
- *  authority (`environments::refuse_write_on_main`), this only stops the UI
- *  offering what will be refused. */
-export function isReadOnly(env: Environment | null): boolean {
-  return env?.kind === "main";
+ *  authority (`environments::refuse_read_only_write`), this only stops the UI
+ *  offering what will be refused. Main used to be read-only; it is written
+ *  like a worktree now, so no environment is, and this mirrors
+ *  `Environment::is_read_only` on the Rust side. */
+export function isReadOnly(_env: Environment | null): boolean {
+  return false;
 }

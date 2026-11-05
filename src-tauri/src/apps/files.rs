@@ -443,11 +443,12 @@ fn git_head(
 fn root(app: &AppHandle, context: &CallContext) -> Result<Value, RpcError> {
     let path = default_root(app, context)?;
     // Told to the frontend so it can grey out the write items; the write
-    // methods refuse on main whether or not it listens (`apps::call`).
+    // methods refuse a read-only environment whether or not it listens
+    // (`apps::call`). None is read-only, main included.
     let read_only = context.cluster_id.as_deref().is_some_and(|cluster| {
         app.state::<crate::shell_state::ShellState>()
             .cluster_write_environment(cluster)
-            .is_some_and(|env| env.is_main())
+            .is_some_and(|env| env.is_read_only())
     });
     Ok(json!({
         "path": path.display().to_string(),
@@ -1928,11 +1929,12 @@ mod tests {
         assert!(import_into(&file, &[]).is_err());
     }
 
+    /// Still classed as a write, and main, which used to refuse it, allows it.
     #[test]
-    fn import_is_a_write_method_so_main_refuses_it() {
+    fn import_is_a_write_method_and_main_allows_it() {
         assert!(crate::apps::is_write_method("files/import"));
         let main = crate::environments::Environment::Main;
-        assert!(crate::apps::write_refusal(Some(&main), "files/import").is_err());
+        assert!(crate::apps::write_refusal(Some(&main), "files/import").is_ok());
     }
 
     use super::*;

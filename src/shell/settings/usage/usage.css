@@ -1,0 +1,249 @@
+/*
+ * Settings → Usage. Rows reuse the `.setting` anatomy from ../settings.css; this
+ * file adds the controls strip, the limit's bar, the daily chart and the runs
+ * table. Colours are tokens; the chart's sources are --chart-1, -3 and -4.
+ */
+
+.settings-usage__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) 0 var(--space-3);
+}
+
+.settings-usage__spacer {
+  flex: 1;
+}
+
+.settings-usage__select {
+  height: var(--control-md);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-subtle-1);
+  border-radius: var(--radius-md);
+  background: var(--bg-layer-1);
+  color: var(--txt-primary);
+  font: var(--type-body);
+}
+
+.settings-usage__cap {
+  margin: 0;
+  color: var(--txt-tertiary);
+  font: var(--type-caption);
+}
+
+.settings-usage__error {
+  margin: 0 0 var(--space-2);
+  color: var(--txt-danger);
+  font: var(--type-caption);
+}
+
+.settings-usage__sentence {
+  margin: 0;
+  padding-bottom: var(--space-3);
+  color: var(--txt-secondary);
+  font: var(--type-body);
+}
+
+/* Label and reset time, then a thin bar, then "N% used", on one line. */
+.settings-usage__meter-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(120px, 2fr) auto;
+  align-items: center;
+  column-gap: var(--space-4);
+  padding: var(--space-4) 0;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.settings-usage__meter-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.settings-usage__meter {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-layer-2);
+  overflow: hidden;
+}
+
+.settings-usage__meter > div {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.settings-usage__used {
+  color: var(--txt-secondary);
+  font: var(--type-caption);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.settings-usage__badge {
+  margin: var(--space-2) 0 0;
+  width: fit-content;
+}
+
+.settings-usage__subhead {
+  margin: var(--space-6) 0 0;
+  padding-bottom: var(--space-1);
+  color: var(--txt-placeholder);
+  font: var(--type-label);
+  letter-spacing: var(--type-label-tracking);
+  text-transform: uppercase;
+}
+
+.settings-usage__value {
+  color: var(--txt-primary);
+  font: var(--type-body-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-usage__swatch {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.settings-usage__footer {
+  padding-top: var(--space-3);
+}
+
+.settings-usage__blocked {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+}
+
+/* --- the daily chart ------------------------------------------------------ */
+
+.settings-usage__chart {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 6px;
+  padding: var(--space-3) 0;
+}
+
+.settings-usage__axis {
+  height: 140px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  text-align: right;
+  font: 11px var(--mono);
+  color: var(--txt-placeholder);
+  transform: translateY(-6px);
+}
+
+.settings-usage__plot {
+  position: relative;
+  height: 140px;
+}
+
+.settings-usage__grid,
+.settings-usage__bars {
+  position: absolute;
+  inset: 0;
+  display: flex;
+}
+
+.settings-usage__grid {
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.settings-usage__grid > span {
+  height: 1px;
+  background: var(--chart-grid);
+}
+
+.settings-usage__grid > .settings-usage__grid-base {
+  background: var(--border-strong);
+}
+
+.settings-usage__bars {
+  align-items: flex-end;
+  gap: 24px;
+}
+
+.settings-usage__bars--dense {
+  gap: 3px;
+}
+
+.settings-usage__day {
+  flex: 1;
+  min-width: 3px;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 1px;
+  border-radius: 2px 2px 0 0;
+  overflow: hidden;
+}
+
+.settings-usage__day > span {
+  flex-shrink: 1;
+  flex-basis: 0;
+}
+
+.settings-usage__ticks {
+  display: flex;
+  justify-content: space-between;
+  font: 11px var(--mono);
+  color: var(--txt-placeholder);
+}
+
+/* --- runs ----------------------------------------------------------------- */
+
+.settings-usage__table {
+  width: 100%;
+  border-collapse: collapse;
+  font: var(--type-body);
+  color: var(--txt-secondary);
+}
+
+.settings-usage__table th {
+  height: 28px;
+  padding: 0 10px;
+  text-align: left;
+  font: var(--type-label);
+  letter-spacing: var(--type-label-tracking);
+  text-transform: uppercase;
+  color: var(--txt-placeholder);
+}
+
+.settings-usage__table td {
+  height: 32px;
+  padding: 0 10px;
+  border-top: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+
+.settings-usage__table tr:hover td {
+  background: var(--bg-layer-1-hover);
+}
+
+.settings-usage__num {
+  text-align: right !important;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-usage__mono {
+  font-family: var(--mono);
+}
+
+.settings-usage__dim {
+  color: var(--txt-tertiary);
+}
+
+.settings-usage__strong,
+.settings-usage__run-name {
+  color: var(--txt-primary);
+  font-weight: 500;
+}

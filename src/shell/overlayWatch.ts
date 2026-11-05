@@ -44,7 +44,7 @@ export const OVERLAY_SELECTOR = [
   ".pane__drop",
   ".drag-hint",
   ".drag-detach-outline",
-  // These two cover the whole tool window: a takeover (Home, Tutorials) and an
+  // These two cover the whole tool window: a takeover (Home, Docs) and an
   // expanded rail page. Play stays its pane's active tab under them, so nothing
   // else tells it that it is hidden. Named here rather than marked with
   // `data-overlay` where drawn, which would be one more thing to remember.

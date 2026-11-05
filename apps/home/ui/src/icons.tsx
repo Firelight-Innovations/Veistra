@@ -126,7 +126,7 @@ export function PackagePlus(props: IconProps) {
   );
 }
 
-/** A tutorial card's mark. */
+/** A docs card's mark. */
 export function Book(props: IconProps) {
   return (
     <Outline {...props}>

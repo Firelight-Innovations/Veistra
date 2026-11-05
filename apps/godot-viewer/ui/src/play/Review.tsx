@@ -622,15 +622,14 @@ export default function Review(props: ReviewProps) {
             : `Playtest feedback: ${count}${still > 0 ? `, ${still} still broken` : ""}. Read packet.md first.`,
           label: `Play - take ${take.number} feedback`,
           path: sent.packetMd,
+          // The person sees one chip; this is what the agent reads with it.
+          prompt: packetMessage(notes.length, still, `${sent.packet}/packet.md`),
         });
-        // The one message, to the one agent chosen and nowhere else.
+        // The one chip, to the one agent chosen and nowhere else.
         const delivery: Delivery = target
-          ? await handToAgent(
-              target,
-              item.id,
-              `${sent.packet}/packet.md`,
-              packetMessage(notes.length, still),
-            ).catch((e: unknown) => ({ delivered: false as const, reason: errorText(e) }))
+          ? await handToAgent(target, item.id, `Take ${take.number} feedback`).catch(
+              (e: unknown) => ({ delivered: false as const, reason: errorText(e) }),
+            )
           : { delivered: false, reason: "no agent is running here" };
         track("notes_sent", {
           notes: notes.length,

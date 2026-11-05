@@ -73,7 +73,7 @@ describe("take notes", () => {
   it("read each status in the board's words", () => {
     expect(statusView("open").label).toBe("Sent");
     expect(statusView("working")).toEqual({ label: "Agent working", tone: "warning" });
-    expect(statusView("fixed").label).toBe("Fixed, check it");
+    expect(statusView("fixed").label).toBe("Completed");
     expect(statusView("resolved").tone).toBe("success");
   });
 

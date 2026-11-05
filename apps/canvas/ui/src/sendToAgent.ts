@@ -119,6 +119,7 @@ export async function putSelectionImage(
     title: `Design - ${canvasTitle}, ${noun}`,
     label: `Design - ${canvasTitle}`,
     bytesBase64: await blobToBase64(png),
+    prompt: `${noun} I selected on the design canvas ${canvasTitle}, as a picture. Use it for what I ask.`,
   });
 }
 
@@ -134,5 +135,6 @@ export function putSpecCard(name: string, canvasPath: string, json: string) {
     title: `Spec - ${name}`,
     label: `Spec - ${name}`,
     text: specText(canvasPath, json),
+    prompt: `The spec card "${name}" from the design canvas ${canvasPath}, as JSON. Build or check against it for what I ask.`,
   });
 }

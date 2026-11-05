@@ -55,7 +55,7 @@ pub fn label(status: Status) -> &'static str {
     match status {
         Status::Open => "Sent",
         Status::Working => "Agent working",
-        Status::Fixed => "Fixed, check it",
+        Status::Fixed => "Completed",
         Status::Resolved => "Resolved",
     }
 }
@@ -156,12 +156,65 @@ pub enum EditorEvent {
     },
     /// Mark up the viewport, which the pane does.
     Markup { n: u64, t: u64 },
+    /// Mention in agent: one chip in the agent tab's prompt, nothing typed.
+    /// `what` says which; `path` is the script or resource a `file` names,
+    /// and `png` the viewport a `viewport` sends (`mention-<n>.png`).
+    Mention {
+        n: u64,
+        t: u64,
+        what: Mention,
+        scene: Option<String>,
+        nodes: Vec<String>,
+        path: Option<String>,
+        png: Option<String>,
+    },
+}
+
+/// What a Mention in agent names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mention {
+    /// The selected nodes (Godot) or objects (Blender), by path or name.
+    Selection,
+    /// The open scene, or the open `.blend`.
+    Scene,
+    /// One script or resource, by its `res://` path.
+    File,
+    /// A picture of the viewport.
+    Viewport,
+}
+
+impl Mention {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Selection => "selection",
+            Self::Scene => "scene",
+            Self::File => "file",
+            Self::Viewport => "viewport",
+        }
+    }
+
+    fn parse(name: &str) -> Option<Self> {
+        [Self::Selection, Self::Scene, Self::File, Self::Viewport]
+            .into_iter()
+            .find(|m| m.name() == name)
+    }
 }
 
 impl EditorEvent {
     pub fn n(&self) -> u64 {
         match self {
-            Self::Ask { n, .. } | Self::Verdict { n, .. } | Self::Markup { n, .. } => *n,
+            Self::Ask { n, .. }
+            | Self::Verdict { n, .. }
+            | Self::Markup { n, .. }
+            | Self::Mention { n, .. } => *n,
+        }
+    }
+
+    /// The picture this event wrote beside its line, deleted once answered.
+    fn png(&self) -> Option<&str> {
+        match self {
+            Self::Ask { png, .. } | Self::Mention { png, .. } => png.as_deref(),
+            _ => None,
         }
     }
 }
@@ -200,9 +253,75 @@ fn text_field(v: &Value, key: &str, n: u64) -> Result<Option<String>, Refused> {
     }
 }
 
+/// The nodes or object names a line lists, at most [`MAX_NODES`].
+fn node_list(v: &Value, n: u64) -> Result<Vec<String>, Refused> {
+    let nodes: Vec<String> = v["nodes"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|s| s.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    if nodes.len() > MAX_NODES {
+        return Err(refuse(Some(n), "too many nodes are selected"));
+    }
+    Ok(nodes)
+}
+
+/// The picture a line names, which may only be its own `<prefix>-<n>.png`.
+fn own_png(v: &Value, prefix: &str, n: u64) -> Result<Option<String>, Refused> {
+    match v["png"].as_str() {
+        None => Ok(None),
+        Some(name) if name == format!("{prefix}-{n}.png") => Ok(Some(name.to_string())),
+        Some(_) => Err(refuse(
+            Some(n),
+            format!("the picture is not this {prefix}'s"),
+        )),
+    }
+}
+
+/// A mention: what it names must be there. A selection lists something, a
+/// file is a `res://` path, a viewport brings its picture.
+fn parse_mention(v: &Value, n: u64, t: u64) -> Result<EditorEvent, Refused> {
+    let what = v["what"]
+        .as_str()
+        .and_then(Mention::parse)
+        .ok_or_else(|| refuse(Some(n), "the mention names nothing Veistra knows"))?;
+    let nodes = node_list(v, n)?;
+    let scene = text_field(v, "scene", n)?;
+    let path = text_field(v, "path", n)?;
+    let png = own_png(v, "mention", n)?;
+    match what {
+        Mention::Selection if nodes.is_empty() => {
+            return Err(refuse(Some(n), "nothing is selected"))
+        }
+        Mention::Scene if scene.as_deref().unwrap_or("").is_empty() => {
+            return Err(refuse(Some(n), "no scene is open, or it is not saved yet"))
+        }
+        Mention::File if !path.as_deref().is_some_and(|p| p.starts_with("res://")) => {
+            return Err(refuse(Some(n), "that is not a file in the project"))
+        }
+        Mention::Viewport if png.is_none() => {
+            return Err(refuse(Some(n), "the editor sent no picture"))
+        }
+        _ => {}
+    }
+    Ok(EditorEvent::Mention {
+        n,
+        t,
+        what,
+        scene,
+        nodes,
+        path,
+        png,
+    })
+}
+
 /// Check one line. The rules: a number, a known kind; an ask has a question
 /// of at most [`MAX_TEXT`] characters and names no picture but its own
-/// `ask-<n>.png`; a verdict names a comment id and says good or broken.
+/// `ask-<n>.png`; a verdict names a comment id and says good or broken; a
+/// mention is checked by [`parse_mention`].
 pub fn parse_event(line: &str) -> Result<EditorEvent, Refused> {
     if line.len() > MAX_LINE {
         return Err(refuse(None, "the line is too long"));
@@ -218,22 +337,8 @@ pub fn parse_event(line: &str) -> Result<EditorEvent, Refused> {
             if text.trim().is_empty() {
                 return Err(refuse(Some(n), "write a question first"));
             }
-            let png = match v["png"].as_str() {
-                None => None,
-                Some(name) if name == format!("ask-{n}.png") => Some(name.to_string()),
-                Some(_) => return Err(refuse(Some(n), "the picture is not this ask's")),
-            };
-            let nodes: Vec<String> = v["nodes"]
-                .as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|s| s.as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default();
-            if nodes.len() > MAX_NODES {
-                return Err(refuse(Some(n), "too many nodes are selected"));
-            }
+            let png = own_png(&v, "ask", n)?;
+            let nodes = node_list(&v, n)?;
             Ok(EditorEvent::Ask {
                 n,
                 t,
@@ -263,6 +368,7 @@ pub fn parse_event(line: &str) -> Result<EditorEvent, Refused> {
             })
         }
         Some("markup") => Ok(EditorEvent::Markup { n, t }),
+        Some("mention") => parse_mention(&v, n, t),
         _ => Err(refuse(Some(n), "unknown kind")),
     }
 }
@@ -364,8 +470,11 @@ impl Channel {
 
     /// Record the answer to event `n`; its picture is no longer needed.
     pub fn ack(&mut self, ack: Ack) {
-        if let Some((_, EditorEvent::Ask { png: Some(png), .. })) =
-            self.events.iter().find(|(_, e)| e.n() == ack.n)
+        if let Some(png) = self
+            .events
+            .iter()
+            .find(|(_, e)| e.n() == ack.n)
+            .and_then(|(_, e)| e.png())
         {
             let _ = std::fs::remove_file(self.dir.join(png));
         }
@@ -414,9 +523,23 @@ impl Channel {
     }
 }
 
+/// The picture an event names, as base64, or why there is none.
+fn picture(dir: &Path, png: Option<&str>) -> (Option<String>, Option<String>) {
+    match png {
+        None => (None, Some("the editor sent no picture".to_string())),
+        Some(name) => match std::fs::read(dir.join(name)) {
+            Ok(bytes) if bytes.len() <= crate::context::MAX_IMAGE_BYTES => {
+                (Some(BASE64.encode(bytes)), None)
+            }
+            Ok(_) => (None, Some("the picture is too large to send".to_string())),
+            Err(e) => (None, Some(format!("the picture could not be read: {e}"))),
+        },
+    }
+}
+
 /// An event as the pane reads it: `seq`, the line's fields, and for an ask
-/// `pngBase64` (null, with `pngProblem`, when the picture is missing or larger
-/// than a context item takes).
+/// or a mention `pngBase64` (null, with `pngProblem`, when the picture is
+/// missing or larger than a context item takes).
 pub fn event_json(dir: &Path, seq: u64, event: &EditorEvent) -> Value {
     match event {
         EditorEvent::Ask {
@@ -428,16 +551,7 @@ pub fn event_json(dir: &Path, seq: u64, event: &EditorEvent) -> Value {
             camera,
             png,
         } => {
-            let (b64, problem) = match png {
-                None => (None, Some("the editor sent no picture".to_string())),
-                Some(name) => match std::fs::read(dir.join(name)) {
-                    Ok(bytes) if bytes.len() <= crate::context::MAX_IMAGE_BYTES => {
-                        (Some(BASE64.encode(bytes)), None)
-                    }
-                    Ok(_) => (None, Some("the picture is too large to send".to_string())),
-                    Err(e) => (None, Some(format!("the picture could not be read: {e}"))),
-                },
-            };
+            let (b64, problem) = picture(dir, png.as_deref());
             json!({
                 "seq": seq, "n": n, "t": t, "kind": "ask", "text": text, "scene": scene,
                 "nodes": nodes, "camera": camera, "pngBase64": b64, "pngProblem": problem,
@@ -454,6 +568,25 @@ pub fn event_json(dir: &Path, seq: u64, event: &EditorEvent) -> Value {
             "verdict": if *good { "good" } else { "broken" }, "reply": reply,
         }),
         EditorEvent::Markup { n, t } => json!({ "seq": seq, "n": n, "t": t, "kind": "markup" }),
+        EditorEvent::Mention {
+            n,
+            t,
+            what,
+            scene,
+            nodes,
+            path,
+            png,
+        } => {
+            let (b64, problem) = match png {
+                Some(_) => picture(dir, png.as_deref()),
+                None => (None, None),
+            };
+            json!({
+                "seq": seq, "n": n, "t": t, "kind": "mention", "what": what.name(),
+                "scene": scene, "nodes": nodes, "path": path,
+                "pngBase64": b64, "pngProblem": problem,
+            })
+        }
     }
 }
 

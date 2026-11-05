@@ -3,14 +3,14 @@
 //! so a crash in it never takes Veistra down, and window management makes it
 //! look embedded, the way Godot 4.4's own editor shows a running game.
 //!
-//! **R2, an owned popup, not R1, a child window.** The placed window stays
-//! top level: no caption or borders, `WS_EX_TOOLWINDOW` so it has no taskbar
-//! entry, and owned by the Veistra window, which keeps it above Veistra and
-//! hides it with Veistra when Veistra is minimised. The cost is repositioning
-//! on every move of the Veistra window ([`host::reposition_all`]). What it
-//! buys is that the recorder and the still ([`capture`]) capture that window
-//! alone, never Veistra's UI. The R1/R2 row in `docs/design-notes/godot-play.md`
-//! waits on the embed spike (`godot/spike.rs`); R1 would change only [`sys`].
+//! **Two ways to place it, by [`Kind::mode`]** (both in
+//! `docs/design-notes/godot-play.md`). The game is R2, an owned, borderless,
+//! taskbar-less popup kept above Veistra: it costs a reposition on every move
+//! ([`host::reposition_all`]) and buys a window the recorder and the still
+//! ([`capture`]) capture alone. The editors are R1, a true child
+//! ([`Mode::Child`]) in a clip box at the pane's rect: Windows moves it with
+//! Veistra for nothing, and an editor bigger than the pane is cut off at the
+//! pane's edge instead of covering its neighbours. Neither is recorded.
 //!
 //! [`host`] is the registry all three kinds go through, and its module doc is
 //! the API for an app that hosts a window. This file is one window: finding
@@ -82,6 +82,30 @@ impl Kind {
             Kind::Blender => "Blender",
         }
     }
+
+    /// How its window sits over the pane. The game stays an owned popup,
+    /// because the recorder captures that window alone and Graphics Capture
+    /// takes only a top-level window. An editor is never recorded, so it is a
+    /// child, which moves with Veistra for free: as an owned popup it trailed
+    /// every drag of the Veistra window by the time the editor took to answer
+    /// each move.
+    pub fn mode(self) -> Mode {
+        match self {
+            Kind::Game => Mode::Owned,
+            Kind::GodotEditor | Kind::Blender => Mode::Child,
+        }
+    }
+}
+
+/// How a placed window sits over its pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Mode {
+    /// R2: top level, owned by the Veistra window, placed in screen pixels.
+    Owned,
+    /// R1: a child of a clip box Veistra keeps at the pane's rect, placed in
+    /// the Veistra window's client pixels, so a move of that window is free.
+    Child,
 }
 
 /// Windows never placed in a pane, whatever process owns them: a console and
@@ -94,8 +118,9 @@ const NEVER: &[&str] = &[
     "#32770",
 ];
 
-/// The window to place, out of a process tree's visible, unowned top-level
-/// windows as `(handle, class)` in z-order: the first of the kind's own
+/// The window to place, out of a process tree's visible top-level windows
+/// that no window of the tree owns, as `(handle, class)` in z-order: the
+/// first of the kind's own
 /// class, else the first that is not one of [`NEVER`].
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn pick(candidates: &[(isize, String)], kind: Kind) -> Option<isize> {
@@ -165,6 +190,16 @@ pub fn to_screen(css: CssRect, origin: (i32, i32), scale: f64) -> ScreenRect {
         y: origin.1 + top,
         w: (right - left).max(1),
         h: (bottom - top).max(1),
+    }
+}
+
+/// Where the window goes for `mode`: on the screen from the client origin for
+/// an owned popup, and in the Veistra window's own client pixels for a child,
+/// which is why a move of that window changes nothing for a child.
+pub fn target(mode: Mode, css: CssRect, owner: &Owner, scale: f64) -> ScreenRect {
+    match mode {
+        Mode::Owned => to_screen(css, owner.origin, scale),
+        Mode::Child => to_screen(css, (0, 0), scale),
     }
 }
 
@@ -310,10 +345,17 @@ pub trait Still: Send + Sync {
 /// the tests.
 pub trait WindowSystem: Send + Sync {
     fn find_window(&self, pids: &[u32], kind: Kind) -> Option<isize>;
-    fn embed(&self, hwnd: isize, owner: isize) -> Result<sys::Saved, String>;
-    /// Move and size the window over `owner`, owned by it, or hide it.
-    fn place(&self, hwnd: isize, at: ScreenRect, visible: bool, owner: isize)
-        -> Result<(), String>;
+    fn embed(&self, hwnd: isize, owner: isize, mode: Mode) -> Result<sys::Saved, String>;
+    /// Move and size the window over `owner`, or hide it: owned by it in
+    /// screen pixels, or in its clip box in `owner`'s client pixels.
+    fn place(
+        &self,
+        hwnd: isize,
+        at: ScreenRect,
+        visible: bool,
+        owner: isize,
+        mode: Mode,
+    ) -> Result<(), String>;
     fn release(
         &self,
         hwnd: isize,
@@ -329,6 +371,11 @@ pub trait WindowSystem: Send + Sync {
     /// Ask the window to close, as its own close button does. Returns once
     /// the request is posted; the program may ask to save, or refuse.
     fn request_close(&self, hwnd: isize) -> Result<(), String>;
+    /// Let go of what [`Self::embed`] made beside the window, once the window
+    /// is gone with its process: a child's clip box, which would otherwise
+    /// stay over the pane as an empty dark rectangle. Never touches the
+    /// window's own handle, which Windows may have given to another window.
+    fn discard(&self, _saved: &sys::Saved) {}
 }
 
 struct Native;
@@ -337,8 +384,8 @@ impl WindowSystem for Native {
     fn find_window(&self, pids: &[u32], kind: Kind) -> Option<isize> {
         sys::find_window(pids, kind)
     }
-    fn embed(&self, hwnd: isize, owner: isize) -> Result<sys::Saved, String> {
-        sys::embed(hwnd, owner)
+    fn embed(&self, hwnd: isize, owner: isize, mode: Mode) -> Result<sys::Saved, String> {
+        sys::embed(hwnd, owner, mode)
     }
     fn place(
         &self,
@@ -346,8 +393,12 @@ impl WindowSystem for Native {
         at: ScreenRect,
         visible: bool,
         owner: isize,
+        mode: Mode,
     ) -> Result<(), String> {
-        sys::place(hwnd, at, visible, owner)
+        sys::place(hwnd, at, visible, owner, mode)
+    }
+    fn discard(&self, saved: &sys::Saved) {
+        sys::discard(saved)
     }
     fn release(
         &self,
@@ -395,9 +446,18 @@ struct Queue {
 /// The last placement made, for `veistra-debug`'s `shell_snapshot`.
 #[derive(Debug, Clone, Copy)]
 struct Placed {
+    hwnd: isize,
     at: ScreenRect,
     visible: bool,
+    owner: isize,
     ms: u64,
+}
+
+impl Placement {
+    /// Whether `self` asks for nothing `hwnd` at `at` does not already have.
+    fn same(&self, hwnd: isize, at: ScreenRect, visible: bool, owner: isize) -> bool {
+        (self.hwnd, self.at, self.visible, self.owner) == (hwnd, at, visible, owner)
+    }
 }
 
 /// Called once, when the first attempt to place the window has an outcome.
@@ -441,13 +501,32 @@ impl Inner {
     }
 
     fn place(&self, p: &Placement) -> Result<(), String> {
-        self.win.place(p.hwnd, p.at, p.visible, p.owner)?;
+        self.win
+            .place(p.hwnd, p.at, p.visible, p.owner, self.kind.mode())?;
         *self.placed.lock_or_panic() = Some(Placed {
+            hwnd: p.hwnd,
             at: p.at,
             visible: p.visible,
+            owner: p.owner,
             ms: p.asked.elapsed().as_millis() as u64,
         });
         Ok(())
+    }
+
+    /// A child already where `p` asks, or about to be: the Veistra window
+    /// moved, which moves a child with it, so there is nothing to send the
+    /// editor. An owned popup is placed every time, as it always was.
+    fn redundant(&self, queued: Option<&Placement>, p: &Placement) -> bool {
+        if self.kind.mode() != Mode::Child {
+            return false;
+        }
+        match queued {
+            Some(q) => p.same(q.hwnd, q.at, q.visible, q.owner),
+            None => self
+                .placed
+                .lock_or_panic()
+                .is_some_and(|d| p.same(d.hwnd, d.at, d.visible, d.owner)),
+        }
     }
 
     fn work(&self) {
@@ -588,6 +667,10 @@ impl Embed {
         *self.inner.hwnd.lock_or_panic() = None;
         self.inner.queue.lock_or_panic().next = None;
         self.inner.still.lock_or_panic().take();
+        let saved = self.inner.saved.lock_or_panic().take();
+        if let Some(saved) = saved {
+            self.inner.win.discard(&saved);
+        }
     }
 
     /// Where the pane last was on the screen, against `owner`.
@@ -711,7 +794,8 @@ impl Embed {
     /// decorated and on screen, saying `refused` for a refused embed. Answers
     /// whether it is in the pane.
     fn embed_now(&self, hwnd: isize, owner: &Owner, refused: Cause) -> bool {
-        let saved = match self.inner.win.embed(hwnd, owner.hwnd) {
+        let mode = self.inner.kind.mode();
+        let saved = match self.inner.win.embed(hwnd, owner.hwnd, mode) {
             Ok(saved) => saved,
             Err(e) => {
                 crate::veistra_log!("embed: could not place {}: {e}", self.inner.kind.what());
@@ -772,9 +856,10 @@ impl Embed {
         }
         let (hwnd, last) = (self.hwnd()?, self.last()?);
         let shown = self.shown();
+        let scale = scale_for(last.dpr, owner.scale);
         Some(Placement {
             hwnd,
-            at: to_screen(last.rect, owner.origin, scale_for(last.dpr, owner.scale)),
+            at: target(self.inner.kind.mode(), last.rect, owner, scale),
             visible: last.visible && shown && last.rect.w >= 1.0 && last.rect.h >= 1.0,
             owner: owner.hwnd,
             asked: Instant::now(),
@@ -782,13 +867,16 @@ impl Embed {
     }
 
     /// Put the window where the pane last said, or hide it, by handing the
-    /// placement to the worker.
+    /// placement to the worker; nothing for a child already there.
     pub fn reapply(&self, owner: &Owner) {
         {
             let mut queue = self.inner.queue.lock_or_panic();
             let Some(placement) = self.placement(owner) else {
                 return;
             };
+            if self.inner.redundant(queue.next.as_ref(), &placement) {
+                return;
+            }
             queue.next = Some(placement);
         }
         self.inner.wake.notify_all();
@@ -896,6 +984,7 @@ impl Embed {
         let placed = *self.inner.placed.lock_or_panic();
         json!({
             "kind": self.inner.kind,
+            "mode": self.inner.kind.mode(),
             "state": self.state(),
             "shown": self.shown(),
             "box": self.last().map(|l| json!({ "rect": l.rect, "visible": l.visible, "dpr": l.dpr })),
@@ -962,7 +1051,11 @@ pub mod styles {
     pub const WS_MAXIMIZE: u32 = 0x0100_0000;
     pub const WS_EX_APPWINDOW: u32 = 0x0004_0000;
     pub const WS_EX_TOOLWINDOW: u32 = 0x0000_0080;
+    pub const WS_CHILD: u32 = 0x4000_0000;
+    pub const WS_CLIPSIBLINGS: u32 = 0x0400_0000;
+    pub const WS_EX_NOPARENTNOTIFY: u32 = 0x0000_0004;
 
+    /// Also `WS_OVERLAPPEDWINDOW`, `WS_OVERLAPPED` being 0.
     const FRAME: u32 = WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
 
     /// Shown, minimised and maximised are states `ShowWindow` changes. A
@@ -987,6 +1080,32 @@ pub mod styles {
     pub fn restored(saved: isize) -> isize {
         saved & !(STATES as isize)
     }
+
+    /// The style a child gets: no frame, no popup bit, no states, and clipped
+    /// by anything Veistra puts beside it in the window.
+    pub fn child(style: isize) -> isize {
+        (style & !((FRAME | STATES | WS_POPUP) as isize)) | (WS_CHILD | WS_CLIPSIBLINGS) as isize
+    }
+
+    /// A child sends its parent `WM_PARENTNOTIFY` on every click, and the
+    /// parent is a Veistra thread: the editor would wait on Veistra for each
+    /// one. No taskbar style is needed, a child never has a button.
+    pub fn child_ex(ex_style: isize) -> isize {
+        (ex_style & !((WS_EX_APPWINDOW | WS_EX_TOOLWINDOW) as isize))
+            | WS_EX_NOPARENTNOTIFY as isize
+    }
+
+    /// The style a child gets back when it pops out. A window that was born
+    /// framed gets its own frame back; one born without one, as the Godot
+    /// editor is when it is started owned by Veistra (`--wid`), gets the
+    /// ordinary frame, or Pop out would leave a window nobody could move.
+    pub fn popped_out(saved: isize) -> isize {
+        if saved & WS_CAPTION as isize != 0 {
+            restored(saved)
+        } else {
+            (saved & !((STATES | WS_POPUP | WS_CHILD) as isize)) | FRAME as isize
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -998,7 +1117,7 @@ pub mod sys;
 /// frame and [`host`] gives up with [`Cause::Unsupported`] without looking.
 #[cfg(not(windows))]
 pub mod sys {
-    use super::{Kind, ScreenRect};
+    use super::{Kind, Mode, ScreenRect};
 
     #[derive(Debug, Clone, Default)]
     pub struct Saved;
@@ -1009,7 +1128,7 @@ pub mod sys {
         None
     }
 
-    pub fn embed(_hwnd: isize, _owner: isize) -> Result<Saved, String> {
+    pub fn embed(_hwnd: isize, _owner: isize, _mode: Mode) -> Result<Saved, String> {
         Err(NONE.into())
     }
 
@@ -1018,13 +1137,20 @@ pub mod sys {
         _r: ScreenRect,
         _visible: bool,
         _owner: isize,
+        _mode: Mode,
     ) -> Result<(), String> {
         Err(NONE.into())
+    }
+
+    pub fn primary_height() -> Option<i32> {
+        None
     }
 
     pub fn release(_hwnd: isize, _saved: &Saved, _near: Option<ScreenRect>) -> Result<(), String> {
         Err(NONE.into())
     }
+
+    pub fn discard(_saved: &Saved) {}
 
     pub fn show_near(_hwnd: isize, _near: Option<ScreenRect>) -> Result<(), String> {
         Err(NONE.into())

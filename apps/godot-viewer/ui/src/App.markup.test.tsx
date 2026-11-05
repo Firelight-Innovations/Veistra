@@ -17,6 +17,7 @@ vi.mock("@veistra/bridge", () => ({
   OPENED_EVENT: "veistra:opened",
   on: () => () => undefined,
   session: () => Promise.resolve({ projectPath: null, instanceId: "i1" }),
+  publish: vi.fn(),
 }));
 
 vi.mock("./usePreview", () => ({
@@ -107,8 +108,8 @@ function backend(opts: { values?: Record<string, unknown>; saved?: unknown } = {
         return Promise.resolve([]);
       case "context/put":
         return Promise.resolve({ id: "ctx" });
-      case "context/insert":
-        return Promise.resolve({ inserted: true, count: 2 });
+      case "veistra/attach-to-agent":
+        return Promise.resolve({ delivered: 1 });
       default:
         return Promise.resolve(null);
     }
@@ -150,41 +151,44 @@ describe("after Done", () => {
     render(<App />);
     await finishDrawing();
     await waitFor(() => expect(calls("context/put")).toHaveLength(2));
-    expect(calls("context/put")[1]![1]).toMatchObject({ kind: "json" });
+    expect(calls("context/put")[0]![1]).toMatchObject({ kind: "json" });
     expect(screen.queryByText(/make this automatic/)).toBeNull();
   });
 
-  it("types the reference at the prompt when sending is automatic, and nothing else", async () => {
+  it("leaves one chip, the picture's, when sending is automatic, and types nothing", async () => {
     backend({ values: { "markup.autoSend": true } });
     render(<App />);
     await finishDrawing();
-    await waitFor(() => expect(calls("context/insert")).toHaveLength(1));
-    expect(calls("context/insert")[0]![1]).toEqual({ itemIds: ["ctx", "ctx"] });
-    // Typing is the whole of it: no method that submits the line exists to call.
+    await waitFor(() => expect(calls("veistra/attach-to-agent")).toHaveLength(1));
+    expect(calls("context/put")).toHaveLength(2);
+    expect(calls("context/insert")).toHaveLength(0);
+    // A chip is the whole of it: no method that submits the line exists to call.
     expect(bridge.invoke.mock.calls.map((c) => c[0])).not.toContain("terminal/write");
   });
 
-  it("types the same reference when Send markup is pressed by hand", async () => {
+  it("leaves the same one chip when Send markup is pressed by hand", async () => {
     backend();
     render(<App />);
     await finishDrawing();
     fireEvent.click(await screen.findByRole("button", { name: "Send markup" }));
-    await waitFor(() => expect(calls("context/insert")).toHaveLength(1));
+    await waitFor(() => expect(calls("veistra/attach-to-agent")).toHaveLength(1));
+    expect(calls("context/put")).toHaveLength(2);
   });
 
-  it("still counts as sent when there is no agent terminal to type into", async () => {
+  it("says the markup is in the Context strip when no agent takes it", async () => {
     backend();
     const base = bridge.invoke.getMockImplementation()!;
     bridge.invoke.mockImplementation((m: string, p: unknown) =>
-      m === "context/insert" ? Promise.reject(new Error("no terminal")) : base(m, p),
+      m === "veistra/attach-to-agent"
+        ? Promise.resolve({ delivered: 0 })
+        : m === "context/insert"
+          ? Promise.resolve({ inserted: false, reason: "no agent is running here" })
+          : base(m, p),
     );
-    const quiet = vi.spyOn(console, "error").mockImplementation(() => undefined);
     render(<App />);
     await finishDrawing();
     fireEvent.click(await screen.findByRole("button", { name: "Send markup" }));
-    await screen.findByText(/make this automatic/);
-    expect(screen.queryByText(/Couldn't send markup/)).toBeNull();
-    quiet.mockRestore();
+    await screen.findByText(/in the Context strip, but no agent took it: no agent is running here/);
   });
 });
 

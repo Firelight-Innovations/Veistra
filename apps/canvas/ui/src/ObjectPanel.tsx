@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ClipboardCopy, ExternalLink, Link2Off, Settings2 } from "lucide-react";
-import type { ContextRef } from "../../../shared/context";
+import { chipToAgent, type ContextRef } from "../../../shared/context";
 import { SendButton } from "../../../shared/SendFooter";
 import type { CanvasSummary } from "./rpc";
 import { linkable } from "./nesting";
@@ -247,16 +247,25 @@ export default function ObjectPanel(p: Props) {
 
   const sendCard = () => {
     if (!exported.ok) return;
-    p.putCard(draft.name, exported.json).then(
-      () => {
-        setSent(true);
-        setTimeout(() => setSent(false), 1800);
-      },
-      (err: unknown) =>
-        p.onSendError(
-          `Couldn't send the card to the agent: ${err instanceof Error ? err.message : String(err)}`,
-        ),
-    );
+    p.putCard(draft.name, exported.json)
+      // One chip on the prompt of the agent tab last worked in; no words.
+      .then((item) => chipToAgent(item))
+      .then(
+        (said) => {
+          if (!said.delivered) {
+            p.onSendError(
+              `The card is in the Context strip, but no agent took it: ${said.reason}.`,
+            );
+            return;
+          }
+          setSent(true);
+          setTimeout(() => setSent(false), 1800);
+        },
+        (err: unknown) =>
+          p.onSendError(
+            `Couldn't send the card to the agent: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+      );
   };
 
   return (

@@ -460,8 +460,16 @@ export interface MenuItem {
   detail?: string;
   children?: MenuItem[];
   disabled?: boolean;
-  /** What the row is, for its leading glyph: `file`, `canvas`, `skill`, … */
+  /** What the row is, for its leading glyph and its colour: `file`, `canvas`, `skill`, … */
   kind?: string;
+  /**
+   * The file or folder name a `file` or `folder` row stands for, which leads
+   * it with that type's icon from the Files explorer. Absent on a row that
+   * only browses or searches files, whose label is not a file name.
+   */
+  fileName?: string;
+  /** Draws a line above the row: where the places to browse end and the results begin. */
+  separated?: boolean;
 }
 
 /** A popup list under the caret: slash commands, @ mentions. */

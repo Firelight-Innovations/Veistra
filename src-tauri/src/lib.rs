@@ -310,8 +310,9 @@ pub fn run() {
                     if window.label() == app.state::<plane_webview::PlaneWebview>().owner() {
                         plane_webview::sync_visibility(app, &app.state::<ShellState>().snapshot());
                     }
-                    // A window placed over a pane is an owned window, which
-                    // stays above its owner but does not move with it.
+                    // The game over a Play pane is an owned window, which stays
+                    // above its owner but does not move with it. An editor is a
+                    // child, which does, and is sent nothing for a move.
                     embed::host::reposition_all(app);
                 }
                 // A window has been asked to close — by our own titlebar's ×,
@@ -599,6 +600,7 @@ pub fn run() {
             commands::reload_plugin,
             commands::set_plugin_enabled,
             commands::app_call,
+            account::methods::account_call,
             diagnostics::report_frontend_error,
             mcp::commands::mcp_status,
             mcp::commands::mcp_catalog,

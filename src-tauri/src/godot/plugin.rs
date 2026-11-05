@@ -1,9 +1,10 @@
 //! The Veistra editor plugin: what it is, how it is installed and removed.
 //!
 //! **Opt-in and removable,** like the capture addon ([`super::addon`]) it sits
-//! beside. Enabling writes three files into `addons/veistra/` (`plugin.cfg`,
-//! `veistra_editor.gd` and the Veistra dock's `veistra_dock.gd`, #320) and one
-//! entry into `project.godot`'s `[editor_plugins]` list; disabling deletes
+//! beside. Enabling writes four files into `addons/veistra/` (`plugin.cfg`,
+//! `veistra_editor.gd`, the Veistra dock's `veistra_dock.gd`, #320, and the
+//! right-click menus' `veistra_menu.gd`) and one entry into
+//! `project.godot`'s `[editor_plugins]` list; disabling deletes
 //! exactly those, plus the `.uid` file Godot 4.4 and later writes beside each
 //! script. The capture addon's script and autoload line are left alone either
 //! way.
@@ -24,11 +25,14 @@ use std::path::{Path, PathBuf};
 pub const SCRIPT: &str = include_str!("veistra_editor.gd");
 pub const CONFIG: &str = include_str!("veistra_plugin.cfg");
 pub const DOCK: &str = include_str!("veistra_dock.gd");
+pub const MENU: &str = include_str!("veistra_menu.gd");
 
 /// What each script's first line says it is, so an older copy reads as
-/// partial. v2 is the first with the dock (#320).
-const VERSION_MARKER: &str = "# veistra-editor v2";
-const DOCK_MARKER: &str = "# veistra-dock v1";
+/// partial. v2 is the first with the dock (#320); v3, with dock v2 and the
+/// menus, the first with Mention in agent.
+const VERSION_MARKER: &str = "# veistra-editor v3";
+const DOCK_MARKER: &str = "# veistra-dock v2";
+const MENU_MARKER: &str = "# veistra-menu v1";
 const SECTION: &str = "[editor_plugins]";
 const KEY: &str = "enabled=";
 const ENTRY: &str = "res://addons/veistra/plugin.cfg";
@@ -47,6 +51,10 @@ pub fn script_path(project: &Path) -> PathBuf {
 
 fn dock_path(project: &Path) -> PathBuf {
     folder(project).join("veistra_dock.gd")
+}
+
+fn menu_path(project: &Path) -> PathBuf {
+    folder(project).join("veistra_menu.gd")
 }
 
 fn config_path(project: &Path) -> PathBuf {
@@ -80,11 +88,16 @@ pub fn status(project: &Path) -> Installed {
     let project_file = std::fs::read_to_string(project.join("project.godot")).unwrap_or_default();
     let enabled = is_enabled(&project_file);
     let dock = std::fs::read_to_string(dock_path(project)).ok();
+    let menu = std::fs::read_to_string(menu_path(project)).ok();
     let current = script
         .as_deref()
         .is_some_and(|s| s.starts_with(VERSION_MARKER))
-        && dock.as_deref().is_some_and(|s| s.starts_with(DOCK_MARKER));
-    match (script.is_some() || dock.is_some() || config, enabled) {
+        && dock.as_deref().is_some_and(|s| s.starts_with(DOCK_MARKER))
+        && menu.as_deref().is_some_and(|s| s.starts_with(MENU_MARKER));
+    match (
+        script.is_some() || dock.is_some() || menu.is_some() || config,
+        enabled,
+    ) {
         (false, false) => Installed::No,
         (true, true) if current && config => Installed::Yes,
         _ => Installed::Partial,
@@ -138,7 +151,7 @@ fn replace_line(text: &str, old: &str, new: &str) -> String {
         .join(nl)
 }
 
-/// Write the three files and enable the plugin. Idempotent: an installed project
+/// Write the four files and enable the plugin. Idempotent: an installed project
 /// gets fresh copies of the files and its `project.godot` is left alone.
 pub fn install(project: &Path) -> Result<(), String> {
     let project_file_path = project.join("project.godot");
@@ -150,6 +163,7 @@ pub fn install(project: &Path) -> Result<(), String> {
     for (path, body) in [
         (config_path(project), CONFIG),
         (dock_path(project), DOCK),
+        (menu_path(project), MENU),
         (script_path(project), SCRIPT),
     ] {
         std::fs::write(&path, body)
@@ -171,6 +185,7 @@ pub fn remove(project: &Path) -> Result<(), String> {
             .map_err(|e| format!("could not delete {}: {e}", config.display()))?;
     }
     addon::remove_script(&dock_path(project))?;
+    addon::remove_script(&menu_path(project))?;
     addon::remove_script(&script_path(project))?;
     let path = project.join("project.godot");
     let text = std::fs::read_to_string(&path)
@@ -214,6 +229,7 @@ mod tests {
     fn the_shipped_files_carry_the_marker_and_name_the_script() {
         assert!(SCRIPT.starts_with(VERSION_MARKER));
         assert!(DOCK.starts_with(DOCK_MARKER));
+        assert!(MENU.starts_with(MENU_MARKER));
         assert!(CONFIG.contains("script=\"veistra_editor.gd\""));
         assert!(SCRIPT.contains("preload(\"veistra_dock.gd\")"));
     }
@@ -261,7 +277,12 @@ mod tests {
         assert_eq!(status(dir.path()), Installed::Yes, "idempotent");
 
         assert!(dir.path().join("addons/veistra/veistra_dock.gd").is_file());
-        for uid in ["veistra_editor.gd.uid", "veistra_dock.gd.uid"] {
+        assert!(dir.path().join("addons/veistra/veistra_menu.gd").is_file());
+        for uid in [
+            "veistra_editor.gd.uid",
+            "veistra_dock.gd.uid",
+            "veistra_menu.gd.uid",
+        ] {
             std::fs::write(dir.path().join("addons/veistra").join(uid), "uid://c1").unwrap();
         }
         remove(dir.path()).unwrap();
@@ -306,6 +327,23 @@ mod tests {
         assert_eq!(status(dir.path()), Installed::Partial);
         install(dir.path()).unwrap();
         assert_eq!(status(dir.path()), Installed::Yes);
+    }
+
+    // The plugin from before Mention in agent (editor v2, dock v1, no menus)
+    // keeps working, and the pane offers the update until it is reinstalled.
+    #[test]
+    fn a_plugin_from_before_mentions_reads_as_partial_until_reinstalled() {
+        let dir = project(PROJECT);
+        install(dir.path()).unwrap();
+        std::fs::write(script_path(dir.path()), "# veistra-editor v2\n").unwrap();
+        std::fs::write(dock_path(dir.path()), "# veistra-dock v1\n").unwrap();
+        std::fs::remove_file(menu_path(dir.path())).unwrap();
+        assert_eq!(status(dir.path()), Installed::Partial);
+        install(dir.path()).unwrap();
+        assert_eq!(status(dir.path()), Installed::Yes);
+        assert!(std::fs::read_to_string(menu_path(dir.path()))
+            .unwrap()
+            .starts_with(MENU_MARKER));
     }
 
     #[test]

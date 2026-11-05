@@ -620,6 +620,19 @@ pub fn context_item(root: &Path, r: &Ref) -> Result<Resolved, Fault> {
         return Err(Fault::new(Reason::BadUri, "not a context reference"));
     };
     let item = stored_item(root, id)?;
+    // What the app that sent the item asked of the agent leads it: the chip is
+    // all the person sees, so this is the one place the instruction can live.
+    let asked = |mut out: Resolved| {
+        if let Some(prompt) = &item.prompt {
+            out.parts.insert(
+                0,
+                Part::Note {
+                    text: prompt.clone(),
+                },
+            );
+        }
+        out
+    };
     if stands_for_file(&item) {
         let inner = Ref::File {
             path: item.rel_path.clone(),
@@ -627,9 +640,9 @@ pub fn context_item(root: &Path, r: &Ref) -> Result<Resolved, Fault> {
         };
         let mut out = file(root, &inner)?;
         out.uri = r.to_string();
-        out.title = item.title;
+        out.title = item.title.clone();
         out.meta.insert("file".into(), json!(inner.to_string()));
-        return Ok(out);
+        return Ok(asked(out));
     }
     let out = Resolved::empty(r, "context", item.title.clone());
     if item.missing {
@@ -650,9 +663,13 @@ pub fn context_item(root: &Path, r: &Ref) -> Result<Resolved, Fault> {
             )
         })?;
     let mut out = describe(out, &found.abs, None)?;
-    out.detail = item.source.label.or(Some(item.source.app_id));
+    out.detail = item
+        .source
+        .label
+        .clone()
+        .or(Some(item.source.app_id.clone()));
     out.meta.insert("context".into(), json!(item.id));
-    Ok(out)
+    Ok(asked(out))
 }
 
 /// A viewer comment, `.veistra/comments/<id>.json`, and its screenshot.
@@ -1205,6 +1222,35 @@ mod tests {
         assert!(r.withheld.unwrap().contains(".env"));
         assert!(item_secret(dir.path(), &env).is_some());
         assert_eq!(item_secret(dir.path(), &shot), None);
+    }
+
+    #[test]
+    fn a_context_items_prompt_leads_what_it_resolves_to_and_a_later_put_clears_it() {
+        let dir = project();
+        let put_log = |prompt: Option<&str>| {
+            let mut params = json!({ "key": "play/log", "kind": "text", "text": "[error] boom" });
+            if let Some(p) = prompt {
+                params["prompt"] = json!(p);
+            }
+            let item = crate::context::call(Some(dir.path()), "play", "context/put", Some(params));
+            item.unwrap()["id"].as_str().unwrap().to_string()
+        };
+        let id = put_log(Some("  Find what threw this error and fix it.  "));
+        let r = resolve(&dir, &format!("veistra://context/{id}")).unwrap();
+        assert!(
+            matches!(&r.parts[0], Part::Note { text } if text == "Find what threw this error and fix it.")
+        );
+        assert!(
+            r.parts.len() > 1,
+            "the log itself still follows: {:?}",
+            r.parts
+        );
+
+        // The same button sent again with nothing to ask carries no stale instruction.
+        let again = put_log(None);
+        assert_eq!(again, id);
+        let r = resolve(&dir, &format!("veistra://context/{id}")).unwrap();
+        assert!(!matches!(&r.parts[0], Part::Note { text } if text.contains("Find what threw")));
     }
 
     #[test]

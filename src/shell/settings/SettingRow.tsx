@@ -17,6 +17,8 @@
  */
 import { RotateCcw } from "lucide-react";
 import ControlFor from "./controls/ControlFor";
+import Highlight from "./Highlight";
+import { useSections } from "./SettingsSection";
 import type { Setting, SettingApplies } from "../../bindings";
 import type { SettingsSession } from "./useSettings";
 
@@ -29,16 +31,25 @@ export default function SettingRow({
 }) {
   const changed = session.isChanged(setting.key);
   const applies = appliesNote(setting.applies);
+  // The settings search, marked in the title and description while it is up.
+  const { needle } = useSections();
 
   return (
-    <div className="setting" data-kind={setting.control.kind} data-changed={changed || undefined}>
+    <div
+      className="setting"
+      data-kind={setting.control.kind}
+      data-changed={changed || undefined}
+      data-key={setting.key}
+    >
       <div className="setting__label">
         <span className="setting__title">
-          {setting.title}
+          <Highlight text={setting.title} needle={needle} />
           {changed && <span className="setting__modified" role="img" aria-label="Modified" />}
         </span>
         {setting.description !== "" && (
-          <span className="setting__description">{setting.description}</span>
+          <span className="setting__description">
+            <Highlight text={setting.description} needle={needle} />
+          </span>
         )}
         {applies !== null && <span className="setting__applies">{applies}</span>}
       </div>

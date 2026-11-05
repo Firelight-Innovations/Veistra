@@ -135,7 +135,6 @@ function NoteCard(props: {
   onPlayScene: () => void;
 }) {
   const { note, comment, checked, status, selected } = props;
-  const [reply, setReply] = useState("");
   const draft = status === "draft";
   const first = checked ? takeHistory(checked)[0] : undefined;
   const thread = comment ?? checked;
@@ -238,12 +237,10 @@ function NoteCard(props: {
           {comment.resolution.commit && (
             <code className="pl-note__commit">commit {comment.resolution.commit}</code>
           )}
-          <input
-            aria-label={`What is still broken, for note ${note.n}`}
-            placeholder="If it is still broken, say what you saw"
-            value={reply}
-            onChange={(e) => setReply(e.target.value)}
-          />
+          {/* A note, not a form: the agent is done, the person checks and resolves. */}
+          <p className="pl-note__done" role="note">
+            The agent completed this. Check it, then resolve it.
+          </p>
           <div className="pl-note__actions">
             <button
               type="button"
@@ -258,15 +255,12 @@ function NoteCard(props: {
               className="k-btn k-btn--secondary k-btn--sm"
               onClick={() => props.onVerdict("good")}
             >
-              Looks good
+              Resolve
             </button>
             <button
               type="button"
               className="k-btn k-btn--ghost k-btn--sm pl-note__broken"
-              onClick={() => {
-                props.onVerdict("broken", reply.trim() || undefined);
-                setReply("");
-              }}
+              onClick={() => props.onVerdict("broken")}
             >
               Still broken
             </button>

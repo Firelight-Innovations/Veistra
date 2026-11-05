@@ -16,7 +16,7 @@
  */
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Cloud, GitBranch, Home, Lock, Pin, Plus, FolderOpen, Smile } from "lucide-react";
+import { Cloud, GitBranch, Home, Pin, Plus, FolderOpen, Smile } from "lucide-react";
 import type { Cluster } from "../contract";
 import { environmentOf, ENVIRONMENT_LABEL, type Environment } from "../environment";
 import { popover } from "../motion";
@@ -26,11 +26,12 @@ import ProjectPill from "./ProjectPill";
 import { branchLabel, needsAttention, type ClusterTerminal } from "../clusterList";
 import "./clusterSwitcher.css";
 
+// Main drew a lock while it was read-only. It is a branch like any other now.
 const KIND_ICON = {
   worktree: GitBranch,
   design: GitBranch,
   cloud: Cloud,
-  main: Lock,
+  main: GitBranch,
 } as const;
 
 export interface ClusterSwitcherProps {

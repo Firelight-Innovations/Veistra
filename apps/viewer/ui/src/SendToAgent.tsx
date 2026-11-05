@@ -6,7 +6,7 @@
  */
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { SendButton } from "../../../shared/SendFooter";
-import { dragContext } from "../../../shared/context";
+import { chipToAgent, dragContext, type ContextRef } from "../../../shared/context";
 import { putFile, putSelection, relativePath } from "../../../shared/fileContext";
 import { activeEditor, subscribeActiveEditor } from "./viewer/activeEditor";
 import { describe } from "./rpc";
@@ -64,17 +64,26 @@ export default function SendToAgent({
     return () => sub.dispose();
   }, [editor]);
 
-  const send = (what: "file" | "selection", put: () => Promise<unknown>) => {
+  // Stored, then one chip on the prompt of the agent last worked in: never a sentence.
+  const send = (what: "file" | "selection", put: () => Promise<ContextRef>) => {
     onError(null);
+    const name = what === "file" ? rel : "the selection";
     put().then(
-      () => {
-        setSent(what);
-        setTimeout(() => setSent((s) => (s === what ? null : s)), 1800);
-      },
-      (err: unknown) =>
-        onError(
-          `Couldn't send ${what === "file" ? rel : "the selection"} to the agent: ${describe("context/put", err)}`,
+      (item) =>
+        chipToAgent(item).then(
+          (said) => {
+            if (!said.delivered) {
+              const lead = what === "file" ? rel : "The selection";
+              onError(`${lead} is in the Context strip, but no agent took it: ${said.reason}.`);
+              return;
+            }
+            setSent(what);
+            setTimeout(() => setSent((s) => (s === what ? null : s)), 1800);
+          },
+          (err: unknown) => onError(`Couldn't hand ${name} to the agent: ${String(err)}`),
         ),
+      (err: unknown) =>
+        onError(`Couldn't send ${name} to the agent: ${describe("context/put", err)}`),
     );
   };
 

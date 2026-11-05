@@ -33,8 +33,8 @@ function menus(): Menu[] {
         { label: "New File", accelerator: "Ctrl+N", onSelect: noop },
         { label: "Save", onSelect: noop, disabled: true, hint: "Nothing is open." },
         // No action and not disabled: scaffolding, the shape Help ▸
-        // Documentation has today.
-        { label: "Documentation" },
+        // Documentation had before it opened Docs.
+        { label: "Placeholder" },
       ],
     },
     {
@@ -75,7 +75,7 @@ describe("flattening the menu tree", () => {
   });
 
   it("drops a row with no action and no reason for having none", () => {
-    expect(labels()).not.toContain("File: Documentation");
+    expect(labels()).not.toContain("File: Placeholder");
   });
 
   it("keeps a disabled row, and the sentence saying why", () => {

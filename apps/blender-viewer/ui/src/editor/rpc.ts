@@ -47,6 +47,8 @@ export interface BlenderView {
   fullscreen: boolean;
   selected: SelectedObject[];
   active: string | null;
+  /** The view layer's objects, capped; a boot script before v3 leaves it out. */
+  objects?: SelectedObject[];
 }
 
 /** A lock as the pane shows it (`.veistra/locks/<file>.lock`). */
@@ -59,7 +61,7 @@ export interface BlendLock {
 export interface BlenderEditorInfo {
   /** The file Blender has open, relative to the environment; `null` for an unsaved new file. */
   file: string | null;
-  /** The file it was started on. */
+  /** The file it was started on; `""` when it was started on a new scene. */
   opened: string;
   pid: number;
   /** `blender --version`'s answer, when it gave one. */
@@ -108,9 +110,13 @@ export interface ViewportHit {
   worldPoint?: number[];
 }
 
-/** Starts Blender on `blend`, or answers the one already running on it. */
-export const openEditor = (blend: string) =>
-  invoke<BlenderEditorState>("blender-viewer/editor-open", { blend });
+/**
+ * Starts Blender on `blend`, or answers the one already running on it. `null`
+ * starts it on a new untitled scene, writing nothing into the environment, or
+ * answers whichever Blender already runs here.
+ */
+export const openEditor = (blend: string | null) =>
+  invoke<BlenderEditorState>("blender-viewer/editor-open", blend === null ? {} : { blend });
 
 /** The poll; `eventsSince` is the last tab event the pane has taken. */
 export const editorState = (eventsSince = 0) =>
@@ -120,15 +126,17 @@ export const editorState = (eventsSince = 0) =>
 export const editorAck = (n: number, ok: boolean, message: string) =>
   invoke<{ acked: number }>("blender-viewer/editor-ack", { n, ok, message });
 
-/** Asks, as the window's close button would: Blender offers to save first. */
-export const closeEditor = () =>
-  invoke<{ closing: boolean; via: "window" | "blender" }>("blender-viewer/editor-close", {});
-
 export const editorCapture = () => invoke<ViewportCapture>("blender-viewer/editor-capture", {});
 
 /** The object under a point of the last capture, in its pixels from the top left. */
 export const editorPick = (x: number, y: number) =>
   invoke<{ hit: ViewportHit | null }>("blender-viewer/editor-pick", { x, y });
+
+/** Select these objects, the first active; Blender refuses a name it does not have. */
+export const editorSelect = (names: string[]) =>
+  invoke<{ selected: SelectedObject[]; active: string | null }>("blender-viewer/editor-select", {
+    names,
+  });
 
 export const setViewportOnly = (on: boolean) =>
   invoke<{ viewportOnly: boolean }>("blender-viewer/editor-viewport-only", { on });

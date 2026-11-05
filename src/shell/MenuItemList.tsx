@@ -121,9 +121,9 @@ export default function MenuItemList({
  * An item that cannot act is `disabled: true` — a real native `disabled`
  * button, which neither fires `onSelect` nor closes the menu, because a click
  * that lands on a control with nothing to do should not read as having done
- * something. That is the only inert state left worth having: an item with no
- * `onSelect` at all now means one row of the Help menu — Documentation, which
- * has nothing published to point at yet.
+ * something. That is the only inert state left worth having: no row in the
+ * menus has gone without an `onSelect` since Help ▸ Documentation began
+ * opening Docs.
  */
 function MenuRow({
   item,

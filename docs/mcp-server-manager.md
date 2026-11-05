@@ -405,7 +405,7 @@ carries for the shell's own sake (geometry, band heights, restore bookkeeping).
 | `project` | Per cluster: the project folder, the folder files are read from (a worktree's, when set), the environment kind and branch, and which cluster is active. |
 | `list_play_notes` | The notes the person sent from a recorded Play take: id, status, take, time, scene, object, and the newest packet's `packet.md`, with `takes` listing every take of a note sent back as Still broken, oldest first. Open or working ones unless `status` says `fixed` or `all`. |
 | `start_play_note` | Marks a note Agent working. Writes. |
-| `resolve_play_note` | `{id, summary, commit?}`: marks a note Fixed, check it, with the summary. Writes. It never closes the note; the person does, with Looks good or Still broken. |
+| `resolve_play_note` | `{id, summary, commit?}`: marks a note Completed, with the summary. Writes. It never closes the note; the person does, with Resolve or Still broken. |
 
 The play-note tools live here because the design put them here: they are about
 the environment the person is working in, like `project`. `context` serves the same
@@ -414,8 +414,9 @@ token opens `context` and not `workspace`, and Send may hand the notes to that a
 Each row and `packet.md` name the note's cluster; a call that names no cluster and asks
 about a note the person's cluster does not hold is answered from the cluster that does.
 Their rules are in `src-tauri/src/godot/notes.rs`; a note is a comment with a `take`
-anchor (`docs/design-notes/viewer-comments.md`). Both writes are refused on the
-read-only main checkout.
+anchor (`docs/design-notes/viewer-comments.md`). Both writes go through the cluster
+write guard, which refuses them in a read-only environment. No environment is
+read-only today; the main checkout used to be and is writable now.
 
 The layout comes from the same `ShellState` snapshot `shell_snapshot` reads. Where
 focus is comes from `mcp::FocusState`, which each window's shell keeps current (see

@@ -27,7 +27,7 @@ use super::runner::{self, now_ms};
 use super::session::{self, Proc};
 use crate::editor_notes::{self, Ack, Scope};
 use crate::embed::host::{HostSpec, Orphan, Pane, Slot};
-use crate::embed::{self, Embed, Kind, LaunchRect};
+use crate::embed::{self, Embed, Kind, LaunchRect, Owner};
 use crate::sync::MutexExt;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
@@ -180,7 +180,19 @@ impl Editors {
 
 /// `godot --editor --single-window --path <project>`, at the pane's rect when
 /// it is known, and the channel after `--` where the plugin reads it.
-pub fn launch_args(project: &Path, at: Option<LaunchRect>, channel: &Path) -> Vec<String> {
+///
+/// `wid` is the Veistra window, for a window that will be placed in its pane:
+/// with `--wid` (Godot 4.4 and later) the editor makes its window owned by
+/// Veistra's, hidden until it is ready and with no caption or taskbar button,
+/// so it never shows as a window of its own before it becomes the pane's
+/// child. Without it, the editor's own decorated window showed over the pane
+/// for a second or more first, and grew to the editor's floor size.
+pub fn launch_args(
+    project: &Path,
+    at: Option<LaunchRect>,
+    wid: Option<isize>,
+    channel: &Path,
+) -> Vec<String> {
     let mut args: Vec<String> = ["--editor", "--single-window", "--path"]
         .map(String::from)
         .to_vec();
@@ -194,9 +206,32 @@ pub fn launch_args(project: &Path, at: Option<LaunchRect>, channel: &Path) -> Ve
             args.push(format!("{x},{y}"));
         }
     }
+    if let Some(hwnd) = wid {
+        args.push("--wid".into());
+        args.push(hwnd.to_string());
+    }
     args.push("--".into());
     args.push(format!("--veistra-editor-dir={}", channel.display()));
     args
+}
+
+/// The Veistra window to start the editor owned by ([`launch_args`]), or
+/// `None`. Only for an editor that will be placed, over a pane whose place
+/// on the screen is known: a window started owned has no frame and no
+/// taskbar button, so one left in its own window would be lost. And only
+/// from Godot 4.4, the first that reads `--wid`.
+pub fn wid_for(
+    at: Option<LaunchRect>,
+    owner: Option<&Owner>,
+    will_place: bool,
+    (major, minor): (u32, u32),
+) -> Option<isize> {
+    let reads_wid = major > 4 || (major == 4 && minor >= 4);
+    let over_pane = at.is_some_and(|a| a.position.is_some());
+    (will_place && reads_wid && over_pane)
+        .then(|| owner.map(|o| o.hwnd))
+        .flatten()
+        .filter(|h| *h != 0)
 }
 
 /// The editor Godot's Restart editor started: a child of the old process
@@ -219,6 +254,8 @@ struct Params {
     y: Option<f64>,
     paths: Vec<String>,
     scene: Option<String>,
+    /// `editor-edit`: the script or resource to open in its editor.
+    path: Option<String>,
     /// `editor-state`: the last dock event the pane has acted on.
     events_since: u64,
     /// `editor-ack`: the event, whether it went through, and what to say.
@@ -251,6 +288,7 @@ pub fn call(ctx: &Ctx, method: &str, raw: Option<&Value>) -> Option<Result<Value
         "godot/editor-pick" => pick(ctx, &p),
         "godot/editor-select" => select(ctx, &p),
         "godot/editor-open-scene" => open_scene(ctx, &p),
+        "godot/editor-edit" => edit(ctx, &p),
         "godot/editor-viewport-only" => viewport_only(ctx, &p),
         "godot/editor-save" => command(ctx, "save", json!({})).map(|_| json!({ "saved": true })),
         "godot/plugin-status" => plugin_status(ctx, &p),
@@ -314,11 +352,17 @@ fn open(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
     let owner = (ctx.owner)(pane.as_ref().and_then(|p| p.window.as_deref()));
     let at =
         embed::SUPPORTED.then(|| embed::launch_rect(pane.as_ref().map(Pane::last), owner.as_ref()));
+    let wid = wid_for(
+        at,
+        owner.as_ref(),
+        ctx.hosts.will_place(),
+        (found.major, found.minor),
+    );
     // The GUI executable: the console wrapper would leave a console window
     // beside the editor, and nothing here reads the editor's output.
     let child = rpc::detached(
         &found.path,
-        &launch_args(&project.dir, at, &channel),
+        &launch_args(&project.dir, at, wid, &channel),
         &project.dir,
     )
     .env(DIR_ENV, &channel)
@@ -590,6 +634,34 @@ fn open_scene(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
     }
     command(ctx, "open", json!({ "scene": scene }))?;
     Ok(json!({ "scene": scene }))
+}
+
+/// A file of the project that `editor-edit` may open: under `res://`, with
+/// no way back out of it.
+pub(super) fn valid_resource(path: &str) -> bool {
+    path.len() > "res://".len()
+        && path.starts_with("res://")
+        && !path.contains("..")
+        && !path.ends_with('/')
+}
+
+/// Open a script or resource in the editor's own editor for it: a scene
+/// opens as a tab, a script in the Script screen, anything else in the
+/// Inspector. A plugin from before v3 answers that it does not know how.
+fn edit(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
+    let path = p.path.as_deref().unwrap_or_default();
+    if !valid_resource(path) {
+        return Err(RpcError::new(
+            INVALID_PARAMS,
+            format!("`{path}` is not a res:// file"),
+        ));
+    }
+    if rpc::valid_scene(path) {
+        command(ctx, "open", json!({ "scene": path }))?;
+    } else {
+        command(ctx, "edit", json!({ "path": path }))?;
+    }
+    Ok(json!({ "path": path }))
 }
 
 fn viewport_only(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {

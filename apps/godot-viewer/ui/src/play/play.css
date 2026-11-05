@@ -103,6 +103,84 @@
   position: relative;
 }
 
+/* Live: the comments in a column on the left, the game and its drawer beside them. */
+.pl__body--live {
+  flex-direction: row;
+}
+
+.pl__live {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.pl-notes {
+  position: relative;
+  width: 300px;
+  flex-shrink: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-right: 1px solid var(--border-subtle);
+}
+
+.pl-notes > .k-comment-panel {
+  flex: 1;
+  min-height: 0;
+  border-left: 0;
+}
+
+/* Room for the fold button at the header's right end. */
+.pl-notes .k-comment-panel__header {
+  padding-right: 40px;
+}
+
+/* Fold sits on the panel's own header row, at its right end. */
+.pl-notes__fold {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 1;
+}
+
+.pl-notes__fold,
+.pl-notes__rail {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--txt-tertiary);
+  font: var(--type-caption);
+  cursor: pointer;
+}
+
+.pl-notes__fold {
+  width: 24px;
+  height: 24px;
+}
+
+.pl-notes__rail {
+  width: 32px;
+  flex-shrink: 0;
+  flex-direction: column;
+  justify-content: flex-start;
+  padding-top: 8px;
+  border-radius: 0;
+  border-right: 1px solid var(--border-subtle);
+}
+
+.pl-notes__fold:hover,
+.pl-notes__rail:hover {
+  background: var(--bg-layer-1-hover);
+  color: var(--txt-primary);
+}
+
 .pl__frame {
   flex: 1;
   min-width: 0;
@@ -1158,6 +1236,14 @@
 .pl-note__fix p {
   margin: 0;
   color: var(--txt-secondary);
+}
+
+/* The agent is done; what is left is the person's check and Resolve. */
+.pl-note__fix .pl-note__done {
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--success-subtle);
+  color: var(--txt-primary);
 }
 
 .pl-note__fix-by {

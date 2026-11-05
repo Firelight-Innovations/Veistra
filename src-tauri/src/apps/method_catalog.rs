@@ -48,14 +48,14 @@ const GROUPS: &[(&str, &str)] = &[
     ("canvas", "Design"),
     ("godot-viewer", "Godot, Editor mode"),
     ("godot", "Godot, both modes"),
-    ("blender-viewer", "Blender Viewer"),
+    ("blender-viewer", "Blender"),
     ("play", "Godot, Play mode"),
     ("agent-tab", "Agent"),
     ("agents", "Agents"),
     ("costs", "Cost Tracker"),
-    ("account", "Account (Home and Usage)"),
+    ("account", "Account (Home and Settings)"),
     ("projects", "Projects"),
-    ("tutorial", "Tutorials"),
+    ("docs", "Docs"),
     ("comments", "Comments (shared by the viewers)"),
     ("context", "Context store (every app)"),
     ("refs", "References (every app)"),
@@ -80,7 +80,7 @@ fn sources() -> Vec<&'static str> {
         include_str!("costs.rs"),
         include_str!("../account/methods.rs"),
         include_str!("projects.rs"),
-        include_str!("tutorial.rs"),
+        include_str!("docs.rs"),
         include_str!("../godot/rpc.rs"),
         // Play mode's box, takes and notes, which `godot::rpc::play` hands on.
         include_str!("../godot/live.rs"),
@@ -261,6 +261,9 @@ mod tests {
             "refs/prompt",
             "agent-tab/harnesses",
             "agent-tab/send",
+            "docs/index",
+            "docs/page",
+            "docs/open",
         ] {
             assert!(found.iter().any(|m| m == expected), "{expected} missing");
         }

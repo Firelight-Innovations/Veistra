@@ -200,6 +200,46 @@ fn blender_starts_on_the_file_with_the_boot_script_and_its_channel() {
     );
 }
 
+/// The pane at 150%: a 770x744 CSS pane under a 36px tab strip, in a Veistra
+/// whose client area starts at (285,135) on a 2560x1440 primary monitor. `-p`
+/// counts up from the bottom, so the window's top at 189 is 1440-189-1116 =
+/// 135 up, and its size is the pane's physical size, not Blender's own.
+#[test]
+fn blender_starts_behind_veistra_at_the_pane_s_physical_rect() {
+    let at = LaunchRect {
+        width: 1155,
+        height: 1116,
+        position: Some((285, 189)),
+    };
+    assert_eq!(
+        window_args(Some(at), Some(1440)),
+        ["--no-window-focus", "-p", "285", "135", "1155", "1116"]
+    );
+    let args = launch_args(
+        None,
+        Path::new("/tmp/boot.py"),
+        window_args(Some(at), Some(1440)),
+    );
+    assert_eq!(args[..2], ["--no-window-focus", "-p"], "window first");
+    assert_eq!(args[6..], ["--python", "/tmp/boot.py"]);
+}
+
+#[test]
+fn blender_is_left_where_it_likes_without_a_pane_or_a_monitor() {
+    let somewhere = LaunchRect {
+        width: 1280,
+        height: 720,
+        position: Some((10, 10)),
+    };
+    let centred = LaunchRect {
+        position: None,
+        ..somewhere
+    };
+    assert!(window_args(None, Some(1440)).is_empty());
+    assert!(window_args(Some(somewhere), None).is_empty());
+    assert!(window_args(Some(centred), Some(1440)).is_empty());
+}
+
 #[test]
 fn an_open_file_is_locked_with_blender_s_process() {
     let w = World::new();
@@ -323,6 +363,61 @@ fn opening_the_same_file_again_answers_the_running_blender() {
 }
 
 #[test]
+fn with_no_blend_blender_starts_on_a_new_scene_and_writes_nothing_into_the_environment() {
+    let w = World::new();
+    w.call("blender-viewer/editor-open", json!({}))
+        .expect("opened");
+    let editor = w.editors.get("c1").expect("an editor");
+    until("argv", || editor.channel.join("argv.txt").is_file());
+    let argv = std::fs::read_to_string(editor.channel.join("argv.txt")).unwrap();
+    let args: Vec<&str> = argv.lines().map(str::trim).collect();
+    assert_eq!(args[0], "--python", "no file before the script: {argv}");
+    assert!(args[1].ends_with(BOOT_FILE));
+    assert_eq!(args.len(), 2, "{argv}");
+    // An untitled scene holds no lock, so nothing under `.veistra/` either.
+    assert!(!w.root.join(".veistra").exists());
+    assert_eq!(editor.file(), None);
+    let state = w.call("blender-viewer/editor-state", json!({})).unwrap();
+    assert!(state["editor"]["file"].is_null(), "{state}");
+    assert_eq!(state["editor"]["opened"], "");
+    assert!(state["editor"]["lock"].is_null());
+}
+
+#[test]
+fn a_new_scene_saved_into_the_environment_is_followed_and_locked() {
+    let w = World::new();
+    w.call("blender-viewer/editor-open", json!({ "blend": null }))
+        .expect("opened");
+    let editor = w.editors.get("c1").expect("an editor");
+    report(&editor, "", true);
+    assert_eq!(editor.file(), None);
+    // The person saves it as props/chair.blend, in Blender's own dialog.
+    std::fs::write(w.root.join("props/chair.blend"), b"BLENDER-v402 chair").unwrap();
+    report(
+        &editor,
+        &w.root.join("props/chair.blend").display().to_string(),
+        false,
+    );
+    until("the lock", || {
+        lock::live(&w.root, "props/chair.blend").is_some()
+    });
+    assert_eq!(editor.file().as_deref(), Some("props/chair.blend"));
+}
+
+#[test]
+fn opening_a_new_scene_while_blender_runs_answers_the_running_one() {
+    let w = World::new();
+    let first = w.open("props/bed.blend");
+    let state = w.call("blender-viewer/editor-open", json!({})).unwrap();
+    assert_eq!(state["editor"]["file"], "props/bed.blend");
+    assert!(Arc::ptr_eq(&first, &w.editors.get("c1").unwrap()));
+    let bad = w
+        .call("blender-viewer/editor-open", json!({ "blend": 3 }))
+        .unwrap_err();
+    assert_eq!(bad.code, INVALID_PARAMS);
+}
+
+#[test]
 fn blender_is_not_started_on_main_or_outside_the_environment() {
     let w = World::new();
     let err = w
@@ -336,6 +431,14 @@ fn blender_is_not_started_on_main_or_outside_the_environment() {
         .unwrap()
         .unwrap_err();
     assert_eq!(err.code, crate::apps::READ_ONLY);
+    // Nor on a new scene there: it would be saved into the checkout.
+    let fresh = w
+        .with(true, |ctx| {
+            call(ctx, "blender-viewer/editor-open", Some(&json!({})))
+        })
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(fresh.code, crate::apps::READ_ONLY);
     let outside = w
         .call(
             "blender-viewer/editor-open",

@@ -367,11 +367,27 @@
   padding: 6px 0;
 }
 
+/* --- the account avatar ------------------------------------------------------
+   Its own cell before the window controls, outside the actions that collapse,
+   so it is drawn at every width. The menu is the overflow button's surface. */
+
+.accountmenu__button {
+  width: 30px;
+}
+
+.accountmenu__button[data-open] {
+  background: var(--bg-layer-1-hover);
+}
+
+.accountmenu__dropdown {
+  width: 240px;
+}
+
 /* --- collapse order --------------------------------------------------------
    Two steps on the window's width (`useNarrowTitlebar.ts`, #336):
      <1440  the right-hand buttons become one overflow button (`TitleBarActions`)
      <1180  the six menus become the hamburger
-   The window controls never collapse. Between and below the steps, the
+   The account avatar and the window controls never collapse. Between and below the steps, the
    middle group is held to what the wider side leaves (`.titlebar__middle`),
    so it stays centred and nothing reaches it. Short of its full width it gives
    way in this order: search narrows to its icon and Ctrl+K, then to its icon

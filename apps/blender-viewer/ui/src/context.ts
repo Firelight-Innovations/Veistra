@@ -74,6 +74,7 @@ export function putRender(base64: string, label: string, rel: string | null, vie
     title: `${rel ?? "Blender"} - ${label}`,
     label: `Blender - ${label}`,
     bytesBase64: base64,
+    prompt: `A ${label} render of the Blender file ${rel ?? "I have open"}. Use it for what I ask about how the model looks.`,
   });
 }
 
@@ -84,6 +85,7 @@ export function putParts(state: BlenderViewerState) {
     title: `${state.rel ?? "Blender"} - parts`,
     label: "Blender - parts list",
     text: partsText(state),
+    prompt: `Every object in the Blender file ${state.rel ?? "I have open"}, one per line. Use it for what I ask about the model.`,
   });
 }
 
@@ -94,6 +96,7 @@ export function putGlb(state: BlenderViewerState) {
     title: `${state.rel ?? "Blender"} - model`,
     label: "Blender - .glb",
     path: state.model,
+    prompt: `The Blender file ${state.rel ?? "I have open"} exported as glTF binary. Use it for what I ask about the model.`,
   });
 }
 

@@ -1,6 +1,6 @@
 /**
  * The one button that gives a project a git repository, with the reason it is needed.
- * Shared by the New Cluster dialog and the read-only notice so both say the same words.
+ * Shared by the New Cluster dialog and the no-repository notice so both say the same words.
  */
 import { useState } from "react";
 import { gitInitProject, type RepoState } from "../../bindings";

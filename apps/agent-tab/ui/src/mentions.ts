@@ -106,6 +106,40 @@ export function withChips(text: string, chips: readonly ContextChip[]): string {
   return [skills, loose, body].filter(Boolean).join(" ");
 }
 
+/**
+ * Kinds a URI cannot say, such as a context item that holds a Godot node,
+ * kept as the chip is made so the sent chip keeps its colour. For this
+ * session only: a reloaded history colours those as plain context.
+ */
+const told = new Map<string, string>();
+
+/** Keep a chip's kind for `referenceKind`, when its URI alone would not say it. */
+export function rememberKind(uri: string, kind: string): void {
+  if (kind !== referenceKind(uri)) told.set(uri, kind);
+}
+
+/**
+ * What a reference points at, read back from its URI, for the colour a sent
+ * message's chip takes: a sent `[@label](<uri>)` keeps no kind of its own.
+ * The forms are `src-tauri/src/refs/mod.rs`'s; an `https://` link is an issue,
+ * the only kind picked from the menu as one. Anything else is `null`, unless
+ * `rememberKind` was told.
+ */
+export function referenceKind(uri: string): string | null {
+  const kept = told.get(uri);
+  if (kept) return kept;
+  const veistra = /^veistra:\/\/([^/#?]+)(?:\/[^#]*)?(?:#(.*))?$/.exec(uri);
+  if (!veistra) return /^https:\/\//.test(uri) ? "issue" : null;
+  const [, root, fragment = ""] = veistra;
+  if (root === "canvas") {
+    if (fragment.startsWith("frame=")) return "frame";
+    if (fragment.startsWith("comment=")) return "canvas-comment";
+    return "canvas";
+  }
+  const known = ["file", "comment", "design-comment", "context", "selection"];
+  return known.includes(root) ? root : null;
+}
+
 export function referenceParts(text: string): Array<{ text: string; uri?: string }> {
   const parts: Array<{ text: string; uri?: string }> = [];
   let at = 0;

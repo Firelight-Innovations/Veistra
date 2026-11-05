@@ -16,7 +16,7 @@ export const snap: Transition = {
   mass: 0.7,
 };
 
-/** Larger travel: the panel collapsing, a detached window arriving. */
+/** Larger travel: the settings sheet arriving. */
 export const settle: Transition = {
   type: "spring",
   stiffness: 420,
@@ -100,20 +100,7 @@ export const spinArc: Transition = {
   repeat: Infinity,
 };
 
-/* --- rail pages, which pull out of the rail rather than appear -------------
- *
- * One progress value runs 0 (tucked into the rail) to 1 (settled). Arriving
- * uses `snap`, so a page opened and closed in quick succession reverses from
- * wherever it got to. Leaving is a short tween, faster than arriving by the
- * rule `instantOut` states. `docs/design-notes/shell-core.md` has the rest.
- */
-
-/** How long a rail page takes to tuck back into the rail. */
-export const pageOut: Transition = {
-  duration: 0.12,
-  ease: [0.4, 0, 1, 1],
-};
-
-/** Where a dock/expand toggle restarts the reveal from, so the geometry change
- *  reads as a short pull rather than replaying the whole pull-out. */
-export const PAGE_TOGGLE_FROM = 0.55;
+/* Deliberately absent: the terminal band and the rail pages (Agents and the
+ * rest) open and close instantly, with no entry here. A panel that slides takes
+ * time to reach what you asked for and re-lays-out everything beside it on the
+ * way; see `Frame.tsx` and `PageSurface.tsx`. */

@@ -149,7 +149,7 @@ pub fn with_services<R>(
         app.state::<crate::shell_state::ShellState>()
             .cluster_write_environment(cluster)
     });
-    let read_only = environment.as_ref().is_some_and(Environment::is_main);
+    let read_only = environment.as_ref().is_some_and(Environment::is_read_only);
     let app_cache = app
         .path()
         .app_local_data_dir()
@@ -185,7 +185,7 @@ fn with_editor<R>(
         .cluster_id
         .as_deref()
         .and_then(|cluster| shell.cluster_write_environment(cluster))
-        .is_some_and(|e| e.is_main());
+        .is_some_and(|e| e.is_read_only());
     let cfg = config(app);
     let versions = app.state::<VersionCache>();
     let find = || {
@@ -550,8 +550,8 @@ fn export_versions(
 /// `version-keep`: Compare's Keep B, the minimum X12 settles on. It pins the
 /// version so pruning never takes it and says so in the list; it does not
 /// touch the `.blend`, open or not, and it removes no version. The person's
-/// call, like a verdict on a note, so an agent is refused. Refused on main
-/// (`apps::WRITE_METHODS`), here as well as there.
+/// call, like a verdict on a note, so an agent is refused. Listed in
+/// `apps::WRITE_METHODS`, so a read-only environment refuses it.
 fn version_keep(
     context: &CallContext,
     services: &Services,
@@ -818,7 +818,7 @@ fn open(
     let found = detect::detect(host, &config.executable, versions);
     let Some(exe) = found.path else {
         return Err(invalid(
-            "Blender was not found — set its path in Settings > Blender, or in the Blender Viewer",
+            "Blender was not found — set its path in Settings > Blender, or in the Blender app",
         ));
     };
     blender::launch_detached(Path::new(&exe), blend)
@@ -1107,27 +1107,30 @@ mod tests {
         assert!(Path::new(model).starts_with(fx.app_cache.path()), "{model}");
     }
 
+    /// Main used to answer the viewer and a read-only reason. It is written
+    /// like a worktree now: not read-only, and the editor is offered (popped
+    /// out here, since the fixture has no embedder).
     #[test]
-    fn state_on_main_answers_the_viewer_and_why() {
+    fn state_on_main_is_writable_and_offers_the_editor() {
         let env = TempDir::new().unwrap();
         let tools = TempDir::new().unwrap();
         let exe = fake_blender(tools.path(), "ok");
         let mut fx = Fixture::new();
         fx.host.files.insert(exe.clone());
+        let services = Services {
+            environment: Some(Environment::Main),
+            ..fx.services(config_with(&exe), false)
+        };
         let state = dispatch(
             &context(env.path()),
-            &fx.services(config_with(&exe), true),
+            &services,
             "blender-viewer/state",
             None,
         )
         .unwrap();
-        assert_eq!(state["editor"]["surface"], "viewer");
-        assert_eq!(state["editor"]["code"], "main");
-        let reason = state["editor"]["reason"].as_str().unwrap();
-        assert!(
-            reason.contains("main checkout") && reason.contains("Blender"),
-            "{reason}"
-        );
+        assert_eq!(state["readOnly"], false);
+        assert_eq!(state["editor"]["surface"], "popOut");
+        assert_eq!(state["editor"]["code"], "noEmbedder");
         assert_eq!(state["environment"]["kind"], "main");
     }
 

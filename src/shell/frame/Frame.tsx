@@ -1,16 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  AnimatePresence,
-  animate,
-  motion,
-  useMotionValue,
-  useReducedMotion,
-  useTransform,
-} from "framer-motion";
+import { motion, useMotionValue, useTransform } from "framer-motion";
 import type { FrameSlots, WindowKind } from "../contract";
-import { settle } from "../motion";
 import { beginResize } from "../resizeGate";
-import PageSurface, { type PageMode } from "./PageSurface";
+import PageSurface from "./PageSurface";
 import { clampPageWidth, pageGeometry, pageWidthFromPointer } from "./pageGeometry";
 import "./frame.css";
 
@@ -65,65 +57,6 @@ export const BOTTOM_COLLAPSE_OVERSHOOT = 60;
  * the floor would be one twitch away from hiding everything on screen.
  */
 export const BOTTOM_MAXIMIZE_OVERSHOOT = 60;
-
-/** `.pane-split`'s seam, which the band stops short of the rightmost column by. */
-const BAND_SEAM_PX = 6;
-
-/**
- * How wide the terminal band is, when it should not span the whole column.
- *
- * With the pane tree split side by side at the top, the band sits under every
- * column but the last, so the last one — the agent chat, in the usual layout —
- * keeps the full height. Returns `null` for any other tree and the band spans
- * the column. Measured from the DOM because the tree's shares are fractions, not
- * pixels; the columns it covers are tagged `data-band-under` so the stylesheet
- * can lift their bottom edge by the band's height.
- */
-function useBandWidth(mainRef: React.RefObject<HTMLDivElement | null>): number | null {
-  const [width, setWidth] = useState<number | null>(null);
-  useEffect(() => {
-    const main = mainRef.current;
-    if (!main) return;
-    const observer = new ResizeObserver(() => measure());
-    const watched = new Set<Element>();
-    const tagged = new Set<Element>();
-    function measure() {
-      const mainEl = main as HTMLElement;
-      const root = mainEl.querySelector(".frame__toolwindow .pane-split");
-      const columns =
-        root?.getAttribute("data-dir") === "row"
-          ? Array.from(root.children).filter((c) => c.classList.contains("pane-split__child"))
-          : [];
-      const under = columns.length >= 2 ? columns.slice(0, -1) : [];
-      for (const el of tagged) if (!under.includes(el)) el.removeAttribute("data-band-under");
-      tagged.clear();
-      for (const el of under) {
-        el.setAttribute("data-band-under", "");
-        tagged.add(el);
-      }
-      for (const el of columns) {
-        if (!watched.has(el)) {
-          observer.observe(el);
-          watched.add(el);
-        }
-      }
-      if (under.length === 0) return setWidth(null);
-      const last = columns[columns.length - 1].getBoundingClientRect();
-      const next = Math.round(last.left - mainEl.getBoundingClientRect().left - BAND_SEAM_PX);
-      setWidth((prev) => (prev === next ? prev : next > 0 ? next : null));
-    }
-    observer.observe(main);
-    const mutations = new MutationObserver(measure);
-    mutations.observe(main, { childList: true, subtree: true });
-    measure();
-    return () => {
-      observer.disconnect();
-      mutations.disconnect();
-      for (const el of tagged) el.removeAttribute("data-band-under");
-    };
-  }, [mainRef]);
-  return width;
-}
 
 /**
  * The project-page rail and the docked project page are the window's right
@@ -196,10 +129,9 @@ export default function Frame({
   // the final height, on pointer up.
   const bottom = useMotionValue(bottomCollapsed ? 0 : bottomHeight);
   const mainRef = useRef<HTMLDivElement>(null);
-  // The band's height as a CSS length, so the panes that sit above it can
-  // reserve exactly the same space from the stylesheet.
+  // The band's height as a CSS length, so the tool window above it can reserve
+  // exactly the same space from the stylesheet.
   const bottomPx = useTransform(bottom, (v) => `${v}px`);
-  const bandWidth = useBandWidth(mainRef);
   const bottomHandleRef = useRef<HTMLDivElement>(null);
   const bottomDragging = useRef(false);
 
@@ -242,14 +174,14 @@ export default function Frame({
     [],
   );
 
-  // Opening and shutting the band is animated: it is a state change rather
-  // than a gesture. Guarded against a drag in flight, or a toggle landing
-  // mid-drag would start a spring that fights the pointer.
+  // Opening and shutting the band is instant, not animated: the band is there
+  // or it is not, and a slide only delays the terminal it reveals (and makes
+  // every pane above it re-layout per frame on the way). Guarded against a drag
+  // in flight, or a toggle landing mid-drag would yank the band from under the
+  // pointer.
   useEffect(() => {
     if (bottomDragging.current) return;
-    const target = bottomCollapsed ? 0 : bottomMaximized ? bottomFull() : bottomHeight;
-    const controls = animate(bottom, target, settle);
-    return () => controls.stop();
+    bottom.set(bottomCollapsed ? 0 : bottomMaximized ? bottomFull() : bottomHeight);
   }, [bottomCollapsed, bottomMaximized, bottomHeight, bottom, bottomFull]);
 
   // A maximized band has to be re-derived when the window changes size, exactly
@@ -407,17 +339,6 @@ export default function Frame({
     projectPageExpanded,
   );
 
-  // The panes stay painted until the expanded page has finished growing over
-  // them; hiding them on the first frame would show an empty canvas through
-  // the part of the page that has not arrived yet. Reset the moment the page
-  // is no longer expanded, so a close reveals them at once.
-  const reducedMotion = useReducedMotion() ?? false;
-  const [covered, setCovered] = useState(false);
-  const onPageSettled = useCallback((mode: PageMode) => setCovered(mode === "expanded"), []);
-  useEffect(() => {
-    if (!expanded) setCovered(false);
-  }, [expanded]);
-
   return (
     <div className="frame" data-window-kind={kind}>
       {/* Plain divs, fixed heights, no `layout` prop. The bars never
@@ -433,20 +354,17 @@ export default function Frame({
             `display`, and not an unmount, so the panes underneath (and any
             terminal running in them) keep going behind it. See
             `FrameSlots.projectPageExpanded`. */}
-        <div className="frame__workspace-body" data-hidden={(expanded && covered) || undefined}>
+        <div className="frame__workspace-body" data-hidden={expanded || undefined}>
           {/* The tool window and the terminal band are one column, so the band
-              stops at the docked page's edge instead of spanning the window.
-              See `FrameSlots.bottomPanel` for why that is the arrangement. */}
+              spans every pane column and stops at the docked page's edge
+              instead of spanning the window. It is the tool window's sibling,
+              never a child of one of its columns: the whole pane grid shrinks
+              to make room, whatever shape the tree is. See
+              `FrameSlots.bottomPanel` for why that is the arrangement. */}
           <motion.div
             className="frame__main"
             ref={mainRef}
-            data-band-split={bandWidth !== null || undefined}
-            style={
-              {
-                "--band-h": bottomPx,
-                "--band-w": bandWidth === null ? "100%" : `${bandWidth}px`,
-              } as React.CSSProperties
-            }
+            style={{ "--band-h": bottomPx } as React.CSSProperties}
           >
             {slots.banner}
             <div className="frame__toolwindow" data-region="toolwindow">
@@ -500,7 +418,7 @@ export default function Frame({
         </div>
 
         {/* The right-hand box: the project-page rail and, beside it, the docked
-            page — ONE rounded card, so a page pulling out of the rail widens
+            page — ONE rounded card, so a page opening beside the rail widens
             the card leftward rather than floating beside a second one. It sits
             outside the hidden wrapper on purpose: an expanded page still shows
             the rail (`docs/design/VEISTRA-UX-SPEC.md` §1.8: "the rail
@@ -515,19 +433,11 @@ export default function Frame({
             data-docked={docked || undefined}
             data-expanded={expanded || undefined}
           >
-            <AnimatePresence>
-              {(docked || expanded) && (
-                <PageSurface
-                  key="page"
-                  mode={expanded ? "expanded" : "docked"}
-                  reduced={reducedMotion}
-                  width={pageWidth}
-                  onSettled={onPageSettled}
-                >
-                  {expanded ? slots.projectPageExpanded : slots.projectPage}
-                </PageSurface>
-              )}
-            </AnimatePresence>
+            {(docked || expanded) && (
+              <PageSurface mode={expanded ? "expanded" : "docked"} width={pageWidth}>
+                {expanded ? slots.projectPageExpanded : slots.projectPage}
+              </PageSurface>
+            )}
             {slots.projectRail !== undefined && (
               <div className="frame__rail" data-region="rail">
                 {slots.projectRail}

@@ -70,23 +70,20 @@ describe("notes", () => {
     expect(sendable(sent).map((n) => n.n)).toEqual([2]);
   });
 
-  it("leave one sentence around the packet for the agent, counted", () => {
-    const say = (n: number) => {
-      const { before, after } = packetMessage(n);
-      return `${before}.veistra/feedback/t-1/packet.md${after}`;
-    };
-    expect(say(2)).toBe("Playtest feedback: 2 notes. Read .veistra/feedback/t-1/packet.md first.");
-    expect(say(1)).toBe("Playtest feedback: 1 note. Read .veistra/feedback/t-1/packet.md first.");
+  // The words ride inside the chip as its hidden prompt, never typed at the prompt.
+  const TAIL = "first, fix each note, then report each one with resolve_play_note.";
+
+  it("give the chip one counted instruction about the packet", () => {
+    const say = (n: number) => packetMessage(n, 0, ".veistra/feedback/t-1/packet.md");
+    expect(say(2)).toBe(`Playtest feedback: 2 notes. Read .veistra/feedback/t-1/packet.md ${TAIL}`);
+    expect(say(1)).toBe(`Playtest feedback: 1 note. Read .veistra/feedback/t-1/packet.md ${TAIL}`);
   });
 
   it("say which notes are still broken after the agent's fix", () => {
-    const say = (n: number, still: number) => {
-      const { before, after } = packetMessage(n, still);
-      return `${before}p/packet.md${after}`;
-    };
-    expect(say(1, 1)).toBe("Still broken after your fix: 1 note. Read p/packet.md first.");
+    const say = (n: number, still: number) => packetMessage(n, still, "p/packet.md");
+    expect(say(1, 1)).toBe(`Still broken after your fix: 1 note. Read p/packet.md ${TAIL}`);
     expect(say(3, 1)).toBe(
-      "Playtest feedback: 3 notes, 1 still broken after your fix. Read p/packet.md first.",
+      `Playtest feedback: 3 notes, 1 still broken after your fix. Read p/packet.md ${TAIL}`,
     );
   });
 

@@ -13,9 +13,10 @@
 //! so an agent can export while the person edits: it only reads the saved
 //! file. Renders shows the newest; it never reads the live scene.
 //!
-//! The versions are Veistra state, so they are written even on a read-only
-//! `main`, under the app's data. A `.glb` *into the checkout* (the
-//! `blender.exportDir` setting) is not, and is refused there.
+//! The versions are Veistra state, so they are written even in a read-only
+//! environment, under the app's data. A `.glb` *into the checkout* (the
+//! `blender.exportDir` setting) is not, and is refused there. No environment
+//! is read-only today, `main` included, so both land in the checkout.
 
 pub mod detect;
 pub mod editor;
@@ -106,7 +107,7 @@ static SETTINGS_ROWS: &[Setting] = &[
         title: "Export the .glb into",
         description: "A folder in the environment, relative to its root, for the exported .glb \
                       — a game's assets folder, say. Leave empty to keep the .glb in \
-                      .veistra/blender/ with the previews. Refused on main, which is read-only.",
+                      .veistra/blender/ with the previews.",
         control: Control::Text {
             default: "",
             placeholder: "assets/models",
@@ -120,7 +121,7 @@ static SETTINGS_ROWS: &[Setting] = &[
 pub static SETTINGS: Group = Group {
     id: "blender",
     title: "Blender",
-    description: "The Blender Viewer, and how Veistra runs Blender for it.",
+    description: "The Blender app, and how Veistra runs Blender for it.",
     order: 110,
     settings: SETTINGS_ROWS,
 };
@@ -175,9 +176,9 @@ pub fn cache_root(project: &Path) -> PathBuf {
 }
 
 /// Where a project's cache is: [`cache_root`], or, when `outside` names a
-/// folder, a folder under it keyed by a hash of the project's path. The
-/// read-only main checkout gets the second, as the Godot viewer's cache does:
-/// nothing Veistra keeps may be written into main.
+/// folder, a folder under it keyed by a hash of the project's path. A
+/// read-only environment gets the second, as the Godot viewer's cache does:
+/// nothing Veistra keeps may be written into it.
 pub fn cache_root_in(project: &Path, outside: Option<&Path>) -> PathBuf {
     match outside {
         None => cache_root(project),
@@ -186,7 +187,7 @@ pub fn cache_root_in(project: &Path, outside: Option<&Path>) -> PathBuf {
 }
 
 /// Twelve hex digits of a hash of the project's path: the key for anything
-/// Veistra keeps about the read-only main outside it.
+/// Veistra keeps about a read-only checkout outside it.
 pub fn project_hash(project: &Path) -> String {
     let digest = Sha256::digest(project.to_string_lossy().as_bytes());
     digest.iter().take(6).map(|b| format!("{b:02x}")).collect()

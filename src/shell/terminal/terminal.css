@@ -2,9 +2,9 @@
  * The terminal deck: one xterm instance per session, all mounted, one shown.
  *
  * Owns the deck's own layout and the hide/show mechanics `XTermView` depends
- * on. Does not own: the panel's tab row, its collapse animation, or its
- * width — those are `src/shell/panel/panel.css`'s (`.frame__panel` already
- * gives this deck a sized box to fill). Does not touch xterm's internal
+ * on. Does not own: the panel's tab row, its open/close (instant, no
+ * animation), or its width — those are `src/shell/panel/panel.css`'s
+ * (`.frame__panel` already gives this deck a sized box to fill). Does not touch xterm's internal
  * canvas/theme styling either; that is `XTermView`'s, built from
  * `src/tokens.css` at construction time because a canvas can't consume a CSS
  * custom property.

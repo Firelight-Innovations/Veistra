@@ -28,7 +28,7 @@ const code = (text: string) =>
 
 describe("the Veistra editor plugin", () => {
   it("is an editor plugin, and says its version on the first line for the installer", () => {
-    expect(script.split("\n")[0]).toBe("# veistra-editor v2");
+    expect(script.split("\n")[0]).toBe("# veistra-editor v3");
     expect(code(script)).toMatch(/^@tool\nextends EditorPlugin$/m);
   });
 
@@ -78,6 +78,18 @@ describe("the Veistra editor plugin", () => {
     expect(fn("_open")).toContain("EditorInterface.open_scene_from_path(scene)");
     expect(fn("_open")).toContain('scene.begins_with("res://")');
     expect(poll).toContain("EditorInterface.distraction_free_mode = on");
+  });
+
+  // v3: a chip clicked in the agent tab opens its script or resource here,
+  // and the agent tab's @ menu lists the scene's nodes from the state.
+  it("opens a script or resource for edit, and lists the edited scene's nodes", () => {
+    expect(fn("_poll_command")).toMatch(/"edit":\s+result = _edit\(id,/);
+    const edit = fn("_edit");
+    expect(edit).toContain("EditorInterface.edit_script(");
+    expect(edit).toContain("EditorInterface.edit_resource(");
+    expect(edit).toContain('begins_with("res://")');
+    expect(fn("_state")).toContain('"nodes": _scene_nodes(root)');
+    expect(fn("_scene_nodes")).toContain("MAX_NODES");
   });
 
   // Spec §13 test 10: Close asks Godot to save first, as its close button does.

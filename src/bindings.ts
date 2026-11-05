@@ -401,6 +401,18 @@ export function appCall(
 }
 
 /**
+ * One `account/*` method, for the shell's own account surfaces: the title
+ * bar's avatar menu and Settings' Account, Billing and Usage pages. The same
+ * dispatch Home reaches through `appCall`, minus the frame it has no need of
+ * (`account::methods::account_call`). A rejection is the JSON-RPC error object
+ * `{ code, message, data? }`, and `data.reason` names why a read could not be
+ * made: `not-configured`, `signed-out`, `unreachable` or `failed`.
+ */
+export function accountCall<T>(method: string, params?: Record<string, string>): Promise<T> {
+  return invoke<T>("account_call", { method, params });
+}
+
+/**
  * Which surface a call is on behalf of — mirrors `apps::CallContext`'s two
  * inputs.
  *

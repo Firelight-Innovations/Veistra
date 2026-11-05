@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Docs</title>
+    <!--
+      The palette, linked rather than only imported by `src/main.tsx`, and the
+      one declaration that has to apply before any of this app's code runs. An
+      iframe document's canvas is white until something says otherwise, and this
+      document is mounted inside a dark shell — so a freshly opened surface
+      would start as a white rectangle in a dark window. The same two lines
+      every app here opens with; see `apps/home/ui/index.html` for the whole
+      account.
+    -->
+    <link rel="stylesheet" href="/src/tokens.css" />
+    <style>
+      html,
+      body {
+        background: var(--bg-surface-1);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./src/main.tsx"></script>
+  </body>
+</html>

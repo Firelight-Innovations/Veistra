@@ -132,10 +132,22 @@
   cursor: pointer;
 }
 
-.k-comment-card__resolve-form {
+.k-comment-card__resolve-form,
+.k-comment-card__done {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+/* The agent says it is done: what is left is the person's check and Resolve. */
+.k-comment-card__done-note {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm, 4px);
+  background: var(--success-subtle);
+  color: var(--txt-primary);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .k-comment-card__resolve-input {

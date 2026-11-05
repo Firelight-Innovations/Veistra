@@ -1366,7 +1366,12 @@ mod win {
         fn find_window(&self, pids: &[u32], _kind: Kind) -> Option<isize> {
             find_owned(pids, self.owner)
         }
-        fn embed(&self, _hwnd: isize, _owner: isize) -> Result<embed::sys::Saved, String> {
+        fn embed(
+            &self,
+            _hwnd: isize,
+            _owner: isize,
+            _mode: embed::Mode,
+        ) -> Result<embed::sys::Saved, String> {
             Ok(embed::sys::Saved::default())
         }
         fn place(
@@ -1375,8 +1380,9 @@ mod win {
             at: ScreenRect,
             shown: bool,
             owner: isize,
+            mode: embed::Mode,
         ) -> Result<(), String> {
-            self.native.place(hwnd, at, shown, owner)
+            self.native.place(hwnd, at, shown, owner, mode)
         }
         fn release(
             &self,
@@ -1391,6 +1397,9 @@ mod win {
         }
         fn watch(&self, hwnd: isize) -> Option<Box<dyn Still>> {
             self.native.watch(hwnd)
+        }
+        fn request_close(&self, hwnd: isize) -> Result<(), String> {
+            self.native.request_close(hwnd)
         }
     }
 

@@ -53,6 +53,8 @@ import BottomPanel from "./panel/BottomPanel";
 import StatusBar from "./statusbar/StatusBar";
 import SearchSlot from "./search/SearchSlot";
 import TitleBarActions, { UPGRADE_URL } from "./titlebar/TitleBarActions";
+import AccountMenu from "./titlebar/AccountMenu";
+import { provideDocsOpener } from "./docsSurface";
 import SearchOverlay from "./search/SearchOverlay";
 import { useSearchSession } from "./search/useSearchSession";
 import { openHitInFiles } from "./search/openHit";
@@ -89,7 +91,7 @@ import { openSavedSession, renameAgentTab } from "./state/savedSessions";
 import { agentScopeOf, type AgentMenuActions } from "./agentMenuItems";
 import { agentTab as agentTabUsage } from "./telemetry/features";
 import { openFeedback } from "./telemetry/surface";
-import ReadOnlyBanner from "./git/ReadOnlyBanner";
+import NoRepoBanner from "./git/NoRepoBanner";
 import { useProjectIcon } from "./state/projectIcon";
 import { useUpdates } from "./state/updates";
 import {
@@ -144,10 +146,10 @@ const EMPTY_TREE: PaneNode = { kind: "leaf", id: "pane-pending", tabs: [], activ
 /**
  * The apps that **cover** the cluster instead of taking a pane beside it: no
  * tab in the switcher bar, not counted by a collapsed chip, and gone the
- * instant you choose anything else. `docs/tutorials.md` §8 has the reasoning;
+ * instant you choose anything else. `docs/docs-app.md` has the reasoning;
  * `shell_state.rs`'s `is_takeover_app` is this list's other half.
  */
-const TAKEOVER_APPS = new Set(["home", "tutorial"]);
+const TAKEOVER_APPS = new Set(["home", "docs"]);
 
 /** Whether an app id names a takeover surface. Undefined is not one. */
 function isTakeover(appId: string | undefined): boolean {
@@ -537,9 +539,9 @@ export default function WindowRoot({
 
   // The second takeover surface — see `TAKEOVER_APPS`. Being *open* is what
   // makes it cover, so unlike Home it needs no "wanted" flag: nothing opens
-  // Tutorials except somebody asking to read it.
-  const tutorialInstanceId = useMemo(
-    () => paneTabs(tree).find((id) => instances.get(id)?.appId === "tutorial") ?? null,
+  // Docs except somebody asking to read it.
+  const docsInstanceId = useMemo(
+    () => paneTabs(tree).find((id) => instances.get(id)?.appId === "docs") ?? null,
     [tree, instances],
   );
 
@@ -554,9 +556,9 @@ export default function WindowRoot({
   const openedHome = useRef<string | null>(null);
 
   const showHome = useCallback(() => {
-    // A tutorial can be in front of Home. Without this it stays there, and the
-    // chip looks dead.
-    if (tutorialInstanceId !== null) void closeInstance(tutorialInstanceId);
+    // Docs can be in front of Home. Without this it stays there, and the chip
+    // looks dead.
+    if (docsInstanceId !== null) void closeInstance(docsInstanceId);
     setHomeWanted(true);
     if (homeInstanceId !== null) return;
     void openInstance(label, "home", activePaneId ?? undefined, splitDirOnOpen(activePaneId))
@@ -565,34 +567,45 @@ export default function WindowRoot({
         setHomeWanted(false);
         console.error("veistra: could not open Home:", err);
       });
-  }, [label, activePaneId, homeInstanceId, tutorialInstanceId]);
+  }, [label, activePaneId, homeInstanceId, docsInstanceId]);
 
   // Take whichever takeover surface is up back down. Called by every other way
   // of choosing a surface — chip, app, tab, cluster — since uncovering is the
-  // same act as choosing something else. Tutorials is *closed* where Home is
-  // merely uncovered; `docs/tutorials.md` §8 says why.
+  // same act as choosing something else. Docs is *closed* where Home is merely
+  // uncovered; `docs/docs-app.md` says why.
   const hideTakeover = useCallback(() => {
     setHomeWanted(false);
     const ours = openedHome.current;
     openedHome.current = null;
     // Guarded: the ref can outlive the instance it names.
     if (ours !== null && instances.has(ours)) void closeInstance(ours);
-    if (tutorialInstanceId !== null) void closeInstance(tutorialInstanceId);
-  }, [instances, tutorialInstanceId]);
+    if (docsInstanceId !== null) void closeInstance(docsInstanceId);
+  }, [instances, docsInstanceId]);
+
+  // Help ▸ Documentation, and the palette row it gives rise to. Docs covers the
+  // cluster the moment it is open, so one already open is already in front.
+  const openDocumentation = useCallback(() => {
+    if (docsInstanceId !== null) return;
+    void openInstance(label, "docs", activePaneId ?? undefined).catch((err: unknown) =>
+      console.error("veistra: could not open Docs:", err),
+    );
+  }, [label, activePaneId, docsInstanceId]);
+  // Settings' Docs link opens the same pane (`./docsSurface.ts`).
+  useEffect(() => provideDocsOpener(openDocumentation), [openDocumentation]);
 
   // The surface the menus act on: the active tab of the focused pane. Not "the
   // active tab" — with several panes on screen there is no such thing, and
   // Save has to mean the editor you were typing in rather than whichever pane
   // happens to be first in the tree.
   // Whichever takeover surface covers the window wins, because that is what is
-  // in front of you. Tutorials first: it opens *over* Home, so when both exist
-  // it is the one on screen.
+  // in front of you. Docs first: it opens *over* Home, so when both exist it is
+  // the one on screen.
   const activeInstanceId = useMemo(() => {
-    if (tutorialInstanceId !== null) return tutorialInstanceId;
+    if (docsInstanceId !== null) return docsInstanceId;
     if (homeShowing) return homeInstanceId;
     const focused = paneLeaves(tree).find((l) => l.id === activePaneId);
     return focused?.activeTab ?? paneLeaves(tree)[0]?.activeTab ?? null;
-  }, [tree, activePaneId, homeShowing, homeInstanceId, tutorialInstanceId]);
+  }, [tree, activePaneId, homeShowing, homeInstanceId, docsInstanceId]);
 
   const activeInstance = activeInstanceId ? instances.get(activeInstanceId) : undefined;
 
@@ -688,17 +701,17 @@ export default function WindowRoot({
       // inactive chip still only switches, and takes the cover down on its way
       // out, since what it was covering belongs to the cluster you left.
       //
-      // A tutorial counts as covered too — the chip is the only way out of one
-      // in a cluster holding nothing else.
+      // Docs counts as covered too — the chip is the only way out of it in a
+      // cluster holding nothing else.
       if (clusterId === activeClusterId) {
-        if (homeShowing || tutorialInstanceId !== null) hideTakeover();
+        if (homeShowing || docsInstanceId !== null) hideTakeover();
         else showHome();
         return;
       }
       hideTakeover();
       void setActiveCluster(label, clusterId);
     },
-    [label, activeClusterId, homeShowing, tutorialInstanceId, showHome, hideTakeover],
+    [label, activeClusterId, homeShowing, docsInstanceId, showHome, hideTakeover],
   );
 
   // The page chips — and the "open this page" call they made — are gone with
@@ -1487,7 +1500,7 @@ export default function WindowRoot({
   // Everything this build can open here, from Rust rather than a literal list,
   // so a row added in `apps::openables` appears without a second edit here —
   // minus the takeover surfaces, filtered back out below. Each already has its
-  // own door (the cluster chip for Home, Home's cards for Tutorials), and a
+  // own door (the cluster chip for Home, Help ▸ Documentation for Docs), and a
   // menu row doing the same "find it, or open one" job would be a second one
   // that could only ever agree with the first by luck. Rust's list is untouched.
   //
@@ -2020,7 +2033,7 @@ export default function WindowRoot({
       onClear,
       enabled: Boolean(focusedPaneId),
     },
-    help: { checkForUpdates: updates.check },
+    help: { checkForUpdates: updates.check, openDocumentation },
   });
 
   // What the strips' `+` and the palette's open-app rows offer: the Apps menu's
@@ -2237,14 +2250,18 @@ export default function WindowRoot({
                   onOpenSettings={() => openSettingsOnTop()}
                 />
               }
+              accountSlot={
+                <AccountMenu
+                  onOpenSettings={(section) => openSettingsOnTop(section ?? undefined)}
+                />
+              }
             />
           ),
+          // Main is worked in like a worktree, so nothing here calls it read-only; a
+          // project folder with no repository yet is offered one.
           banner:
             environment?.kind === "main" && project ? (
-              <ReadOnlyBanner
-                projectPath={project.path}
-                onNewWorktreeCluster={() => onAddCluster("newLocalWorktree")}
-              />
+              <NoRepoBanner projectPath={project.path} />
             ) : undefined,
           toolWindow: (
             <ToolWindow
@@ -2273,7 +2290,7 @@ export default function WindowRoot({
               }
               // Home over the top of everything, from the cluster chip. `null`
               // whenever it is not showing, which is most of the time.
-              soloInstanceId={tutorialInstanceId ?? (homeShowing ? homeInstanceId : null)}
+              soloInstanceId={docsInstanceId ?? (homeShowing ? homeInstanceId : null)}
               focusedPaneId={activePaneId}
               onFocusPane={setActivePane}
               onResize={onResizePane}

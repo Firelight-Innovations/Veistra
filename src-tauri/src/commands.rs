@@ -520,7 +520,7 @@ fn starting_layout_preset(layout: StartingLayout) -> presets::PresetNode {
                 },
             ],
         },
-        // Explorer · Blender viewer · terminal.
+        // Explorer · Blender · terminal.
         StartingLayout::Blender => PresetNode::Split {
             dir: SplitDir::Row,
             sizes: vec![0.2, 0.8],

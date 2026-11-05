@@ -1,11 +1,18 @@
 /*
  * The markup layer sits over its host and fills it. Off, it must not catch a
  * single pointer event; on, it is the only thing that does.
+ *
+ * Excalidraw's root is not a stacking context, and its interactive canvas has
+ * z-index 2. `isolation` keeps that inside this layer, and `--markup-above`
+ * puts the toolbar, the pin note and the chip over the canvas; without it the
+ * transparent canvas swallows every click on the toolbar.
  */
 .veistra-markup {
+  --markup-above: 10;
   position: absolute;
   inset: 0;
   overflow: hidden;
+  isolation: isolate;
   pointer-events: none;
   font-family: var(--sans);
 }
@@ -42,6 +49,7 @@
   background: var(--bg-layer-2);
   box-shadow: var(--shadow-overlay);
   pointer-events: auto;
+  z-index: var(--markup-above);
 }
 
 .veistra-markup__btn {
@@ -128,6 +136,7 @@
   font-size: 13px;
   box-shadow: var(--shadow-overlay);
   pointer-events: auto;
+  z-index: var(--markup-above);
 }
 
 .veistra-markup__note::placeholder {
@@ -156,6 +165,7 @@
   font-size: 13px;
   box-shadow: var(--shadow-overlay);
   pointer-events: auto;
+  z-index: var(--markup-above);
 }
 
 .veistra-markup__chip button {

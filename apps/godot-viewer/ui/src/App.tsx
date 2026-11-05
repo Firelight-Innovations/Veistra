@@ -20,6 +20,7 @@
  */
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { OPENED_EVENT, on, session } from "@veistra/bridge";
+import { useRevealRequest } from "../../../shared/editorReveal";
 import { editorBody, type EditorBuilt } from "../../../shared/editorSurface";
 import { errorText, getStatus, type GodotStatus } from "../../../shared/godot";
 import { useShellPlacement } from "../../../shared/useNativeBox";
@@ -32,8 +33,9 @@ const EditorMode = lazy(() => import("./editor/EditorMode"));
 /**
  * Which Editor surfaces this app draws besides the viewer. The status says
  * where Editor mode shows (`editor`, DECISIONS X4), and `editorBody` turns
- * that into what renders. Both are `EditorMode`: in the pane, or the same
- * editor in its own window where nothing can be placed.
+ * that into what renders. Both are `EditorMode`: in the pane, where it opens
+ * the editor by itself on mount, or the same editor in its own window where
+ * nothing can be placed, which opens only on a press.
  */
 const EDITOR_BUILT: EditorBuilt = { embedded: true, popOut: true };
 const PlayMode = lazy(() => import("./play/PlayMode"));
@@ -68,6 +70,8 @@ export default function App() {
   const requests = useRef(0);
   const [epoch, setEpoch] = useState(0);
   const { frameRect, overlays } = useShellPlacement();
+  const reveal = useRevealRequest("godot");
+  const offerReveal = reveal.offer;
 
   const switchMode = useCallback((next: GodotMode) => {
     setMode(next);
@@ -143,11 +147,16 @@ export default function App() {
   useEffect(
     () =>
       on(OPENED_EVENT, (p) => {
+        // A chip clicked in the agent tab is shown in the editor, not played.
+        if (offerReveal(p)) {
+          switchMode("editor");
+          return;
+        }
         const asked = runPayload(p);
         if (asked) runInPlay(asked.scene, asked.project);
         else if (initialMode(window.location.search) === "play") switchMode("play");
       }),
-    [runInPlay, switchMode],
+    [runInPlay, switchMode, offerReveal],
   );
 
   if (mode === null) return null;
@@ -171,7 +180,13 @@ export default function App() {
       ) : editor === "viewer" ? (
         <SceneMode {...shared} onPlay={runInPlay} />
       ) : (
-        <EditorMode {...shared} frameRect={frameRect} overlays={overlays} />
+        <EditorMode
+          {...shared}
+          frameRect={frameRect}
+          overlays={overlays}
+          reveal={reveal.request}
+          onRevealHandled={reveal.handled}
+        />
       )}
     </Suspense>
   );

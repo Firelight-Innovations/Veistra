@@ -7,7 +7,9 @@ import {
   keptChips,
   mentionAt,
   mentionedUris,
+  referenceKind,
   referenceParts,
+  rememberKind,
   withChips,
 } from "./mentions";
 import type { ContextChip } from "./mentions";
@@ -64,6 +66,38 @@ describe("skill and project context chips", () => {
       { text: "See https://example.com" },
     ]);
     expect(mentionedUris("See veistra://canvas/comments/1")).toEqual([]);
+  });
+});
+
+describe("referenceKind", () => {
+  // The forms `src-tauri/src/refs/uri.rs` writes, so a sent chip keeps its menu row's colour.
+  it.each([
+    ["veistra://file/src/main.rs", "file"],
+    ["veistra://file/src/main.rs#L10-L20", "file"],
+    ["veistra://canvas/world", "canvas"],
+    ["veistra://canvas/levels/hospital#frame=f_12", "frame"],
+    ["veistra://canvas/world#comment=c-1", "canvas-comment"],
+    ["veistra://comment/v-3", "comment"],
+    ["veistra://design-comment/d-1", "design-comment"],
+    ["veistra://context/brief", "context"],
+    ["veistra://selection", "selection"],
+    ["https://linear.app/acme/issue/ENG-1", "issue"],
+  ])("reads %s as %s", (uri, kind) => {
+    expect(referenceKind(uri)).toBe(kind);
+  });
+
+  it("has no kind for a form it does not know", () => {
+    expect(referenceKind("veistra://somewhere-new/x")).toBeNull();
+    expect(referenceKind("http://example.com")).toBeNull();
+  });
+
+  // A context item holding a Godot node says nothing of it in its URI.
+  it("keeps a kind the chip was made with, where the URI alone would not say it", () => {
+    rememberKind("veistra://context/ctx_godot", "godot-node");
+    rememberKind("veistra://file/a.md", "file");
+    expect(referenceKind("veistra://context/ctx_godot")).toBe("godot-node");
+    expect(referenceKind("veistra://context/ctx_other")).toBe("context");
+    expect(referenceKind("veistra://file/a.md")).toBe("file");
   });
 });
 

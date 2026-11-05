@@ -9,16 +9,17 @@
  * dropdown (`ClusterSwitcher`), which this button is only the trigger for.
  */
 import { forwardRef } from "react";
-import { ChevronDown, Cloud, GitBranch, Lock } from "lucide-react";
+import { ChevronDown, Cloud, GitBranch } from "lucide-react";
 import type { Environment, EnvironmentKind } from "../environment";
 import ProjectTile from "../ProjectTile";
 import "./projectPill.css";
 
+// Main drew a lock while it was read-only. It is a branch like any other now.
 const KIND_ICON: Record<EnvironmentKind, typeof GitBranch> = {
   worktree: GitBranch,
   design: GitBranch,
   cloud: Cloud,
-  main: Lock,
+  main: GitBranch,
 };
 
 interface ProjectPillProps {

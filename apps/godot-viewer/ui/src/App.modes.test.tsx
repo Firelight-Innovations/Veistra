@@ -22,6 +22,7 @@ vi.mock("@veistra/bridge", () => ({
     return () => events.delete(event);
   },
   session: () => Promise.resolve({ projectPath: null, instanceId: "i1" }),
+  publish: vi.fn(),
 }));
 
 import App from "./App";

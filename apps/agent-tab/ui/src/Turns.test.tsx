@@ -19,6 +19,8 @@ vi.mock("@veistra/bridge", () => ({
     bridge.listeners.set(event, cb);
     return () => bridge.listeners.delete(event);
   },
+  subscribe: () => () => {},
+  openIn: vi.fn(),
   reportPainted: vi.fn(),
   VeistraRpcError: class extends Error {},
 }));

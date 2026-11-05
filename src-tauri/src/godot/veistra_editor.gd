@@ -1,4 +1,4 @@
-# veistra-editor v2
+# veistra-editor v3
 #
 # The Veistra editor plugin. Installed by Veistra (Godot > Editor > Enable the
 # Veistra plugin) beside the capture addon in addons/veistra/, and removable
@@ -17,11 +17,16 @@
 #   {"id": 6, "action": "pick", "x": 640, "y": 360}   (pixels of the last capture)
 #   {"id": 7, "action": "save"}
 #   {"id": 8, "action": "close"}   (the editor's own save prompt, then quit)
+#   {"id": 9, "action": "edit", "path": "res://enemy.gd"}   (v3: a script or resource)
 #
 # Written to state.json whenever it changes: the edited scene, the open
-# scenes, the selected nodes, the main screen and whether only the viewport
-# shows. The Veistra dock (veistra_dock.gd, #320) reads notes.json and
-# appends to events.jsonl in the same folder (DECISIONS X5).
+# scenes, the selected nodes, the edited scene's nodes (v3, for the agent
+# tab's @ menu), the main screen and whether only the viewport shows. The
+# Veistra dock (veistra_dock.gd, #320) reads notes.json and appends to
+# events.jsonl in the same folder (DECISIONS X5).
+#
+# Mention in agent (v3) is the dock's: its button, Ctrl+Alt+M here, and on
+# Godot 4.4 or later the right-click menus veistra_menu.gd adds.
 #
 # Needs Godot 4.2 or later: EditorInterface as a singleton, its 3D viewports
 # and distraction_free_mode as a property all arrived in 4.2.
@@ -36,6 +41,10 @@ const DIR_ENV := "VEISTRA_EDITOR_DIR"
 # smaller pane; Veistra sizes the window, so the floor comes down to this.
 const MIN_SIZE := Vector2i(480, 320)
 const Dock := preload("veistra_dock.gd")
+# Loaded, not preloaded: its base class is 4.4's, and 4.2 would refuse the file.
+const MENU := "veistra_menu.gd"
+# The agent tab lists this many of the edited scene's nodes at most.
+const MAX_NODES := 400
 
 var _dir := ""
 var _poll_accum := 0.0
@@ -43,7 +52,8 @@ var _state_accum := 0.0
 var _screen := ""
 var _last_state := ""
 var _capture_size := Vector2.ZERO
-var _dock: Control = null
+var _dock: Dock = null
+var _menus: Array = []
 
 
 func _enter_tree() -> void:
@@ -61,21 +71,52 @@ func _enter_tree() -> void:
 	main_screen_changed.connect(_on_main_screen_changed)
 	_lower_min_size.call_deferred()
 	var godot: String = Engine.get_version_info().get("string", "")
-	_write("hello.json", {"pid": OS.get_process_id(), "godot": godot, "version": 2})
+	_write("hello.json", {"pid": OS.get_process_id(), "godot": godot, "version": 3})
 	var dock := Dock.new()
 	dock.setup(_dir, _node_path, _camera, func() -> String: return _screen)
 	add_control_to_dock(DOCK_SLOT_RIGHT_UL, dock)
 	_dock = dock
+	_add_menus()
 	set_process(true)
 
 
 func _exit_tree() -> void:
 	if _dir != "" and main_screen_changed.is_connected(_on_main_screen_changed):
 		main_screen_changed.disconnect(_on_main_screen_changed)
+	for menu in _menus:
+		call("remove_context_menu_plugin", menu)
+	_menus.clear()
 	if _dock != null:
 		remove_control_from_docks(_dock)
 		_dock.queue_free()
 		_dock = null
+
+
+# Mention in agent on the Scene dock's, the FileSystem dock's and the Script
+# editor's right-click menus. By name through call(): add_context_menu_plugin
+# is 4.4's, and 4.2 would refuse a script that names it outright.
+func _add_menus() -> void:
+	if not ClassDB.class_exists("EditorContextMenuPlugin") or not has_method("add_context_menu_plugin"):
+		return
+	var script = load(get_script().resource_path.get_base_dir().path_join(MENU))
+	if script == null:
+		return
+	for slot in [0, 1, 2]:
+		var menu = script.new()
+		menu.slot = slot
+		menu.mention = _dock.mention
+		call("add_context_menu_plugin", slot, menu)
+		_menus.append(menu)
+
+
+# Ctrl+Alt+M: Mention in agent, whatever is in front (the dock decides).
+func _shortcut_input(event: InputEvent) -> void:
+	if _dock == null or not event is InputEventKey:
+		return
+	var key := event as InputEventKey
+	if key.pressed and not key.echo and key.keycode == KEY_M and key.ctrl_pressed and key.alt_pressed:
+		_dock.mention_now()
+		get_viewport().set_input_as_handled()
 
 
 # Deferred: the editor sets its own floor when it is ready, after plugins load.
@@ -164,8 +205,25 @@ func _state() -> Dictionary:
 		"open": Array(EditorInterface.get_open_scenes()),
 		"screen": _screen,
 		"selected": selected,
+		"nodes": _scene_nodes(root),
 		"viewportOnly": EditorInterface.distraction_free_mode,
 	}
+
+
+# The edited scene's nodes, root first, at most MAX_NODES: what the agent
+# tab's @ menu offers. Nodes inside an instanced scene are the instance's.
+func _scene_nodes(root: Node) -> Array:
+	var nodes: Array = []
+	if root == null:
+		return nodes
+	var queue: Array = [root]
+	while not queue.is_empty() and nodes.size() < MAX_NODES:
+		var node: Node = queue.pop_front()
+		nodes.append({"path": _node_path(node), "type": node.get_class()})
+		for child in node.get_children():
+			if child.owner == root:
+				queue.append(child)
+	return nodes
 
 
 func _poll_command() -> void:
@@ -189,6 +247,8 @@ func _poll_command() -> void:
 			result = _select(id, cmd.get("paths", []))
 		"open":
 			result = _open(id, str(cmd.get("scene", "")))
+		"edit":
+			result = _edit(id, str(cmd.get("path", "")))
 		"viewport-only":
 			var on := bool(cmd.get("on", true))
 			if on:
@@ -257,6 +317,23 @@ func _open(id: int, scene: String) -> Dictionary:
 	if not scene.begins_with("res://") or not ResourceLoader.exists(scene):
 		return {"id": id, "ok": false, "error": "not a scene in this project"}
 	EditorInterface.open_scene_from_path(scene)
+	return {"id": id, "ok": true}
+
+
+# A chip clicked in the agent tab: a script in the Script screen, any other
+# resource in the Inspector, as a double-click in the FileSystem dock does.
+func _edit(id: int, path: String) -> Dictionary:
+	if not path.begins_with("res://") or not ResourceLoader.exists(path):
+		return {"id": id, "ok": false, "error": "not a file in this project"}
+	var resource := load(path)
+	if resource == null:
+		return {"id": id, "ok": false, "error": "the editor could not load it"}
+	if resource is Script:
+		EditorInterface.set_main_screen_editor("Script")
+		EditorInterface.edit_script(resource)
+	else:
+		EditorInterface.edit_resource(resource)
+	EditorInterface.get_file_system_dock().navigate_to_path(path)
 	return {"id": id, "ok": true}
 
 

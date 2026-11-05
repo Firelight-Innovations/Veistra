@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 /**
  * Home against a stubbed bridge: when the sign-in screen stands in front of
- * Home, each of its states, and the account panel's signed-in reading. The
- * statuses are what `account/status` answers (`src-tauri/src/account/`).
+ * Home, and each of its states. The statuses are what `account/status` answers
+ * (`src-tauri/src/account/`). The account panel these tests also covered was
+ * retired; the signed-in reading now lives in the shell (title-bar avatar and
+ * Settings → Account / Usage), with tests of its own there.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { AccountStatus } from "./account";
 
 const bridge = vi.hoisted(() => {
@@ -64,7 +66,14 @@ function host(account: AccountStatus, actions: Record<string, AccountStatus> = {
         },
       });
     if (method === "home/state") return Promise.resolve({ open: null, recents: [] });
-    if (method === "home/tutorials") return Promise.resolve({ cards: [], completed: 0, total: 0 });
+    if (method === "home/docs")
+      return Promise.resolve({
+        home: "https://veistra.com/docs",
+        status: "live",
+        detail: null,
+        cards: [],
+        total: 0,
+      });
     return Promise.reject(new Error(`unexpected ${method}`));
   });
 }
@@ -78,7 +87,8 @@ describe("the sign-in screen", () => {
   it("is not shown when the account service is not set up", async () => {
     host({ ...base, configured: false });
     render(<App />);
-    await screen.findByText(/Veistra accounts are not set up/);
+    // Home itself, with no sign-in screen in front of it.
+    await screen.findByRole("heading", { name: "Docs" });
     expect(screen.queryByText("Sign in with your browser")).toBeNull();
   });
 
@@ -86,9 +96,8 @@ describe("the sign-in screen", () => {
     host(base, { "account/use-own-sign-in": { ...base, ownSignIn: true } });
     render(<App />);
     fireEvent.click(await screen.findByText("Use my own Claude or Codex sign-in"));
-    await screen.findByText(
-      "Not signed in. Sign in to use the Veistra harness, cloud workers and usage tracking.",
-    );
+    await screen.findByRole("heading", { name: "Docs" });
+    expect(screen.queryByText("Use my own Claude or Codex sign-in")).toBeNull();
     expect(bridge.invoke).toHaveBeenCalledWith("account/use-own-sign-in");
   });
 
@@ -118,34 +127,5 @@ describe("the sign-in screen", () => {
     render(<App />);
     await screen.findByText("This code expired");
     expect(screen.getByText("Try again")).toBeTruthy();
-  });
-});
-
-describe("the account panel", () => {
-  it("shows this month's spend against the limit, from the account service", async () => {
-    host({ ...base, user });
-    render(<App />);
-    await screen.findByText("Braden Seaborn");
-    await screen.findByText("$18.40");
-    expect(screen.getByText("of $50.00 limit")).toBeTruthy();
-    expect(screen.getByText("Limit reached around Nov 14 at this rate")).toBeTruthy();
-    expect(screen.getByText("Beta")).toBeTruthy();
-  });
-
-  it("rereads the status when a read finds this computer signed out", async () => {
-    host({ ...base, user });
-    const signedOut = new bridge.VeistraRpcError(-32603, "not signed in", { reason: "signed-out" });
-    bridge.invoke.mockImplementation((method: string) => {
-      if (method === "account/status") return Promise.resolve({ ...base, user });
-      if (method === "account/me" || method === "account/usage") return Promise.reject(signedOut);
-      if (method === "home/state") return Promise.resolve({ open: null, recents: [] });
-      return Promise.resolve({ cards: [], completed: 0, total: 0 });
-    });
-    render(<App />);
-    await waitFor(() =>
-      expect(
-        bridge.invoke.mock.calls.filter(([m]) => m === "account/status").length,
-      ).toBeGreaterThan(1),
-    );
   });
 });

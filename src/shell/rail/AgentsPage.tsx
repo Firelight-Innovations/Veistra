@@ -7,7 +7,6 @@ import {
   CircleCheck,
   CircleStop,
   CircleX,
-  Clock,
   LoaderCircle,
   MessageSquare,
   Plus,
@@ -15,6 +14,7 @@ import {
   Pencil,
   SlidersHorizontal,
   SquarePen,
+  Workflow,
   type LucideIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState, type MouseEvent } from "react";
@@ -43,7 +43,7 @@ const TEXT = {
   actions: "Agent actions",
   newAgent: "New Agent",
   search: "Search",
-  automations: "Automations",
+  workflows: "Workflows",
   customize: "Customize",
   soon: "Coming soon",
   untitled: "New session",
@@ -187,7 +187,7 @@ function PreviousSessions({
     />
   );
   return (
-    <section className="k-agents__cluster k-agents__previous" aria-labelledby="k-agents-previous">
+    <section className="k-agents__previous" aria-labelledby="k-agents-previous">
       <header className="k-agents__head">
         <h3 id="k-agents-previous" className="k-agents__name">
           {TEXT.previous}
@@ -398,8 +398,8 @@ export default function AgentsPage({
           />
         </label>
         <button type="button" className="k-agents__action" disabled title={TEXT.soon}>
-          <Clock size={14} strokeWidth={2} aria-hidden />
-          {TEXT.automations}
+          <Workflow size={14} strokeWidth={2} aria-hidden />
+          {TEXT.workflows}
         </button>
         <button type="button" className="k-agents__action" disabled title={TEXT.soon}>
           <SlidersHorizontal size={14} strokeWidth={2} aria-hidden />

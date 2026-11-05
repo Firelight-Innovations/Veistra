@@ -161,6 +161,12 @@ pub struct ContextItem {
     /// First characters of a text item, for a chip that has no thumbnail.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<String>,
+    /// What the agent is asked to do with this item ("Read the notes in this
+    /// packet, fix each one, then call resolve_play_note"). An app's Send puts
+    /// only a chip on the prompt; this travels inside it, ahead of the item's
+    /// content, so the person sees one chip and never a sentence typed for them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
     /// Computed on every read, never stored: the file has been deleted or moved
     /// since. The strip greys the chip rather than hiding it.
     #[serde(default, skip_deserializing)]
@@ -245,6 +251,13 @@ pub fn list(root: &Path) -> Vec<ContextItem> {
     let mut items: Vec<ContextItem> = reader
         .flatten()
         .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
+        // Only sidecars: a JSON item's own bytes, `<key-slug>.json`, sit beside them.
+        .filter(|e| {
+            e.path()
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .is_some_and(valid_id)
+        })
         .filter_map(|e| {
             let raw = std::fs::read_to_string(e.path()).ok()?;
             match serde_json::from_str::<ContextItem>(&raw) {
@@ -327,6 +340,23 @@ pub fn read_image(root: &Path, id: &str) -> Result<(String, String), RpcError> {
 /// atomic, and identical bytes arriving under a different key are stored once.
 pub fn put(root: &Path, request: PutRequest) -> Result<ContextItem, RpcError> {
     put_with(root, request, &|from, to| std::fs::rename(from, to))
+}
+
+/// Most characters an item's [`ContextItem::prompt`] keeps: instructions, not a document.
+pub const MAX_PROMPT_CHARS: usize = 4000;
+
+/// Sets or clears item `id`'s prompt. `context/put` sets it on every put, so a
+/// send that says nothing never carries an older send's instructions.
+pub fn set_prompt(root: &Path, id: &str, prompt: Option<&str>) -> Result<ContextItem, RpcError> {
+    let mut item = get(root, id)?;
+    item.prompt = prompt
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(|p| p.chars().take(MAX_PROMPT_CHARS).collect());
+    write_sidecar(&store_dir(root), &item, &|from, to| {
+        std::fs::rename(from, to)
+    })?;
+    Ok(item)
 }
 
 /// [`put`] with the rename injected, so a test can stand in for a reader that
@@ -554,6 +584,7 @@ fn put_with(
             .map(|(width, height)| ImageInfo { width, height }),
         text: text_meta,
         preview,
+        prompt: None,
         missing: false,
     };
 
@@ -1164,6 +1195,9 @@ struct PutParams {
     /// A line for the strip ("Play - scene hospital_wing.tscn").
     #[serde(default)]
     label: Option<String>,
+    /// What the agent is asked to do with the item; see [`ContextItem::prompt`].
+    #[serde(default)]
+    prompt: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1211,7 +1245,7 @@ pub fn call(
                     ))
                 }
             };
-            to_value(put(
+            let item = put(
                 root,
                 PutRequest {
                     key: p.key,
@@ -1223,7 +1257,12 @@ pub fn call(
                     method: Method::Put,
                     reference_in_place: true,
                 },
-            )?)
+            )?;
+            // A twin's record comes back as it was, prompt and all: this send's wins.
+            if p.prompt.is_some() || item.prompt.is_some() {
+                return to_value(set_prompt(root, &item.id, p.prompt.as_deref())?);
+            }
+            to_value(item)
         }
         other => Err(RpcError::new(
             veistra_rpc::METHOD_NOT_FOUND,
@@ -1312,6 +1351,24 @@ mod tests {
         let b = put(dir.path(), req(Payload::Text("two".into()))).unwrap();
         let ids: Vec<_> = list(dir.path()).into_iter().map(|i| i.id).collect();
         assert_eq!(ids, vec![b.id, a.id]);
+    }
+
+    // A keyed JSON item's bytes are `<key-slug>.json` in the same folder; list
+    // once read them as a sidecar and logged each as unreadable.
+    #[test]
+    fn list_reads_only_sidecars_and_not_a_json_item_s_own_file() {
+        let dir = TempDir::new().unwrap();
+        let mut r = req(Payload::Text("{\"a\": 1}".into()));
+        r.key = Some("blender/crate.blend/mention/crate".into());
+        r.kind = Some(Kind::Json);
+        let item = put(dir.path(), r).unwrap();
+        assert!(item.path.ends_with(".json"), "{}", item.path);
+        assert_ne!(
+            Path::new(&item.path),
+            sidecar(&store_dir(dir.path()), &item.id)
+        );
+        let ids: Vec<_> = list(dir.path()).into_iter().map(|i| i.id).collect();
+        assert_eq!(ids, vec![item.id]);
     }
 
     #[test]

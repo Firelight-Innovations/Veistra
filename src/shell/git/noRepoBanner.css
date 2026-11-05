@@ -1,0 +1,45 @@
+/* A full-width band between the title bar and the panes. Existing tokens only: the warn
+   tint is the same one the cluster strip uses for attention, the button is the dialog's
+   primary. `flex: none` so it never shrinks the pane measurements below it away. */
+.repo-banner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  background: color-mix(in srgb, var(--warn) 16%, var(--bg));
+  border-bottom: 1px solid var(--warn);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 12px;
+}
+
+.repo-banner__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.repo-banner__error {
+  color: var(--warn);
+}
+
+.repo-banner__button {
+  flex: none;
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 6px;
+  padding: 5px 12px;
+  cursor: pointer;
+  color: var(--bg);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+.repo-banner__button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

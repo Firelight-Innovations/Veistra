@@ -50,36 +50,57 @@ describe("attachFrames", () => {
     ["canvas", tab("canvas-1", { appId: "canvas" })],
   ]);
 
-  it("goes to every agent tab that has said hello when none was chosen", () => {
-    expect(attachFrames(frames, "agent-tab").map(([w]) => w)).toEqual(["a", "b"]);
+  // One chip in one prompt: the same item in every open agent tab would be a
+  // message the person has to delete from all but one.
+  it("goes to the agent tab last focused when none was chosen, else the first", () => {
+    const to = (last?: string | null) =>
+      attachFrames(frames, "agent-tab", undefined, last).map(([w]) => w);
+    expect(to("agent-2")).toEqual(["b"]);
+    expect(to(null)).toEqual(["a"]);
+    // Closed since, or never said hello: the first that can take it.
+    expect(to("agent-9")).toEqual(["a"]);
+    expect(to("agent-3")).toEqual(["a"]);
+    expect(attachFrames(new Map(), "agent-tab", undefined, "agent-2")).toEqual([]);
   });
 
   it("goes to the chosen tab alone, and to none when it has closed", () => {
-    expect(attachFrames(frames, "agent-tab", "agent-2")).toEqual([["b", "http://agent.localhost"]]);
-    expect(attachFrames(frames, "agent-tab", "agent-9")).toEqual([]);
+    expect(attachFrames(frames, "agent-tab", "agent-2", "agent-1")).toEqual([
+      ["b", "http://agent.localhost"],
+    ]);
+    expect(attachFrames(frames, "agent-tab", "agent-9", "agent-1")).toEqual([]);
     expect(attachFrames(frames, "agent-tab", "canvas-1")).toEqual([]);
   });
 });
 
 describe("attachRequest", () => {
-  it("keeps the words around the chip and the tab chosen", () => {
+  it("keeps the chip's label and the tab chosen, and drops words meant for the prompt", () => {
     expect(
       attachRequest({
         contextId: "ctx_1",
-        label: "p/packet.md",
+        label: "Take 1 feedback",
         instanceId: "agent-2",
         before: "Read ",
         after: " first.",
       }),
     ).toEqual({
-      payload: { contextId: "ctx_1", label: "p/packet.md", before: "Read ", after: " first." },
+      payload: { contextId: "ctx_1", label: "Take 1 feedback" },
       instanceId: "agent-2",
     });
+  });
+
+  it("passes on the kind of chip an app asks for, as its glyph and colour", () => {
+    expect(
+      attachRequest({ contextId: "ctx_1", label: "Godot · Enemy", kind: "godot-node" }),
+    ).toEqual({ payload: { contextId: "ctx_1", label: "Godot · Enemy", kind: "godot-node" } });
   });
 
   it("labels an item by its id, drops what is not a string, and refuses no id", () => {
     expect(attachRequest({ contextId: "ctx_1", label: 3, instanceId: 4, before: null })).toEqual({
       payload: { contextId: "ctx_1", label: "ctx_1" },
+    });
+    expect(attachRequest({ contextId: "ctx_1", kind: 5 })?.payload).toEqual({
+      contextId: "ctx_1",
+      label: "ctx_1",
     });
     expect(attachRequest({ label: "x" })).toBeNull();
     expect(attachRequest(null)).toBeNull();

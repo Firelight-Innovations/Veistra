@@ -126,6 +126,8 @@ function backend(putResult: () => unknown = () => ({ key: "k" })) {
         });
       case "context/put":
         return Promise.resolve(putResult());
+      case "veistra/attach-to-agent":
+        return Promise.resolve({ delivered: 1 });
       default:
         return Promise.resolve(null);
     }
@@ -153,10 +155,12 @@ afterEach(cleanup);
 describe("Play send footer", () => {
   it("sends the log tail from the footer and says Sent", async () => {
     backend();
-    const { container } = render(<App />);
+    render(<App />);
     const button = await screen.findByRole("button", { name: "Send log" });
     await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
-    expect(container.querySelector(".k-send-footer")?.contains(button)).toBe(true);
+    // The pane's own footer, not the one under the Comments column on the left.
+    expect(button.closest(".k-send-footer")).not.toBeNull();
+    expect(button.closest(".pl-notes")).toBeNull();
     fireEvent.click(button);
     await screen.findByRole("button", { name: "Sent" });
     expect(puts()).toHaveLength(1);
@@ -173,7 +177,8 @@ describe("Play send footer", () => {
     await waitFor(() => expect((capture as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(capture);
     const send = await screen.findByRole("button", { name: "Send frame" });
-    expect(container.querySelector(".k-send-footer")?.contains(send)).toBe(true);
+    expect(send.closest(".k-send-footer")).not.toBeNull();
+    expect(send.closest(".pl-notes")).toBeNull();
     expect(container.querySelector(".pl__composer")?.contains(send)).toBe(false);
     fireEvent.click(send);
     await waitFor(() => expect(puts()).toHaveLength(1));
@@ -765,7 +770,9 @@ describe("Play live view", () => {
     );
   });
 
-  it("lists a take the game's own exit saved", async () => {
+  // This was "lists a take the game's own exit saved": the take was only added
+  // to Takes, which nobody found. The game closing its window now opens it.
+  it("opens the take the game's own exit saved", async () => {
     const world = liveBackend();
     render(<App />);
     await screen.findByText("Playing");
@@ -773,7 +780,64 @@ describe("Play live view", () => {
     world.run = { id: 1, state: { kind: "exited", code: 0 } };
     world.take = SAVED;
     world.takes = [LISTED];
-    await screen.findByRole("button", { name: /Takes · 1/ }, { timeout: 2000 });
+    await screen.findByText("Reviewing", undefined, { timeout: 2000 });
+    await waitFor(() =>
+      expect(calls("play/take").some((c) => (c[1] as { id: string }).id === TAKE_ID)).toBe(true),
+    );
+  });
+
+  it("does not open a take that was saved before the pane opened", async () => {
+    liveBackend({
+      run: { id: 1, state: { kind: "exited", code: 0 } },
+      take: SAVED,
+      takes: [LISTED],
+    });
+    render(<App />);
+    await screen.findByText("Exited (0)");
+    await screen.findByRole("button", { name: /Takes · 1/ });
+    await new Promise((r) => setTimeout(r, 1200));
+    expect(screen.queryByText("Reviewing")).toBeNull();
+  });
+
+  it("opens the take when Stop ends a recorded run", async () => {
+    liveBackend();
+    render(<App />);
+    await screen.findByText("Playing");
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    await waitFor(() => expect(calls("play/stop")).toHaveLength(1));
+    await screen.findByText("Reviewing");
+    expect(screen.queryByText(/not recorded/)).toBeNull();
+  });
+
+  it("stays on live when Stop ends a run that was not recorded", async () => {
+    liveBackend({ take: { state: "off" }, record: { on: false, blocked: null } });
+    render(<App />);
+    await screen.findByText("Playing");
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    await waitFor(() => expect(calls("play/stop")).toHaveLength(1));
+    await screen.findByText("Stopped");
+    expect(screen.queryByText("Reviewing")).toBeNull();
+    expect(screen.queryByText(/not recorded/)).toBeNull();
+  });
+
+  it("keeps Takes in the toolbar, disabled until there is a take, and opens the latest", async () => {
+    liveBackend();
+    render(<App />);
+    await screen.findByText("Playing");
+    const bar = screen.getByRole("toolbar", { name: "Godot" });
+    const none = within(bar).getByRole("button", { name: /^Takes$/ }) as HTMLButtonElement;
+    expect(none.disabled).toBe(true);
+    // Restart saves the recorded run's take and keeps playing, so the pane stays on live.
+    fireEvent.keyDown(pane(), { key: "F5" });
+    await waitFor(() => expect(calls("play/restart")).toHaveLength(1));
+    const one = (await within(bar).findByRole(
+      "button",
+      { name: /Takes · 1/ },
+      { timeout: 2000 },
+    )) as HTMLButtonElement;
+    expect(one.disabled).toBe(false);
+    fireEvent.click(one);
+    await screen.findByText("Reviewing");
   });
 
   it("lists the take a restart saved", async () => {
@@ -1042,7 +1106,9 @@ describe("Play output drawer", () => {
     liveBackend({ lines: LINES });
     render(<App />);
     await screen.findByText("last words");
-    for (const name of ["Output", "Errors", "Notes"]) {
+    // The notes are no drawer tab: they have their own column on the left.
+    expect(screen.queryByRole("button", { name: /^Notes/ })).toBeNull();
+    for (const name of ["Output", "Errors"]) {
       expect(tab(name).getAttribute("aria-expanded")).toBe("false");
     }
     expect(tab("Output").textContent).toBe("Output4");
@@ -1069,7 +1135,8 @@ describe("Play output drawer", () => {
     };
     const world = liveBackend({ comments: [note] });
     render(<App />);
-    await waitFor(() => expect(tab("Notes").textContent).toBe("Notes1"));
+    const comments = () => screen.getByRole("complementary", { name: "Comments" });
+    await waitFor(() => expect(within(comments()).getByText("1 open · 0 resolved")).toBeTruthy());
     world.comments = [{ ...note, status: "resolved" }];
     events.get("comments:changed")?.({
       id: "c1",
@@ -1078,7 +1145,29 @@ describe("Play output drawer", () => {
       status: "resolved",
       from: "fixed",
     });
-    await waitFor(() => expect(tab("Notes").textContent).toBe("Notes"));
+    await waitFor(() => expect(within(comments()).getByText("0 open · 1 resolved")).toBeTruthy());
+  });
+
+  it("keeps the comments in a column on the left, folded to a rail and back", async () => {
+    const note = {
+      id: "c1",
+      anchor: { kind: "take", take: TAKE_ID, n: 1, atMs: 1000, packet: "p", scene: "" },
+      author: "user",
+      body: "The door light flickers",
+      status: "open",
+      created: 1,
+      updated: 2,
+    };
+    liveBackend({ comments: [note] });
+    const { container } = render(<App />);
+    const aside = await screen.findByRole("complementary", { name: "Comments" });
+    // First in the live body, so it sits left of the game.
+    expect(container.querySelector(".pl__body--live")?.firstElementChild).toBe(aside);
+    await within(aside).findByText("The door light flickers");
+    fireEvent.click(screen.getByRole("button", { name: "Hide comments" }));
+    expect(screen.queryByRole("complementary", { name: "Comments" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show comments, 1 open" }));
+    expect(screen.getByRole("complementary", { name: "Comments" })).toBeTruthy();
   });
 });
 
@@ -1202,13 +1291,13 @@ describe("Play's Record settings and Still broken (#321)", () => {
     updated: 2,
   };
   const order = (method: string) => bridge.invoke.mock.calls.findIndex((c) => c[0] === method);
-  const stillBroken = async (reply?: string) => {
-    fireEvent.click(await screen.findByRole("button", { name: /^Notes/ }));
-    if (reply)
-      fireEvent.change(
-        await screen.findByPlaceholderText("If it is still broken, say what you saw"),
-        { target: { value: reply } },
-      );
+  // The comments column is open from the start, and a completed note is a
+  // note to check, with no text box: Still broken is one press.
+  const stillBroken = async () => {
+    expect(
+      await screen.findByText("The agent completed this. Check it, then resolve it."),
+    ).toBeTruthy();
+    expect(screen.queryByPlaceholderText("If it is still broken, say what you saw")).toBeNull();
     fireEvent.click(await screen.findByRole("button", { name: "Still broken" }));
   };
 
@@ -1251,13 +1340,9 @@ describe("Play's Record settings and Still broken (#321)", () => {
     });
     render(<App />);
     await screen.findByText("Playing");
-    await stillBroken("still clips at the door");
+    await stillBroken();
     await waitFor(() => expect(calls("play/run")).toHaveLength(1));
-    expect(calls("comments/verdict")[0][1]).toMatchObject({
-      id: "c2",
-      verdict: "broken",
-      reply: "still clips at the door",
-    });
+    expect(calls("comments/verdict")[0][1]).toMatchObject({ id: "c2", verdict: "broken" });
     // The verdict first, then the game that was running, then the run for the note.
     expect(order("comments/verdict")).toBeLessThan(order("play/stop"));
     expect(order("play/stop")).toBeLessThan(order("play/run"));
@@ -1283,23 +1368,20 @@ describe("Play's Record settings and Still broken (#321)", () => {
       comments: [{ ...FIXED, sentTo }],
     });
     render(<App />);
-    await stillBroken("still clips at the door");
+    await stillBroken();
     await waitFor(() => expect(calls("context/insert")).toHaveLength(1));
     expect(calls("play/run")).toHaveLength(0);
     const put = calls("context/put")[0][1] as Record<string, string>;
     expect(put.kind).toBe("text");
     expect(put.text).toContain("Still broken after your fix: note 2 of Take 4.");
-    expect(put.text).toContain("They said: still clips at the door");
+    expect(put.text).not.toContain("They said");
     expect(put.text).toContain("Your fix: Rebaked the nav mesh (commit 3f2a1c9)");
     expect(put.text).toContain(".veistra/feedback/2026-10-30-1402-0f3a-1/packet.md");
     expect(put.text).toContain(`No new take was recorded: ${BLOCKED}`);
-    expect(calls("context/insert")[0][1]).toEqual({
-      itemIds: ["ctx_1"],
-      terminal: "t7",
-      before: "Still broken after your fix: note 2 of Take 4. Read ",
-      after: ".",
-    });
-    await screen.findByText(/waiting at Claude Code · Terminal 7's prompt/);
+    // What to do rides inside the item as its prompt; the terminal gets the reference alone.
+    expect(put.prompt).toMatch(/fix it again, then report it with resolve_play_note/);
+    expect(calls("context/insert")[0][1]).toEqual({ itemIds: ["ctx_1"], terminal: "t7" });
+    await screen.findByText(/Your words are a chip at Claude Code · Terminal 7's prompt/);
   });
 
   it("plays a fixed note's scene from review recorded once, Record left as it is", async () => {

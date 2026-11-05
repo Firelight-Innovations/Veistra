@@ -1,8 +1,8 @@
 /**
  * The title bar — logo, six menus (or their hamburger collapse), a centred
  * group of the project pill (which is the cluster switcher) and search, the
- * right-hand actions (or their overflow collapse) and the three window
- * controls, which never collapse.
+ * right-hand actions (or their overflow collapse), the account avatar and the
+ * three window controls, the last two of which never collapse.
  *
  * Menu geometry is lifted from `docs/handoffs/shell-spec.html` (search
  * `>File<`); the pill is `docs/design/VEISTRA-UX-SPEC.md` §1.2 / board 08. The
@@ -75,6 +75,8 @@ export interface TitleBarProps {
   searchSlot?: ReactNode;
   /** The right-hand actions (`TitleBarActions`), beside the window controls. */
   actionsSlot?: ReactNode;
+  /** The account avatar (`AccountMenu`), between the actions and the window controls. */
+  accountSlot?: ReactNode;
 }
 
 /** The CSS variable the middle group reads its room from (`titlebar.css`). */
@@ -123,6 +125,7 @@ export default function TitleBar({
   menus,
   searchSlot,
   actionsSlot,
+  accountSlot,
 }: TitleBarProps) {
   const narrow = useNarrowTitlebar();
   const showPill = switcher !== undefined;
@@ -174,10 +177,11 @@ export default function TitleBar({
         </div>
       )}
 
-      {/* The window controls are outside `actionsSlot`, so nothing that
-          collapses the actions can take them with it. */}
+      {/* The avatar and the window controls are outside `actionsSlot`, so
+          nothing that collapses the actions can take them with it. */}
       <div ref={endRef} className="titlebar__end" data-tauri-drag-region>
         {actionsSlot}
+        {accountSlot}
         <WindowControls />
       </div>
     </div>

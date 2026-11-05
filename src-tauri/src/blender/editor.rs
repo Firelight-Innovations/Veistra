@@ -20,8 +20,8 @@
 
 use super::lock::{self, Lock};
 use crate::editor_notes::{self, Ack, Scope};
-use crate::embed::host::{HostSpec, Hosts, Orphan};
-use crate::embed::{Embed, Kind, OwnerFn};
+use crate::embed::host::{HostSpec, Hosts, Orphan, Slot};
+use crate::embed::{Embed, Kind, LaunchRect, OwnerFn};
 use crate::sync::MutexExt;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
@@ -63,7 +63,8 @@ pub const READ_ONLY_REASON: &str = "This is the main checkout, which is read-onl
 pub struct Editor {
     /// The environment the file is in.
     pub project: PathBuf,
-    /// The `.blend` it was opened on, relative to `project`.
+    /// The `.blend` it was opened on, relative to `project`; `""` for one
+    /// started on a new scene, with no file.
     pub opened: String,
     /// `blender --version`'s answer, when it gave one.
     pub blender: Option<String>,
@@ -147,7 +148,7 @@ impl Editor {
             Some(rel) if rel.is_empty() => None,
             Some(rel) => Some(rel),
             None if self.view()["file"].is_string() => None,
-            None => Some(self.opened.clone()),
+            None => (!self.opened.is_empty()).then(|| self.opened.clone()),
         }
     }
 
@@ -316,14 +317,40 @@ pub fn call(ctx: &Ctx, method: &str, params: Option<&Value>) -> Option<Result<Va
 }
 
 /// The arguments Blender starts with: the file, then the boot script, which
-/// runs once the file has loaded. Not `--disable-autoexec`: this is the
-/// person's Blender on their own file, and their preference decides.
-pub fn launch_args(blend: &Path, boot: &Path) -> Vec<String> {
-    vec![
-        blend.display().to_string(),
-        "--python".into(),
-        boot.display().to_string(),
-    ]
+/// runs once the file has loaded. With no file Blender opens on its own
+/// startup scene, untitled, as it does from the Start menu. Not
+/// `--disable-autoexec`: this is the person's Blender on their own file, and
+/// their preference decides.
+///
+/// `window` goes first: [`window_args`], where Blender's window starts.
+pub fn launch_args(blend: Option<&Path>, boot: &Path, window: Vec<String>) -> Vec<String> {
+    let mut args = window;
+    args.extend(blend.map(|b| b.display().to_string()));
+    args.extend(["--python".into(), boot.display().to_string()]);
+    args
+}
+
+/// Where Blender's window starts, for one that will be placed over a pane:
+/// behind Veistra and without taking the focus (`--no-window-focus`), at the
+/// pane's own rect (`-p`). Blender cannot be started hidden, and its window
+/// shows framed for a second or two before it reads the messages that make
+/// it the pane's child; this keeps that second behind Veistra, where the
+/// pane is, instead of maximised in front of it.
+///
+/// `-p x y w h` is the client area in physical pixels, with `y` counted up
+/// from the bottom of the primary monitor, not down from its top. Nothing
+/// without both a position and the primary monitor's height.
+pub fn window_args(at: Option<LaunchRect>, primary_height: Option<i32>) -> Vec<String> {
+    let (Some(at), Some(primary)) = (at, primary_height) else {
+        return Vec::new();
+    };
+    let Some((x, top)) = at.position else {
+        return Vec::new();
+    };
+    let up = primary - top - at.height as i32;
+    let mut args = vec!["--no-window-focus".to_string(), "-p".to_string()];
+    args.extend([x, up, at.width as i32, at.height as i32].map(|v| v.to_string()));
+    args
 }
 
 /// Blender, detached: its own process group and no pipes, so neither
@@ -339,9 +366,13 @@ fn spawn(exe: &Path, args: &[String], cwd: &Path, channel: &Path) -> std::io::Re
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP: blender.exe is a
-        // console program, and its console would open beside the window.
-        cmd.creation_flags(0x0000_0008 | 0x0000_0200);
+        // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP: blender.exe is a
+        // console program, and its console would open beside the window. A
+        // hidden console rather than none (DETACHED_PROCESS): a launcher
+        // such as Scoop's shim starts the real blender.exe, which inherits
+        // the hidden one; with none, it was given a new, visible console, a
+        // Windows Terminal window over Veistra.
+        cmd.creation_flags(0x0800_0000 | 0x0000_0200);
     }
     #[cfg(unix)]
     {
@@ -356,6 +387,11 @@ pub fn running(ctx: &Ctx) -> Option<Arc<Editor>> {
     ctx.editors.get(&ctx.cluster).filter(|e| e.is_running())
 }
 
+/// `blender-viewer/editor-open {blend?}`. With `blend`, Blender on that file,
+/// holding its lock. Without it, Blender on a new untitled scene: what an
+/// environment with no `.blend` yet opens on. Nothing is written into the
+/// environment for it; the person saves it where they like, and a save inside
+/// the environment is followed and locked like any File > Open.
 fn open(ctx: &Ctx, params: Option<&Value>) -> Result<Value, RpcError> {
     if ctx.read_only {
         return Err(RpcError::new(crate::apps::READ_ONLY, READ_ONLY_REASON));
@@ -364,10 +400,23 @@ fn open(ctx: &Ctx, params: Option<&Value>) -> Result<Value, RpcError> {
         .project
         .clone()
         .ok_or_else(|| invalid("this cluster has no environment — open a project first"))?;
-    let raw = params
-        .and_then(|p| p.get("blend"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid("`blend` is required"))?;
+    match params.and_then(|p| p.get("blend")) {
+        None | Some(Value::Null) => open_new(ctx, project),
+        Some(Value::String(raw)) => open_file(ctx, project, raw),
+        Some(_) => Err(invalid("`blend` is a path to a .blend file")),
+    }
+}
+
+/// Blender on a new scene, or the Blender already running here, whatever it
+/// has open: a new scene is never a reason to refuse one.
+fn open_new(ctx: &Ctx, project: PathBuf) -> Result<Value, RpcError> {
+    if running(ctx).is_some() {
+        return Ok(state(ctx));
+    }
+    start(ctx, project, None)
+}
+
+fn open_file(ctx: &Ctx, project: PathBuf, raw: &str) -> Result<Value, RpcError> {
     let path = if Path::new(raw).is_absolute() {
         PathBuf::from(raw)
     } else {
@@ -405,6 +454,12 @@ fn open(ctx: &Ctx, params: Option<&Value>) -> Result<Value, RpcError> {
             held.pid
         )));
     }
+    start(ctx, project, Some((path, rel)))
+}
+
+/// Start Blender here on `file` (absolute, and relative to `project`), or on
+/// a new scene when it is `None`, and hand its window to the embedder.
+fn start(ctx: &Ctx, project: PathBuf, file: Option<(PathBuf, String)>) -> Result<Value, RpcError> {
     let (exe, version) = (ctx.find)().map_err(invalid)?;
 
     let channel = fresh_channel(&ctx.scratch, &ctx.cluster, ctx.editors.next_id())
@@ -412,11 +467,14 @@ fn open(ctx: &Ctx, params: Option<&Value>) -> Result<Value, RpcError> {
     let boot = channel.join(BOOT_FILE);
     std::fs::write(&boot, super::BOOT_SCRIPT)
         .map_err(|e| fail(format!("could not write {}: {e}", boot.display())))?;
-    let child = spawn(&exe, &launch_args(&path, &boot), &project, &channel)
+    let path = file.as_ref().map(|(path, _)| path.as_path());
+    let window = window_args(launch_at(ctx), crate::embed::sys::primary_height());
+    let child = spawn(&exe, &launch_args(path, &boot, window), &project, &channel)
         .map_err(|e| fail(format!("could not start Blender: {e}")))?;
+    let rel = file.map(|(_, rel)| rel);
     let editor = Arc::new(Editor {
         project,
-        opened: rel.clone(),
+        opened: rel.clone().unwrap_or_default(),
         blender: version,
         tab: Mutex::new(editor_notes::Channel::new(channel.clone())),
         channel,
@@ -426,7 +484,9 @@ fn open(ctx: &Ctx, params: Option<&Value>) -> Result<Value, RpcError> {
         held: Mutex::new(None),
         conflict: Mutex::new(None),
     });
-    editor.take(&rel);
+    if let Some(rel) = &rel {
+        editor.take(rel);
+    }
     ctx.editors.set(&ctx.cluster, editor.clone());
     host(ctx, &editor);
     watch(editor);
@@ -447,6 +507,20 @@ fn fresh_channel(base: &Path, cluster: &str, n: u64) -> std::io::Result<PathBuf>
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
+}
+
+/// The pane's rect on the screen to start Blender at, when it will be placed
+/// there.
+fn launch_at(ctx: &Ctx) -> Option<LaunchRect> {
+    if !ctx.hosts.will_place() {
+        return None;
+    }
+    let pane = ctx
+        .instance
+        .as_deref()
+        .and_then(|i| ctx.hosts.box_of(&Slot::new(i, Kind::Blender)))?;
+    let owner = (ctx.owner)(pane.window.as_deref())?;
+    Some(crate::embed::launch_rect(Some(pane.last()), Some(&owner)))
 }
 
 /// Hand Blender's window to the embedder for the calling pane.

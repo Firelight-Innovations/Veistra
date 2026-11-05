@@ -36,11 +36,10 @@ apps/
   home/ui/                Home's frontend
   files/ui/               File Explorer's frontend
   viewer/ui/              File Viewer's frontend
-  tutorial/ui/            Tutorials' frontend
+  docs/ui/                Docs' frontend: veistra.com/docs, read live from the website
   agent-tab/ui/           Agent's frontend: one Claude session in this cluster's worktree
   agents/ui/              Agents' frontend: Veistra Cloud's agent machines and sessions
   costs/ui/               Cost Tracker's frontend: this month's Google Cloud spend and forecast
-  usage/ui/               Usage's frontend: the Veistra account's spend, runs and monthly limit
   projects/ui/            Projects' frontend: the project switcher and its embedded Plane workspace
   design/ui/              Design Mode's frontend
   schematify/ui/          Schematify's frontend
@@ -134,7 +133,7 @@ layout that only the shell can see.
 ## The six apps
 
 **Home** (`home/state`, plus the project verbs) — where a session starts: New,
-Open and Clone on the left over a Recent list, tutorials on the right. It is the
+Open and Clone on the left over a Recent list, docs on the right. It is the
 one app the shell opens on, which is stated in `ShellState::default` rather than
 left to whichever tab seeded first.
 
@@ -143,11 +142,10 @@ partial-checkout failure, and this repo has git work in flight on its own branch
 that the real one is built on rather than beside; the method exists and refuses,
 and the button says "soon".
 
-The tutorials column used to be dead too, and is not any more. `home/tutorials`
-answers with the first few unfinished tutorials from `apps/tutorial.rs`'s
-catalog, and a card calls `veistra/open` on the Tutorials app naming one. Home
-holds no list of its own, which is the point: a second copy would be a second
-place to add a tutorial.
+The right-hand column is the docs. `home/docs` answers with the first few pages
+of the website's docs index, read by `apps/docs.rs`, and a card calls
+`veistra/open` on the Docs app naming one. Home holds no list of its own, so
+publishing a page on veistra.com/docs is the whole of adding one.
 
 The rules about what a project *is* are not here. They live in
 `src-tauri/src/project/`, which takes paths and never opens a dialog — see the
@@ -271,8 +269,9 @@ Saving is debounced (700 ms after the last change) and atomic (a sibling temp fi
 rename), and refuses if the file moved since it was read (`baseMtime`, the `files/write`
 contract). The pane polls the file's mtime every two seconds while visible, and reloads when a
 `git pull` or an agent changed it; with unsaved work it offers "Load the disk version" or "Keep
-mine" instead. `canvas/write` and `canvas/create` are in `WRITE_METHODS`, so read-only main is
-refused centrally and the pane opens in Excalidraw's view mode. A file that is not a valid scene
+mine" instead. `canvas/write` and `canvas/create` are in `WRITE_METHODS`, so a read-only
+environment is refused centrally and the pane opens in Excalidraw's view mode.
+No environment is read-only today; main is written like a worktree. A file that is not a valid scene
 is reported and never overwritten. Only the background colour and grid are kept from Excalidraw's
 view state, and deleted elements and unreferenced images are dropped, so a save is a small diff.
 
@@ -295,7 +294,7 @@ position and its diagram metadata. The parent keeps the empty frame. That frame 
 the child as any nested frame is, and it is marked `customData.veistra.subcanvas`. In the parent,
 the frame shows a picture of its child: a locked image element that is never saved. To edit
 the child, double-click the frame. The split is explicit, not done on open, for three reasons.
-It turns one committed file into many, which is the person's call. Read-only main cannot write.
+It turns one committed file into many, which is the person's call. A read-only environment cannot write.
 The parent is checkpointed first, so the split can be undone. A frame is skipped, with the
 reason, when something outside it is bound to or grouped with its contents. Review comments on
 a split frame move into the child's comment folder. The split checkpoint is kept outside the
@@ -339,7 +338,7 @@ column is not there yet.
 "Send selection" (header) renders the selected elements, with the members of a selected frame
 and the text inside a selected shape, to a PNG with Excalidraw's exporter and puts it in the
 agent's context; "Send card" puts a valid spec card as JSON text. Both can be dragged onto a
-terminal as well as clicked, and both work on read-only main because `.veistra/context/` is not the
+terminal as well as clicked, and both work in a read-only environment because `.veistra/context/` is not the
 checkout. The PNG is tried at 2x, 1x, 0.5x and 0.25x until it fits the store's 8 MB limit.
 
 Excalidraw is loaded lazily (`React.lazy`), and its fonts are served from
@@ -395,21 +394,22 @@ frame instead of a page, without depending on that package. Images dropped into 
 written to `canvas/<id>/refs/` and the scene keeps a `veistraRef` path instead of base64; a read puts
 the bytes back, so the editor never knows.
 
-**Tutorials** (`tutorial/catalog`, `tutorial/complete`, `tutorial/reset`) — short
-walkthroughs of what Veistra does today, with a tick against the ones you have
-read. `docs/tutorials.md` is how to add one.
+**Docs** (`docs/index`, `docs/page`, `docs/open`) — Veistra's documentation and
+tutorials, read live from <https://veistra.com/docs>. Nothing is bundled: the
+page list is the site's `llms.txt` and each page is its Markdown twin
+(`/docs/<path>.md`), fetched in Rust and rendered in the pane, so a docs change
+ships when the site does. Offline, it says so and gives the address.
+`docs/docs-app.md` has the whole account, including what the website must keep
+serving.
 
-It is the only app that reads nothing on the machine: `tutorial::call` ignores
-its `CallContext`, so a tutorial reads the same in a cluster with no project as
-in one with a checkout — which is the state a person reading "your first project"
-is most likely to be in. The catalog is in Rust because Home draws it too; the
-prose is in the frontend because it is a view.
+It reads nothing on the machine: `docs::call` ignores its `CallContext`, so the
+docs read the same in a cluster with no project as in one with a checkout.
 
 Like Home, it **covers** the cluster rather than taking a pane: no tab in the
 switcher, no row in the Apps menu or the `+`, and gone as soon as you choose
-something else. Home's cards are its door. It is still an ordinary registry entry
-all the same — that is what resolves its frontend when `veistra/open` asks for one,
-and the filtering is a fact about which menus offer it. `docs/tutorials.md` §8.
+something else. Help ▸ Documentation and Home's cards are its doors. It is still
+an ordinary registry entry, which is what resolves its frontend when
+`veistra/open` asks for one.
 
 **Schematify** — the design layer of Veistra: draws the full-scale plan,
 technical and product together, that coding agents build from. It replaces
@@ -440,8 +440,9 @@ what must outlive a switch.
 
 *Editor* shows where the backend says: `godot/status` answers `editor`,
 `{surface, reason, code}`, decided once in `src-tauri/src/editor_surface.rs`
-(a cloud session, then main, then no Godot, then the pane where there is an
-embedder and its own window where there is not). `apps/shared/editorSurface.ts`'s
+(a cloud session, then no Godot, then the pane where there is an embedder and
+its own window where there is not). Main is treated like any worktree; it used
+to get the viewer while it was read-only. `apps/shared/editorSurface.ts`'s
 `editorBody` is the one switch from the answer to what renders; the reason is
 one line under the toolbar (`EditorReason`), with Open Settings when Godot is
 missing.
@@ -464,15 +465,29 @@ the agent and Mark up the viewport. A press is a line in the channel's
 the pane does it through its own calls (`apps/shared/editorEvents.ts`) and
 answers with `godot/editor-ack`, which an agent may not call.
 
-On the first three it is the read-only scene view: the node tree beside a 3D
+Mentions go both ways (`apps/shared/editorMention.ts`). **Mention to Veistra
+agent**, on the dock, the scene tree's and FileSystem's right-click menus
+(Godot 4.4 or later) and Ctrl+Alt+M, is a `mention` line naming the selection,
+the scene, a script or resource, or the viewport; the pane stores it as one
+context item and chips it in the agent tab last worked in, nothing typed.
+Send selection, Ask and Mark up also make one chip each: the viewport picture
+or markup JSON is stored beside it and named by its path in the chip's hidden
+prompt. Back the other way, the pane publishes what the editor has open under
+`godot/editor`; the agent tab's @ menu lists those nodes and scenes, and a
+click on such a chip in a sent message opens the pane with a `reveal`
+(`veistra/open`) that opens the scene or script and selects the nodes. Plugin
+v3 (editor v3, dock v2, menu v1) is needed for the menus and the node list;
+an older plugin keeps working, and Update the plugin offers the new one.
+
+On the first two it is the read-only scene view: the node tree beside a 3D
 view or a rendered frame, read from the scene file or by a headless Godot.
 Selecting a node offers a comment. Play scene, or F5, turns the pane to Play
 and runs the game there.
 
 **Blender** (`blender-viewer/state`) has three modes, Editor, Renders and
 Compare, on the same five-slot bar (`ui/src/modes.ts`). Its state answers the
-same `editor` as Godot's status, so main, a cloud session and a missing Blender
-get the same line under the bar.
+same `editor` as Godot's status, so a cloud session and a missing Blender get
+the same line under the bar.
 
 *Editor* is Blender itself in the pane (`ui/src/editor/`, #317):
 `blender <file> --python veistra_boot.py`, started by a press and never on
@@ -489,16 +504,21 @@ second open of the file (another pane, `blender-viewer/open`,
 `files/open-in-blender`) is refused while the lock is live. The pane polls
 `blender-viewer/editor-state`, which also hands on the presses in Blender's own
 Veistra tab in the 3D view's sidebar (#320), answered with
-`blender-viewer/editor-ack` as Godot's dock is. On main, a cloud session or no Blender, Editor is
-the read-only viewer of the last export instead: the `.glb` in 3D and the
+`blender-viewer/editor-ack` as Godot's dock is. Mention to Veistra agent is in
+that tab, on the Outliner's and the 3D view's right-click menus and on
+Ctrl+Alt+M, and works as Godot's does; the pane publishes the view layer's
+objects under `blender/editor` for the agent tab's @ menu, and a clicked
+object chip selects its objects here. On a cloud session or with no Blender, Editor
+is the read-only viewer of the last export instead: the `.glb` in 3D and the
 wireframe pass.
 
 *Renders* is what an export made: the preview stills, the `.glb` in an orbitable
 3D view with the markup layer, Blender's wireframe pass and the parts list, with
 comments. Every export is kept as `.veistra/exports/<asset>/v<n>/`, the last
-ten of them (`blender-viewer/export-versions`). `blender-viewer/open` and
-`files/open-in-blender` are refused on main, and the export cache for main is
-kept under app-local data, not in the checkout.
+ten of them (`blender-viewer/export-versions`). Main is written like a
+worktree, so its exports land in its own `.veistra/`; only a read-only
+environment, which none is today, would refuse `blender-viewer/open` and
+`files/open-in-blender` and keep its cache under app-local data.
 
 *Compare* (`ui/src/compare/`, #319) is what changed between two of those
 versions, and can be chosen once a file has two. A and B are picked from the
@@ -507,7 +527,7 @@ and is drawn as Added, Changed, Removed and Unchanged, each with a toggle, a
 count, a pattern and a colour, under one camera in Changes or Split. N frames
 the next change. The side list is each part's counts and material changes, then
 the notes made on A with Looks good and Still broken. Keep vB pins B against
-pruning (`blender-viewer/version-keep`, the person only, never on main); Go back
+pruning (`blender-viewer/version-keep`, the person only); Go back
 to vA opens A's own copy of the `.blend` in Editor mode where the version kept
 one, and says why not where it did not.
 
@@ -517,8 +537,8 @@ its own window and the pane shows its log. Its toolbar has the board's five
 slots, shared with Editor and the Blender viewer (`apps/shared/ViewerToolbar.tsx`):
 the mode, the environment chip and the project and scene pickers, one state
 chip, Rec, Mark and Mark up, and Pop out; a button that cannot act is disabled
-with its reason, never hidden. Mark up is in slot 4 in every surface. On main
-and on a cloud session the reason is the same one line under the bar. With Record on, a run is kept as a take; review shows it on a
+with its reason, never hidden. Mark up is in slot 4 in every surface. On a
+cloud session the reason is the same one line under the bar. With Record on, a run is kept as a take; review shows it on a
 timeline where notes are written, marked up and sent to the agent as a
 feedback packet. F5 runs or restarts, Shift F5 stops, F6 pauses, F7 stops and
 opens review, F8 marks, Ctrl R toggles Record and Ctrl Shift M marks up the
@@ -583,7 +603,8 @@ that is not open or working is refused, as is any resolve of a resolved one.
 of every cluster on that environment. A pane subscribes with one call,
 `useCommentsChanged(refresh)` from `apps/shared/commentEvents.ts`, which gathers a
 burst (Send files one comment per note) into one refresh. That is how an agent's
-`resolve_play_note`, which no frame sees, turns an open card to "Fixed, check it".
+`resolve_play_note`, which no frame sees, turns an open card to "Completed", with a
+note that the person should check it and resolve it.
 The payload names the comment and its old and new status, never its text. The
 Blender Viewer and both modes of the Godot app subscribe: Editor and Play's
 drawer list again on any change, and Play's review lists its take's notes when a
@@ -613,17 +634,19 @@ const item = await invoke("context/put", {
   bytesBase64: png, // standard base64, no data: prefix
 });
 
-await invoke("context/put", { kind: "text", title: "Build log", text: tail });
+// `prompt` (optional, at most 4000 characters) is said to an agent tab when it reads the chip,
+// and never shown to the person: what the item is and what to do with it.
+await invoke("context/put", { kind: "text", title: "Build log", text: tail, prompt: "…" });
 await invoke("context/put", { path: "C:/game/renders/out.png" }); // a file you already wrote
 
 await invoke("context/list"); // ContextItem[], newest first
 await invoke("context/get", { id: item.id });
 await invoke("context/remove", { id: item.id });
 // Type @path references at an agent terminal's prompt, without pressing Enter. `terminal` is
-// one from context/agents (unset: the cluster's first agent); `before` and `after` are typed
-// around the references on the same line, control characters dropped. Answers
-// { inserted: false, reason } when that agent is not running; the items stay attached either way.
-await invoke("context/insert", { itemIds: [item.id], terminal, before: "Read ", after: " first." });
+// one from context/agents (unset: the cluster's first agent). Only the references are typed,
+// never words around them. Answers { inserted: false, reason } when that agent is not running;
+// the items stay attached either way.
+await invoke("context/insert", { itemIds: [item.id], terminal });
 // Who a page can hand an item to, the default first (X8): agent terminals, the shown one
 // leading, then agent tabs. { agents: [{ kind: "terminal" | "agentTab", id, label }] }
 await invoke("context/agents");
@@ -632,11 +655,18 @@ await invoke("context/agents");
 To send to one chosen agent, use `handToAgent` and `listAgents` from
 `apps/shared/context.ts` rather than the calls themselves: a `terminal` gets
 `context/insert` with its `terminal`, an `agentTab` gets the shell's
-`veistra/attach-to-agent { contextId, label, instanceId, before, after }`, which
+`veistra/attach-to-agent { contextId, label, instanceId }`, which
 puts a chip on that tab's prompt alone and answers `{ delivered }`, the number of
 tabs reached (0 when the chosen one has closed). Without `instanceId` the chip goes
-to every agent tab. Play's Send goes this way, and keeps the target on each
-comment it files as `sentTo`.
+to the agent tab focused last (else the first one). Play's Send goes this way, and
+keeps the target on each comment it files as `sentTo`.
+
+Every other "Send …" button (a log, a frame, a selection, a file, a markup) goes
+through `chipToAgent` or `chipAllToAgent` from the same file: one chip per item at
+the last-focused agent tab, and no words typed into its prompt. What the agent
+should do with the item goes in the item's hidden `prompt`. With no agent tab open
+the chip falls back to the references at the cluster's agent terminal, which does
+not see the hidden prompt.
 
 Pass a stable `key` that names the source, never the moment
 (`blender/<blend>/<view>`, `godot/<scene>/frame`, `file/<relpath>`). Sending
@@ -660,7 +690,7 @@ A `path` already inside the environment is referenced where it is and never
 deleted by `context/remove`. An unsupported put fails with an `INVALID_PARAMS`
 error whose message says why.
 
-**These calls are allowed in a read-only main cluster.** `.veistra/context/` is
+**These calls are allowed in a read-only environment.** `.veistra/context/` is
 Veistra's own state, not the checkout, and is gitignored, so it is not in
 `WRITE_METHODS`.
 

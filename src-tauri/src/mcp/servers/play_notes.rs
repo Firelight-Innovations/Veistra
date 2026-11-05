@@ -9,7 +9,8 @@
 //! cluster, which the token's cluster pin would not narrow.
 //!
 //! The note rules are `godot::notes`'; this holds the arguments, which cluster
-//! a call is about, and the refusal to write on the read-only main checkout.
+//! a call is about, and the refusal to write on a read-only environment (none
+//! is, main included).
 
 use super::workspace::{active_cluster, page_contexts};
 use crate::apps::CallContext;
@@ -39,7 +40,7 @@ pub const TOOLS: [McpTool; 3] = [
     McpTool {
         name: "resolve_play_note",
         description: "Report a play note fixed: what you changed, and the commit. The note \
-                      shows Fixed, check it; the person plays again and closes it or sends it \
+                      shows Completed; the person plays again and resolves it or sends it \
                       back as still broken. It does not close the note itself.",
         schema: resolve_schema,
     },
@@ -136,10 +137,9 @@ pub fn call(app: &AppHandle, tool: &str, params: &Option<Value>) -> Result<ToolA
     run(&ctx, tool, params, &guard).map(Into::into)
 }
 
-/// The tool itself, apart from the app. `guard` refuses a write to the
-/// read-only main checkout and runs before either write: starting a note
-/// rewrites its comment file as much as resolving one does, and a note merged
-/// into main with its branch is still a file in main's checkout.
+/// The tool itself, apart from the app. `guard` refuses a write to a
+/// read-only environment and runs before either write: starting a note
+/// rewrites its comment file as much as resolving one does.
 pub fn run(
     ctx: &CallContext,
     tool: &str,
@@ -200,7 +200,8 @@ fn note_context(app: &AppHandle, params: &Option<Value>) -> Result<CallContext, 
     Ok(CallContext::resolve(app, None, Some(&cluster)))
 }
 
-/// Every cluster, and whether it is the read-only main checkout.
+/// Every cluster, and whether it is the main checkout, whose copy of a note
+/// is the one merged in with its branch rather than the one being worked on.
 fn clusters(snapshot: &ShellSnapshot) -> Vec<(String, bool)> {
     snapshot
         .windows
@@ -272,8 +273,10 @@ mod tests {
         }
     }
 
+    /// The guard's refusal, injected: no environment refuses today (main
+    /// used to), but when the guard says no, neither write lands.
     #[test]
-    fn neither_write_reaches_main_and_listing_still_does() {
+    fn neither_write_gets_past_a_refusing_guard_and_listing_still_does() {
         let dir = TempDir::new().unwrap();
         let ctx = ctx(&dir);
         let id = note(&ctx);
@@ -284,14 +287,14 @@ mod tests {
             .unwrap()
             .path();
         let before = std::fs::read_to_string(&file).unwrap();
-        let main = |_: &str| Err("the main checkout is read-only".to_string());
+        let refuse = |_: &str| Err("this environment is read-only".to_string());
         let id_only = Some(json!({ "id": id }));
-        let err = run(&ctx, "start_play_note", &id_only, &main).unwrap_err();
+        let err = run(&ctx, "start_play_note", &id_only, &refuse).unwrap_err();
         assert!(err.message.contains("read-only"), "{}", err.message);
         let resolve = Some(json!({ "id": id, "summary": "fixed" }));
-        assert!(run(&ctx, "resolve_play_note", &resolve, &main).is_err());
+        assert!(run(&ctx, "resolve_play_note", &resolve, &refuse).is_err());
         assert_eq!(std::fs::read_to_string(&file).unwrap(), before, "untouched");
-        let listed = run(&ctx, "list_play_notes", &None, &main).unwrap();
+        let listed = run(&ctx, "list_play_notes", &None, &refuse).unwrap();
         assert_eq!(listed["total"], 1);
         assert_eq!(listed["notes"][0]["cluster"], "cluster-2");
     }

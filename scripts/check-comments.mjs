@@ -66,7 +66,6 @@ const SKIP_FILES = new Set([
   "src/branding.generated.ts",
   "apps/home/ui/src/branding.generated.ts",
   "apps/files/ui/src/branding.generated.ts",
-  "apps/tutorial/ui/src/branding.generated.ts",
   "apps/agent-tab/ui/src/protocol.generated.ts",
   "apps/agent-tab/ui/src/veistra-show.generated.ts",
 ]);

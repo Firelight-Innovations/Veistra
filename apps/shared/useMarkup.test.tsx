@@ -87,8 +87,10 @@ describe("useMarkup", () => {
     const { result, send } = mount();
     act(() => result.current.onMarkup(exported as never));
     await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(calls("context/insert")).toHaveLength(1));
-    expect(calls("context/put")[0]![1]).toMatchObject({ key: "blender/bed.blend/markup" });
+    // Both items stored, the picture last, for `send` to chip (useSendAction); nothing typed here.
+    await waitFor(() => expect(calls("context/put")).toHaveLength(2));
+    expect(calls("context/insert")).toHaveLength(0);
+    expect(calls("context/put")[1]![1]).toMatchObject({ key: "blender/bed.blend/markup" });
   });
 
   it("still keeps the drawing, and says so, when it cannot be saved", async () => {

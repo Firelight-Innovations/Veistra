@@ -1,0 +1,54 @@
+/*
+ * One hue per kind of mention, set once as `--at-kind` on whatever carries
+ * `data-kind`: the @ menu's rows (their glyph) and the chips a pick leaves in
+ * the prompt and in the sent message (their text and tint). The hues are
+ * `--k-kind-*` in src/agent-tokens.css. A kind not listed here sets nothing,
+ * and each reader falls back to its own neutral colour.
+ */
+[data-kind="design"] {
+  --at-kind: var(--k-kind-design);
+}
+[data-kind="canvas"] {
+  --at-kind: var(--k-kind-canvas);
+}
+[data-kind="frame"] {
+  --at-kind: var(--k-kind-frame);
+}
+[data-kind="comment"],
+[data-kind="canvas-comment"],
+[data-kind="design-comment"] {
+  --at-kind: var(--k-kind-comment);
+}
+[data-kind="pm"] {
+  --at-kind: var(--k-kind-pm);
+}
+[data-kind="issue"] {
+  --at-kind: var(--k-kind-issue);
+}
+[data-kind="cluster"] {
+  --at-kind: var(--k-kind-cluster);
+}
+[data-kind="file"],
+[data-kind="folder"] {
+  --at-kind: var(--k-kind-folder);
+}
+[data-kind="context"] {
+  --at-kind: var(--k-kind-context);
+}
+[data-kind="selection"] {
+  --at-kind: var(--k-kind-selection);
+}
+[data-kind="godot"],
+[data-kind="godot-node"],
+[data-kind="godot-scene"],
+[data-kind="godot-selection"] {
+  --at-kind: var(--k-kind-godot);
+}
+[data-kind="blender"],
+[data-kind="blender-object"],
+[data-kind="blender-selection"] {
+  --at-kind: var(--k-kind-blender);
+}
+[data-kind="skill"] {
+  --at-kind: var(--k-kind-skill);
+}

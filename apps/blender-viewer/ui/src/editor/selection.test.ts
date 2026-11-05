@@ -35,9 +35,11 @@ const CAP: ViewportCapture = {
 beforeEach(() => {
   bridge.invoke.mockReset();
   let n = 0;
-  bridge.invoke.mockImplementation((method: string) =>
-    Promise.resolve(method === "context/put" ? { id: `i${++n}`, key: "k" } : { inserted: true }),
-  );
+  bridge.invoke.mockImplementation((method: string) => {
+    if (method !== "context/put") return Promise.resolve({ delivered: 1 });
+    n += 1;
+    return Promise.resolve({ id: `i${n}`, key: "k", path: `C:/env/i${n}.png` });
+  });
 });
 
 describe("selectionText", () => {
@@ -84,20 +86,26 @@ describe("cameraPose", () => {
 });
 
 describe("sendSelection", () => {
-  it("puts the text and the picture under the file's keys, then types both references", async () => {
+  it("puts the picture and the text under the file's keys, then leaves one chip naming the picture", async () => {
     const sent = await sendSelection(CAP);
     const puts = bridge.invoke.mock.calls.filter((c) => c[0] === "context/put");
     expect(puts.map((c) => (c[1] as { key: string }).key)).toEqual([
-      "blender/props/bed/selection",
       "blender/props/bed/editor-viewport",
+      "blender/props/bed/selection",
     ]);
-    expect(puts[0]![1]).toMatchObject({ kind: "text", title: "Blender - selection in bed.blend" });
-    expect(puts[1]![1]).toMatchObject({ kind: "image", bytesBase64: "QUJD" });
-    expect(bridge.invoke).toHaveBeenLastCalledWith("context/insert", { itemIds: ["i1", "i2"] });
+    expect(puts[0]![1]).toMatchObject({ kind: "image", bytesBase64: "QUJD" });
+    expect(puts[1]![1]).toMatchObject({ kind: "text", title: "Blender - selection in bed.blend" });
+    const prompt = (puts[1]![1] as { prompt: string }).prompt;
+    expect(prompt).toMatch(/objects I selected in Blender/);
+    expect(prompt).toContain("Blender's 3D view at that moment is at C:/env/i1.png; open it.");
+    const chips = bridge.invoke.mock.calls.filter((c) => c[0] === "veistra/attach-to-agent");
+    expect(chips.map((c) => (c[1] as { contextId: string }).contextId)).toEqual(["i2"]);
+    expect(chips[0][1]).toMatchObject({ kind: "blender-selection" });
+    expect(bridge.invoke.mock.calls.some((c) => c[0] === "context/insert")).toBe(false);
     expect(sent.typed).toBe(true);
   });
 
-  it("says nothing was typed when no agent terminal takes the references", async () => {
+  it("says nothing was taken when no agent takes the chips", async () => {
     // What `context/insert` answers with no agent terminal in the cluster:
     // not an error, because the items are attached in the strip either way.
     bridge.invoke.mockImplementation((method: string) =>

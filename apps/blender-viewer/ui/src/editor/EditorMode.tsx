@@ -9,9 +9,9 @@
  *
  * The Veistra bar keeps the toolbar's five slots, as the Godot editor's does:
  * the mode; the environment and file; one state chip; Viewport only, Mark up
- * and Send selection; Pop out and Close. The three actions are the boot
- * script's commands and wait for it to say hello. Opening is always a press,
- * never a mount: starting Blender behind someone's back would be a surprise.
+ * and Send selection, the boot script's commands; Pop out. There is no Close:
+ * Blender is quit from inside it, which asks to save first. In the pane it
+ * opens by itself, once per mount (the open on mount, below).
  *
  * While Blender has a file open Veistra holds its lock, and the banner under
  * the bar says what that means: the agent's export of the file lands as the
@@ -21,10 +21,12 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { reportPainted } from "@veistra/bridge";
 import type { MarkupExport } from "@veistra/markup/layer";
-import { Maximize2, PenLine, PictureInPicture2, Scan, Send, X } from "lucide-react";
+import { Maximize2, PenLine, PictureInPicture2, Scan, Send } from "lucide-react";
 import { EditorReason } from "../../../../shared/EditorReason";
 import { useEditorEvents } from "../../../../shared/editorEvents";
-import { base64Blob, BLENDER_TARGET, sendMarkup } from "../../../../shared/markupFlow";
+import { revealName, usePublishReport, type RevealRequest } from "../../../../shared/editorReveal";
+import { canLaunch } from "../../../../shared/editorSurface";
+import { base64Blob, BLENDER_TARGET, markupToAgent } from "../../../../shared/markupFlow";
 import type { WindowRect } from "../../../../shared/nativeBox";
 import { dock, embedRect, embedStill, popOut } from "../../../../shared/nativeWindow";
 import { useNativeBox } from "../../../../shared/useNativeBox";
@@ -38,8 +40,8 @@ import {
 import { COMPARE_NEEDS_TWO, type BlenderMode } from "../modes";
 import type { BlenderViewerState } from "../rpc";
 import { resolvePins } from "./pins";
+import { blenderPlace, blenderReport, revealInBlender } from "./reveal";
 import {
-  closeEditor,
   editorAck,
   editorCapture,
   editorPick,
@@ -56,11 +58,6 @@ import "./editor.css";
 const ViewportMarkup = lazy(() => import("./ViewportMarkup"));
 
 const POLL_MS = 500;
-/**
- * How long Closing shows with Blender still running: the person may have
- * cancelled Blender's save prompt, and then Blender simply stays.
- */
-const CLOSING_MS = 15_000;
 /** How long Send selection says Sent. */
 const SENT_MS = 1800;
 
@@ -79,6 +76,9 @@ export interface EditorModeProps {
   overlays: WindowRect[];
   /** The banner's "Compare with v<n>": Compare mode, with that version as B. */
   onCompare?: (version: number) => void;
+  /** A chip clicked in the agent tab, to show in Blender (`editorReveal.ts`). */
+  reveal?: RevealRequest | null;
+  onRevealHandled?: (n: number) => void;
 }
 
 interface Marking {
@@ -90,15 +90,9 @@ interface Marking {
 }
 
 /** Slot 3: one word for where Blender is. */
-export function editorChip(state: BlenderEditorState | null, closing: boolean): ToolbarStatus {
+export function editorChip(state: BlenderEditorState | null): ToolbarStatus {
   const editor = state?.editor;
   if (!editor) return { tone: "idle", label: "Not open" };
-  if (closing)
-    return {
-      tone: "warning",
-      label: "Closing",
-      title: "Blender asks to save anything unsaved first. Answer it in Blender.",
-    };
   const embed = editor.embed.state;
   switch (embed.kind) {
     case "waiting":
@@ -137,7 +131,11 @@ export default function EditorMode(props: EditorModeProps) {
   const [problem, setProblem] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [opening, setOpening] = useState(false);
-  const [closing, setClosing] = useState(false);
+  /**
+   * The open on mount has been decided: Blender was opened, or there was a
+   * reason not to. It is never set back, so it happens once per mount.
+   */
+  const [settled, setSettled] = useState(false);
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [marking, setMarking] = useState<Marking | null>(null);
@@ -180,10 +178,18 @@ export default function EditorMode(props: EditorModeProps) {
   // The presses in the editor's own Veistra tab (#320): the poll hands them
   // on, and this mode carries each out and answers it (`editorEvents.ts`).
   const tab = useEditorEvents(
-    { tool: "blender", where: () => editor?.file ?? null, markup: beginMarkup },
+    {
+      tool: "blender",
+      where: () => editor?.file ?? null,
+      markup: beginMarkup,
+      place: () => blenderPlace(editor),
+    },
     editorAck,
   );
   const takeEvents = tab.take;
+
+  // What the agent tab's @ menu lists from this Blender.
+  usePublishReport("blender", blenderReport(editor));
 
   // The poll. One call at a time: the next is asked for only once this one
   // has answered, so a slow answer never piles up behind itself.
@@ -215,15 +221,62 @@ export default function EditorMode(props: EditorModeProps) {
     takeEvents(events);
   }, [events, takeEvents]);
 
-  // Blender going away ends Closing, and a Closing nobody answered lapses.
+  // A lock on the picked file that is not this pane's Blender: Open would be refused.
+  const heldElsewhere =
+    !open && viewer.locked && viewer.locked.file === viewer.rel ? viewer.locked : null;
+  // With no .blend in the environment, Open starts Blender on a new scene.
+  const newScene = viewer.blends.length === 0;
+  const target = newScene ? null : viewer.rel;
+  // What Open in Blender needs: an environment Blender may save into, a
+  // Blender, a file or a new scene to open it on, and nobody else on that file.
+  const launchable =
+    viewer.project &&
+    !viewer.readOnly &&
+    viewer.blender.found &&
+    canLaunch(surface) &&
+    (newScene || viewer.rel !== null) &&
+    heldElsewhere === null;
+  const embedsHere = launchable && surface?.surface === "embedded";
+  const polled = ed !== null;
+
+  // A press clears what the pane said before; the open on mount has nothing to clear.
+  const openOn = useCallback(async (blend: string | null, pressed: boolean) => {
+    if (pressed) {
+      setProblem(null);
+      setNotice(null);
+    }
+    setOpening(true);
+    setEnded(null);
+    try {
+      setEd(await openEditor(blend));
+    } catch (e) {
+      setProblem(errorText(e));
+    } finally {
+      setOpening(false);
+    }
+  }, []);
+
+  // The open on mount, as the Godot editor's: decided once the first poll has
+  // said whether Blender runs, on the file shown, with no press. With no
+  // .blend in the environment yet it opens on a new untitled scene, which
+  // writes nothing there until the person saves it. Nothing opens by itself
+  // where Blender would pop out into its own window, where the picked file is
+  // open in another Blender, where the first poll finds Blender open or just
+  // ended, or once it has ended in this mount, quit or crashed: the pane says
+  // so and Open in Blender is a press again. There is no boot-script consent
+  // to ask first: the script goes on the command line into a temporary
+  // folder, and nothing into the project. The main checkout, a cloud session
+  // and a missing Blender never get here; `App.tsx` shows the viewer for them.
   useEffect(() => {
-    if (!open) setClosing(false);
-  }, [open]);
-  useEffect(() => {
-    if (!closing) return;
-    const timer = setTimeout(() => setClosing(false), CLOSING_MS);
-    return () => clearTimeout(timer);
-  }, [closing]);
+    if (!polled || settled) return;
+    setSettled(true);
+    if (open || ended) return;
+    if (embedsHere) void openOn(target, false);
+  }, [polled, settled, open, ended, embedsHere, openOn, target]);
+
+  // From mount until the open answers, the pane says Opening rather than
+  // offering a press that is about to happen by itself.
+  const starting = opening || (!settled && embedsHere && !open && !ended && !problem);
 
   // The app shows the file Blender has open, so the banner's versions are its.
   const file = editor?.file ?? null;
@@ -237,6 +290,29 @@ export default function EditorMode(props: EditorModeProps) {
     if (path) onPick(path);
   }, [file, viewer.rel, pathOf, onPick]);
 
+  // A chip clicked in the agent tab: shown once the boot script can act. With
+  // no Blender coming, the file it names is picked, so Open opens on it.
+  const { reveal, onRevealHandled } = props;
+  const revealing = useRef<number | null>(null);
+  useEffect(() => {
+    if (!reveal || revealing.current === reveal.n) return;
+    const give = (text: string | null) => {
+      if (text !== null) setNotice(text);
+      onRevealHandled?.(reveal.n);
+    };
+    if (editor && booted) {
+      revealing.current = reveal.n;
+      revealInBlender(reveal, editor).then(give, (e: unknown) => {
+        setProblem(errorText(e));
+        give(null);
+      });
+    } else if (!editor && polled && settled && !starting) {
+      const path = pathOf(reveal.file ?? reveal.scene ?? "");
+      if (path) onPick(path);
+      give(`Open Blender to show ${revealName(reveal)} in it.`);
+    }
+  }, [reveal, onRevealHandled, editor, booted, polled, settled, starting, pathOf, onPick]);
+
   const box = useNativeBox({
     frameRect: props.frameRect,
     overlays: props.overlays,
@@ -248,24 +324,7 @@ export default function EditorMode(props: EditorModeProps) {
     generation: editor?.pid ?? null,
   });
 
-  const doOpen = () =>
-    void guarded(async () => {
-      if (!viewer.rel) return;
-      setOpening(true);
-      setEnded(null);
-      setNotice(null);
-      try {
-        setEd(await openEditor(viewer.rel));
-      } finally {
-        setOpening(false);
-      }
-    });
-
-  const doClose = () =>
-    void guarded(async () => {
-      await closeEditor();
-      setClosing(true);
-    });
+  const doOpen = () => void openOn(target, true);
 
   const doViewportOnly = () =>
     void guarded(async () => {
@@ -321,8 +380,7 @@ export default function EditorMode(props: EditorModeProps) {
       json.source = { ...json.source, engine: "blender", view: "editor", blend: m.file };
       const pose = cameraPose(m.view?.camera);
       if (pose) json.camera = pose;
-      await sendMarkup(BLENDER_TARGET, result.png, json, m.file);
-      setNotice("Markup sent to the agent.");
+      setNotice(await markupToAgent(BLENDER_TARGET, result.png, json, m.file));
     });
     endMarkup();
   };
@@ -403,37 +461,23 @@ export default function EditorMode(props: EditorModeProps) {
   const popped = embed?.kind === "poppedOut";
   const canPop = embed?.kind === "embedded" || popped;
   const leave = (
-    <>
-      <ToolbarButton
-        label={popped ? "Dock into the pane" : "Pop out into its own window"}
-        disabled={!canPop}
-        title={
-          canPop
-            ? undefined
-            : open
-              ? "Pop out needs Blender in the pane, and it is in its own window."
-              : "Pop out needs Blender open here."
-        }
-        icon={icon(popped ? Maximize2 : PictureInPicture2)}
-        onClick={() => void guarded(() => (popped ? dock("blender") : popOut("blender")))}
-      />
-      <ToolbarButton
-        label="Close Blender"
-        disabled={!open}
-        title={
-          open ? "Close Blender. It asks to save anything unsaved first." : "Blender is not open."
-        }
-        icon={icon(X)}
-        onClick={doClose}
-      />
-    </>
+    <ToolbarButton
+      label={popped ? "Dock into the pane" : "Pop out into its own window"}
+      disabled={!canPop}
+      title={
+        canPop
+          ? undefined
+          : open
+            ? "Pop out needs Blender in the pane, and it is in its own window."
+            : "Pop out needs Blender open here."
+      }
+      icon={icon(popped ? Maximize2 : PictureInPicture2)}
+      onClick={() => void guarded(() => (popped ? dock("blender") : popOut("blender")))}
+    />
   );
 
   const versions = viewer.rel === file ? viewer.versions : [];
   const banner = writerBanner(editor, versions);
-  // A lock on the picked file that is not this pane's Blender: Open would be refused.
-  const heldElsewhere =
-    !open && viewer.locked && viewer.locked.file === viewer.rel ? viewer.locked : null;
 
   return (
     <div className="be" ref={root} tabIndex={-1} onKeyDown={keepReloadKeys}>
@@ -441,7 +485,7 @@ export default function EditorMode(props: EditorModeProps) {
         label="Blender"
         mode={modeSwitch}
         subject={subject}
-        status={editorChip(ed, closing)}
+        status={editorChip(ed)}
         actions={actions}
         leave={leave}
       />
@@ -517,21 +561,27 @@ export default function EditorMode(props: EditorModeProps) {
                 </p>
               )}
               <p className="be__launch-text">
-                {!viewer.rel
-                  ? "No .blend files in this environment. Save one here and it will appear."
-                  : heldElsewhere
-                    ? `${viewer.rel} is already open in another Blender (process ${heldElsewhere.pid}). Close it there first: two Blenders on one file save over each other.`
-                    : surface?.surface === "popOut"
-                      ? "It opens in its own window, for the reason above."
-                      : "It opens here, in this pane, with its menus and dialogs inside it. Nothing is installed into your Blender."}
+                {!viewer.project
+                  ? "Open a project to work on its .blend files in Blender."
+                  : newScene
+                    ? starting
+                      ? "No .blend files in this environment yet, so Blender opens on a new scene. Save it here and it will appear."
+                      : "No .blend files in this environment yet. Blender opens on a new scene; save it here and it will appear."
+                    : heldElsewhere
+                      ? `${viewer.rel} is already open in another Blender (process ${heldElsewhere.pid}). Close it there first: two Blenders on one file save over each other.`
+                      : starting
+                        ? "Opening it here, in this pane."
+                        : surface?.surface === "popOut"
+                          ? "It opens in its own window, for the reason above."
+                          : "It opens here, in this pane, with its menus and dialogs inside it. Nothing is installed into your Blender."}
               </p>
               <button
                 type="button"
                 className="k-btn k-btn--primary"
-                disabled={!viewer.rel || opening || heldElsewhere !== null}
+                disabled={!launchable || starting}
                 onClick={doOpen}
               >
-                {opening ? "Opening…" : "Open in Blender"}
+                {starting ? "Opening…" : newScene ? "Open Blender" : "Open in Blender"}
               </button>
             </div>
           ) : embed?.kind === "embedded" ? (

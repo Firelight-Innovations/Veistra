@@ -3,21 +3,20 @@
 //! `play/*`, with the rest of `godot/*` shared.
 //!
 //! [`Ctx`] carries everything a method needs - which cluster asked, its
-//! environment root, whether that environment is the read-only main checkout,
-//! and how to probe for the engine - so the handlers are plain functions the
-//! tests drive with a fake `godot` and a tempdir, and `apps::godot_viewer`
-//! only has to build one from the live application.
+//! environment root, whether that environment is read-only, and how to probe
+//! for the engine - so the handlers are plain functions the tests drive with a
+//! fake `godot` and a tempdir, and `apps::godot_viewer` only has to build one
+//! from the live application.
 //!
-//! What is allowed on the read-only main checkout (#163): **running and viewing
+//! What is allowed on a read-only environment (#163): **running and viewing
 //! are**, because they read the project. Installing the capture addon or the
 //! editor plugin is not, and neither is launching the editor or saving from it
 //! - each is refused there, and is also in `apps::WRITE_METHODS` so the
-//! refusal happens before a handler runs.
-//! Two things still touch a main checkout that Veistra does not control: Godot
-//! itself keeps an import cache in `<project>/.godot/` whenever it loads a
-//! project, and that folder is gitignored by every Godot template. The viewer's
-//! own cache and a run's channel go under the app data and temp directories
-//! instead.
+//! refusal happens before a handler runs. The main checkout used to be the
+//! read-only one; it is written like a worktree now, and no environment is
+//! read-only (`Environment::is_read_only`), so this mode is not reached.
+//! The viewer's own cache and a run's channel go under the app data and temp
+//! directories instead in that mode.
 
 use super::addon;
 use super::detect::{self, Found, GodotProject, Probe, Resolution};
@@ -40,7 +39,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use veistra_rpc::{RpcError, INTERNAL_ERROR, INVALID_PARAMS, METHOD_NOT_FOUND};
 
-/// Code for a write refused on main; the same value `apps::READ_ONLY` uses.
+/// Code for a write refused as read-only; the same value `apps::READ_ONLY` uses.
 pub(super) const READ_ONLY: i32 = -32003;
 
 pub type Check<'a> = &'a dyn Fn(&Path) -> Result<String, String>;
@@ -62,13 +61,14 @@ pub struct Ctx<'a> {
     /// The cluster's project, which every one of its environments belongs
     /// to; Record's settings are kept under it.
     pub project_root: Option<PathBuf>,
-    /// `environment` is the main checkout. Its own field because most
+    /// `environment` may not be written (`Environment::is_read_only`; false
+    /// for every environment, main included). Its own field because most
     /// handlers ask only this.
     pub read_only: bool,
     pub probe: Probe,
     pub check: Check<'a>,
     /// Where a read-only environment's viewer cache goes instead of its own
-    /// `.veistra/`, which main may not be written to.
+    /// `.veistra/`, which may not be written to.
     pub cache_root: PathBuf,
     pub scratch: PathBuf,
     pub owner: OwnerFn,
@@ -994,7 +994,7 @@ pub fn with_live_for<R>(
         .cluster_id
         .as_deref()
         .and_then(|cluster| shell.cluster_write_environment(cluster));
-    let read_only = environment.as_ref().is_some_and(Environment::is_main);
+    let read_only = environment.as_ref().is_some_and(Environment::is_read_only);
     let setting = crate::settings::text(app, super::KEY_EXECUTABLE_PATH);
     let cache_root = app
         .path()
@@ -1101,12 +1101,14 @@ mod tests {
         }
     }
 
+    /// `read_only` drives the read-only mode directly: no environment is
+    /// read-only any more (main was), so none stands for it here.
     fn ctx<'a>(w: &'a World, read_only: bool, check: Check<'a>) -> Ctx<'a> {
         Ctx {
             godot: &w.godot,
             key: "c1".to_string(),
             root: Some(w.root.clone()),
-            environment: read_only.then_some(Environment::Main),
+            environment: None,
             project_root: Some(w.root.clone()),
             read_only,
             probe: Probe {
@@ -1176,20 +1178,21 @@ mod tests {
         assert!(reason.ends_with("Set its path under Settings, Godot."));
     }
 
+    /// Main used to answer `readOnly: true` and the viewer in place of the
+    /// editor. It is a writable checkout now: the same answer as a worktree's,
+    /// with only the kind saying main.
     #[test]
-    fn status_on_main_answers_the_viewer_and_why() {
+    fn status_on_main_is_writable_and_offers_the_editor() {
         let w = world(false);
-        let c = ctx(&w, true, &real_check);
+        let c = Ctx {
+            environment: Some(Environment::Main),
+            ..ctx(&w, false, &real_check)
+        };
         let s = call(&c, "godot/status", json!({})).unwrap();
-        assert_eq!(s["environment"]["readOnly"], true);
+        assert_eq!(s["environment"]["readOnly"], false);
         assert_eq!(s["environment"]["kind"], "main");
-        assert_eq!(s["editor"]["surface"], "viewer");
-        assert_eq!(s["editor"]["code"], "main");
-        assert!(s["editor"]["reason"]
-            .as_str()
-            .unwrap()
-            .starts_with("This is the main checkout"));
-        // The viewer still has what it reads: the engine and the projects.
+        assert_ne!(s["editor"]["surface"], "viewer");
+        assert_ne!(s["editor"]["code"], "main");
         assert_eq!(s["executable"]["found"]["version"], "4.3.stable.fake");
         assert_eq!(s["projects"][0]["rel"], "game");
     }
@@ -1408,8 +1411,9 @@ mod tests {
         assert!(w.godot.runner.get("c1").is_none());
     }
 
+    /// The read-only mode, which main no longer puts a cluster in.
     #[test]
-    fn running_is_allowed_on_main_but_the_editor_and_the_addon_are_not() {
+    fn running_is_allowed_read_only_but_the_editor_and_the_addon_are_not() {
         let w = world(false);
         let c = ctx(&w, true, &real_check);
         assert!(
@@ -1426,8 +1430,25 @@ mod tests {
         }
         assert!(
             !w.root.join("game/addons").exists(),
-            "nothing was written into main"
+            "nothing was written into the checkout"
         );
+        w.godot.shutdown();
+    }
+
+    /// Main used to refuse the addon with `READ_ONLY`; it installs into the
+    /// main checkout and comes out again, as it does in a worktree.
+    #[test]
+    fn on_main_the_addon_installs_into_the_checkout() {
+        let w = world(false);
+        let c = Ctx {
+            environment: Some(Environment::Main),
+            ..ctx(&w, false, &real_check)
+        };
+        let installed = call(&c, "play/addon-install", json!({})).unwrap();
+        assert_eq!(installed["addon"], "yes");
+        assert!(w.root.join("game/addons").exists());
+        call(&c, "play/addon-remove", json!({})).unwrap();
+        assert!(!w.root.join("game/addons").exists());
         w.godot.shutdown();
     }
 

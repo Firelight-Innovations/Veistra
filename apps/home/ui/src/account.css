@@ -1,13 +1,14 @@
 /*
- * The sign-in screen and the account panel, from `AppSignIn.dc.html` and
- * `AppHome.dc.html` on the design canvas. Kaava tokens only (`src/tokens.css`),
- * so both themes follow the app's theme setting. Buttons and badges are the
- * design system's own `.k-btn` and `.k-badge`.
+ * The sign-in screen, from `AppSignIn.dc.html` on the design canvas. Kaava
+ * tokens only (`src/tokens.css`), so both themes follow the app's theme
+ * setting. Buttons and badges are the design system's own `.k-btn` and
+ * `.k-badge`. The account panel that sat beside Home is gone: the account,
+ * usage and billing live in the title bar's avatar and in Settings.
  */
 
 @import "/src/veistra-ui.css";
 
-/* --- Home beside the panel ------------------------------------------------ */
+/* --- Home's scrolling column ------------------------------------------------ */
 
 .home--with-account {
   display: flex;
@@ -125,8 +126,7 @@
   background: var(--border-subtle);
 }
 
-.signin__label,
-.account__label {
+.signin__label {
   margin: 0;
   font-size: 11px;
   font-weight: 600;
@@ -173,189 +173,6 @@
   color: var(--txt-danger);
 }
 
-/* --- the account panel ------------------------------------------------------- */
-
-.account {
-  flex: 0 0 380px;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  overflow: auto;
-  border-left: 1px solid var(--border-subtle);
-  background: var(--bg-surface-1);
-  color: var(--txt-secondary);
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.account--collapsed {
-  flex: 0 0 40px;
-  align-items: center;
-  padding-top: 5px;
-}
-
-.account__head {
-  flex: none;
-  height: 34px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 8px 0 12px;
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.account__title {
-  font-weight: 500;
-  color: var(--txt-primary);
-}
-
-.account__toggle {
-  width: 24px;
-  height: 24px;
-  padding: 0;
-}
-
-.account__body {
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
-
-.account__cap {
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.45;
-  color: var(--txt-tertiary);
-}
-
-.account__who {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.account__avatar {
-  width: 36px;
-  height: 36px;
-  flex: none;
-  border-radius: 50%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--bg-layer-3);
-  color: var(--txt-primary);
-  font-weight: 600;
-}
-
-.account__names {
-  flex: 1;
-  min-width: 0;
-  line-height: 1.35;
-}
-
-.account__name {
-  margin: 0;
-  font-weight: 500;
-  color: var(--txt-primary);
-}
-
-.account__email {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.account__card {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 16px;
-  border-radius: 8px;
-  background: var(--bg-layer-1);
-}
-
-.account__card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.account__link {
-  padding: 0;
-  border: 0;
-  background: none;
-  font-size: 12px;
-  color: var(--txt-accent);
-  cursor: pointer;
-}
-
-.account__link:hover {
-  text-decoration: underline;
-}
-
-.account__amount {
-  margin: 0;
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-}
-
-.account__amount > span:first-child {
-  font-size: 22px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  color: var(--txt-primary);
-}
-
-.account__badge {
-  align-self: flex-start;
-  white-space: normal;
-}
-
-.account__foot {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-top: 16px;
-  border-top: 1px solid var(--border-subtle);
-}
-
-.account__wide {
-  width: 100%;
-}
-
-.meter {
-  height: 6px;
-  border-radius: 3px;
-  background: var(--bg-layer-3);
-  overflow: hidden;
-}
-
-.meter__fill {
-  height: 100%;
-  background: var(--accent);
-}
-
-/* A narrow pane keeps Home's projects and drops the panel to the bottom. */
-@media (max-width: 760px) {
-  .home--with-account {
-    flex-direction: column;
-    overflow: auto;
-  }
-
-  .home__main {
-    overflow: visible;
-  }
-
-  .account {
-    flex: none;
-    border-left: 0;
-    border-top: 1px solid var(--border-subtle);
-  }
-}
-
-.signin .k-badge,
-.account .k-badge {
+.signin .k-badge {
   margin: 0;
 }

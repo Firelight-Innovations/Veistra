@@ -2,11 +2,12 @@
 
 Two audiences, two sections.
 
-## [Using Veistra](user/README.md)
+## [Using Veistra](https://veistra.com/docs)
 
-For someone who wants to run Veistra and learn their way around it. Includes
-[the tutorials](user/tutorials/README.md) — the same ten pages the Tutorials
-app inside Veistra shows you.
+For someone who wants to run Veistra and learn their way around it: the user
+docs and tutorials live on the website, at <https://veistra.com/docs>. The Docs
+app inside Veistra (Help ▸ Documentation) reads the same pages from there, so
+they are never out of date with the site.
 
 ## [Developing Veistra](dev/README.md)
 
@@ -28,7 +29,7 @@ above, it is probably still here:
   [`telemetry.md`](telemetry.md),
   [`mcp-server-manager.md`](mcp-server-manager.md),
   [`files-app-methods.md`](files-app-methods.md),
-  [`tutorials.md`](tutorials.md) — one document per subsystem.
+  [`docs-app.md`](docs-app.md) — one document per subsystem.
 - [`design-notes/`](design-notes/) — longer rationale moved out of module
   comments, one page per area.
 - [`../TODO.md`](../TODO.md) — the roadmap: what has landed, what is being

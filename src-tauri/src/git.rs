@@ -580,9 +580,10 @@ fn parse_rename_pairs(out: &str) -> Vec<(String, String)> {
     pairs
 }
 
-/// Staging changes writes to a cluster's index, and a `Main` cluster's index
-/// is the project's real one — see `environments::refuse_write_on_main`.
-/// Every mutating command in this module opens with `guard_cluster_write`;
+/// Staging changes writes to a cluster's index — on a `Main` cluster, the
+/// project's real one, which is allowed like any other. Every mutating command
+/// in this module opens with `guard_cluster_write` (see
+/// `environments::refuse_read_only_write`);
 /// `every_git_command_is_classified` fails if one is added without a decision.
 #[tauri::command]
 pub fn git_cluster_stage(app: AppHandle, cluster_id: String, paths: Vec<String>) -> Result<()> {
@@ -610,9 +611,9 @@ pub fn git_cluster_unstage(app: AppHandle, cluster_id: String, paths: Vec<String
 /// from `git` on stderr with a better explanation than this could invent, so
 /// they surface as `AppError::Git` carrying git's own words.
 ///
-/// Refused outright for a `Main` cluster, before any of that — a commit is
-/// the clearest possible write, and Main is meant to be browsed, not worked
-/// in. See `environments::refuse_write_on_main`.
+/// A `Main` cluster commits to the branch its checkout is on, like any other.
+/// Only a read-only environment is refused, before any of that; see
+/// `environments::refuse_read_only_write`.
 #[tauri::command]
 pub fn git_cluster_commit(app: AppHandle, cluster_id: String, message: String) -> Result<()> {
     crate::environments::guard_cluster_write(&app, &cluster_id, "commit")?;
@@ -2073,8 +2074,8 @@ mod tests {
 
     /// Commands that change the repository, the index or `HEAD`, and so must
     /// open with `guard_cluster_write`. Deliberately excluded from this list
-    /// and named in the next: `git_worktree_create`, the sanctioned way out of
-    /// a read-only main.
+    /// and named in the next: `git_worktree_create`, which makes a new
+    /// checkout rather than writing to the cluster's own.
     const GUARDED: &[&str] = &[
         "git_cluster_stage",
         "git_cluster_unstage",
@@ -2312,11 +2313,12 @@ body line",
         }
     }
 
-    /// The decision the guard makes, for the family: main refuses every op
-    /// name these commands use, a worktree and an unset environment allow it.
+    /// The decision the guard makes, for the family: main used to refuse
+    /// every op name these commands use; now main, a worktree and an unset
+    /// environment all allow it, so staging and committing work on main.
     #[test]
-    fn git_write_ops_refuse_main_and_allow_a_worktree() {
-        use crate::environments::{refuse_write_on_main, Environment};
+    fn git_write_ops_run_on_main_as_on_a_worktree() {
+        use crate::environments::{refuse_read_only_write, Environment};
         let worktree = Environment::LocalWorktree {
             name: "x".to_string(),
             path: "C:/wt/x".to_string(),
@@ -2324,9 +2326,9 @@ body line",
             base: "main".to_string(),
         };
         for op in ["add", "restore", "commit", "checkout", "worktree remove"] {
-            assert!(refuse_write_on_main(Some(&Environment::Main), op).is_err());
-            assert!(refuse_write_on_main(Some(&worktree), op).is_ok());
-            assert!(refuse_write_on_main(None, op).is_ok());
+            assert!(refuse_read_only_write(Some(&Environment::Main), op).is_ok());
+            assert!(refuse_read_only_write(Some(&worktree), op).is_ok());
+            assert!(refuse_read_only_write(None, op).is_ok());
         }
     }
 

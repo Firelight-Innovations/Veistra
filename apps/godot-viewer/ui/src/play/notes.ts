@@ -163,19 +163,20 @@ export function markSent(
 }
 
 /**
- * The one line Send leaves at the agent's prompt (X8), around the packet's
- * reference: "Playtest feedback: 2 notes. Read <packet>/packet.md first."
- * Veistra never presses Enter; the person reads it and sends it.
+ * What the agent is asked to do with a Send's packet, carried inside the one
+ * chip Send leaves at its prompt (X8) rather than typed there: "Playtest
+ * feedback: 2 notes. Read <packet>/packet.md first, fix each note, …".
+ * Veistra never presses Enter; the person sends it.
  */
-export function packetMessage(count: number, stillBroken = 0): { before: string; after: string } {
+export function packetMessage(count: number, stillBroken: number, packetMd: string): string {
   const notes = (n: number) => `${n} ${n === 1 ? "note" : "notes"}`;
-  const before =
+  const lead =
     stillBroken === 0
-      ? `Playtest feedback: ${notes(count)}. Read `
+      ? `Playtest feedback: ${notes(count)}.`
       : stillBroken >= count
-        ? `Still broken after your fix: ${notes(count)}. Read `
-        : `Playtest feedback: ${notes(count)}, ${stillBroken} still broken after your fix. Read `;
-  return { before, after: " first." };
+        ? `Still broken after your fix: ${notes(count)}.`
+        : `Playtest feedback: ${notes(count)}, ${stillBroken} still broken after your fix.`;
+  return `${lead} Read ${packetMd} first, fix each note, then report each one with resolve_play_note.`;
 }
 
 /** Drafts with words: what Send sends. */

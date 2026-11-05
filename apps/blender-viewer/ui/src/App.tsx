@@ -22,7 +22,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { reportPainted } from "@veistra/bridge";
+import { OPENED_EVENT, on, reportPainted } from "@veistra/bridge";
+import { useRevealRequest } from "../../../shared/editorReveal";
 import {
   Box,
   Copy,
@@ -86,7 +87,8 @@ const CompareMode = lazy(() => import("./compare/CompareMode"));
 
 /**
  * Which Editor surfaces this app draws besides the viewer. Both are
- * `EditorMode`: Blender in the pane, or the same Blender in its own window.
+ * `EditorMode`: Blender in the pane, where it opens by itself on mount, or the
+ * same Blender in its own window, which opens only on a press.
  */
 const EDITOR_BUILT: EditorBuilt = { embedded: true, popOut: true };
 
@@ -171,6 +173,20 @@ export default function App() {
   const lastSeenMtime = useRef<number | null>(null);
   const [root, setRoot] = useState<HTMLDivElement | null>(null);
   const [paneWidth, setPaneWidth] = useState(0);
+  const reveal = useRevealRequest("blender");
+  const offerReveal = reveal.offer;
+
+  // A chip clicked in the agent tab opens this pane with a reveal: Editor
+  // mode shows it in Blender.
+  useEffect(
+    () =>
+      on(OPENED_EVENT, (p) => {
+        if (!offerReveal(p)) return;
+        setMode("editor");
+        setView(viewFor("editor"));
+      }),
+    [offerReveal],
+  );
 
   useEffect(() => {
     if (!root) return;
@@ -446,6 +462,8 @@ export default function App() {
           setCompareB(n);
           setMode("compare");
         }}
+        reveal={reveal.request}
+        onRevealHandled={reveal.handled}
       />
     );
   }

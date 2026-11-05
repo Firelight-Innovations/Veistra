@@ -122,13 +122,12 @@ const APPS = [
   "canvas",
   "costs",
   "design",
+  "docs",
   "files",
   "godot-viewer",
   "home",
   "projects",
   "schematify",
-  "tutorial",
-  "usage",
   "viewer",
 ];
 

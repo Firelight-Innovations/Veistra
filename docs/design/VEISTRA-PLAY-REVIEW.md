@@ -266,7 +266,7 @@ Add to the workspace MCP server, in the existing snake_case style:
 |---|---|
 | `list_play_notes` | Open notes for this environment, with packet paths |
 | `start_play_note` | Sets a note to Agent working |
-| `resolve_play_note` | `{id, summary, commit?}`, sets the note to Fixed, check it |
+| `resolve_play_note` | `{id, summary, commit?}`, sets the note to Completed |
 
 ## 10. Note status
 
@@ -275,8 +275,8 @@ Add to the workspace MCP server, in the existing snake_case style:
 | Draft | User typing | Grey word |
 | Sent | Send | Blue dot |
 | Agent working | `start_play_note` | Amber dot |
-| Fixed, check it | `resolve_play_note` | Accent dot, with the agent's summary and **Play `<scene>`**, **Looks good**, **Still broken** |
-| Resolved | User, Looks good | Green dot, folded at the bottom |
+| Completed | `resolve_play_note` | Accent dot, with the agent's summary, a note that the agent completed it and the person should check it and resolve it, and **Play `<scene>`**, **Resolve**, **Still broken** |
+| Resolved | User, Resolve | Green dot, folded at the bottom |
 
 Extend `comments.rs`:
 
@@ -356,7 +356,7 @@ Acceptance, run on the demo game and on Anomaly, Windows 11:
 4. In the demo game, add an on-screen millisecond timer. Press F8 at a known moment. The mark lands within 100 ms of that frame in review.
 5. Review opens within 2 s of F7.
 6. Send writes `packet.md`, and every note has `markup.png`, `contact.png` and `context.json`.
-7. An agent session calls `list_play_notes` and `resolve_play_note`, and the card shows Fixed, check it without a reload.
+7. An agent session calls `list_play_notes` and `resolve_play_note`, and the card shows Completed without a reload.
 8. With the addon removed, Play still runs, Rec shows its disabled state, and nothing throws.
 9. On a machine where embedding fails, the game opens in its own window and the live strip shows "Playing in its own window".
 10. The Godot editor opens inside the pane. Project Settings opens inside the editor box, not as a separate window.

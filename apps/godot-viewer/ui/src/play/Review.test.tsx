@@ -449,17 +449,15 @@ describe("Review", () => {
     expect(images.markupPng).toBeTruthy();
     expect(images.contactPng).toBeTruthy();
     expect(images.notePng).toBeTruthy();
+    // What the agent is asked rides inside the item as its prompt, out of sight.
     expect(calls("context/put")[0][1]).toMatchObject({
       kind: "file",
       path: "C:/env/.veistra/feedback/2026-10-30-1402-0f3a-1/packet.md",
+      prompt:
+        "Playtest feedback: 1 note. Read .veistra/feedback/2026-10-30-1402-0f3a-1/packet.md first, fix each note, then report each one with resolve_play_note.",
     });
-    // The default agent, the cluster's terminal, gets the one line; no tab does.
-    expect(calls("context/insert")[0][1]).toEqual({
-      itemIds: ["ctx_1"],
-      terminal: "t1",
-      before: "Playtest feedback: 1 note. Read ",
-      after: " first.",
-    });
+    // The default agent, the cluster's terminal, gets the reference alone; no tab does.
+    expect(calls("context/insert")[0][1]).toEqual({ itemIds: ["ctx_1"], terminal: "t1" });
     expect(calls("veistra/attach-to-agent")).toHaveLength(0);
     expect(calls("play/send")[0][1]).toMatchObject({ clip: false, sentTo: AGENTS[0] });
     await waitFor(() => expect(props.onNotice).toHaveBeenCalled());
@@ -493,13 +491,7 @@ describe("Review", () => {
     expect(calls("veistra/attach-to-agent")).toEqual([
       [
         "veistra/attach-to-agent",
-        {
-          contextId: "ctx_1",
-          label: ".veistra/feedback/2026-10-30-1402-0f3a-1/packet.md",
-          instanceId: "agent-2",
-          before: "Playtest feedback: 1 note. Read ",
-          after: " first.",
-        },
+        { contextId: "ctx_1", label: "Take 4 feedback", instanceId: "agent-2" },
       ],
     ]);
     // Each comment keeps who it went to (X7), for Still broken.
@@ -589,17 +581,13 @@ describe("Review", () => {
     ]);
     const { props } = mount();
     expect(await screen.findByText("Rebaked the nav mesh")).toBeTruthy();
-    expect(screen.getByText("Fixed, check it")).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("What is still broken, for note 2"), {
-      target: { value: "still clips at the door" },
-    });
+    expect(screen.getByText("Completed")).toBeTruthy();
+    // A note to check and resolve, not a form to fill in.
+    expect(screen.getByText("The agent completed this. Check it, then resolve it.")).toBeTruthy();
+    expect(screen.queryByLabelText("What is still broken, for note 2")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Still broken" }));
     await waitFor(() => expect(calls("comments/verdict")).toHaveLength(1));
-    expect(calls("comments/verdict")[0][1]).toMatchObject({
-      id: "c2",
-      verdict: "broken",
-      reply: "still clips at the door",
-    });
+    expect(calls("comments/verdict")[0][1]).toMatchObject({ id: "c2", verdict: "broken" });
     const play = screen.getByRole("button", { name: "Play hallway.tscn" });
     // Play records that one run and leaves Record as it was (X9).
     expect(play.title).toBe("Run the game in res://levels/hallway.tscn and record that run");
@@ -612,14 +600,8 @@ describe("Review", () => {
     const onStillBroken = vi.fn();
     mount({ onStillBroken });
     await screen.findByText("Rebaked the nav mesh");
-    fireEvent.change(screen.getByLabelText("What is still broken, for note 1"), {
-      target: { value: "still clips at the door" },
-    });
     fireEvent.click(screen.getByRole("button", { name: "Still broken" }));
-    expect(onStillBroken).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "c2" }),
-      "still clips at the door",
-    );
+    expect(onStillBroken).toHaveBeenCalledWith(expect.objectContaining({ id: "c2" }), undefined);
     expect(calls("comments/verdict")).toHaveLength(0);
   });
 
@@ -689,10 +671,12 @@ describe("Review", () => {
       expect(sent.sentTo).toEqual(AGENTS[1]);
       expect(calls("context/put")[0][1]).toMatchObject({
         title: "Still broken: note 2 of Take 3, with Take 4. Read packet.md first.",
+        prompt: expect.stringMatching(/^Still broken after your fix: 1 note\. Read /),
       });
-      expect(calls("veistra/attach-to-agent")[0][1]).toMatchObject({
+      expect(calls("veistra/attach-to-agent")[0][1]).toEqual({
+        contextId: "ctx_1",
+        label: "Take 4 feedback",
         instanceId: "agent-2",
-        before: "Still broken after your fix: 1 note. Read ",
       });
       expect(calls("context/insert")).toHaveLength(0);
       expect(tracked("notes_sent")[0]).toMatchObject({ notes: 1, followUp: true });
@@ -755,7 +739,7 @@ describe("Review", () => {
     expect(calls("play/notes")).toHaveLength(listed);
     filed[0] = FIXED;
     push?.({ id: "c2", kind: "take", take: TAKE.id, status: "fixed", from: "working" });
-    expect(await screen.findByText("Fixed, check it", undefined, { timeout: 1000 })).toBeTruthy();
+    expect(await screen.findByText("Completed", undefined, { timeout: 1000 })).toBeTruthy();
   });
 
   // Typing and then sending inside the debounce left a write of the

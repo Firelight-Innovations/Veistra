@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 /**
  * The left cluster (project, branch/environment, diff stat) and the
- * environment-conditioned pieces of the right cluster: the "main is
- * read-only" label, and the ahead/behind upgrade once `git` lands. Then the
- * git controls: the branch and GitHub buttons that open the Git page.
+ * environment-conditioned pieces of the right cluster: the ahead/behind
+ * upgrade once `git` lands, and no "main is read-only" label, which main used
+ * to carry. Then the git controls: the branch and GitHub buttons that open the
+ * Git page.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
@@ -117,7 +118,10 @@ describe("StatusBar", () => {
     expect(screen.queryByRole("button", { name: "Review & merge" })).toBeNull();
   });
 
-  it("reads main as a bare branch segment with no ahead/behind, plus the trailing read-only label", () => {
+  // These two used to assert a trailing "main is read-only" label. Main is
+  // written like a worktree now, so the bar names the branch and says nothing
+  // about read-only.
+  it("reads main as a bare branch segment with no ahead/behind and no read-only label", () => {
     render(
       <StatusBar
         project="Veistra"
@@ -129,7 +133,7 @@ describe("StatusBar", () => {
     );
 
     expect(screen.getByText("main")).not.toBeNull();
-    expect(screen.getByText("main is read-only")).not.toBeNull();
+    expect(screen.queryByText(/read-only/)).toBeNull();
   });
 
   it("names the real branch when the repository's default is master", () => {
@@ -143,15 +147,15 @@ describe("StatusBar", () => {
       />,
     );
 
-    expect(screen.getByText("master is read-only")).not.toBeNull();
-    expect(screen.queryByText("main is read-only")).toBeNull();
+    expect(screen.getByText("master")).not.toBeNull();
+    expect(screen.queryByText(/read-only/)).toBeNull();
   });
 
   it("omits the read-only label for a worktree", () => {
     const env: Environment = { kind: "worktree", branch: "wt/x", path: "/x" };
     render(<StatusBar project="Veistra" environment={env} git={null} githubOk update={null} />);
 
-    expect(screen.queryByText("main is read-only")).toBeNull();
+    expect(screen.queryByText(/read-only/)).toBeNull();
   });
 
   it("only draws the diff stat once git reports touched files", () => {

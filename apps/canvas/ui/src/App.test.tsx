@@ -266,7 +266,9 @@ function fake(b: Backend) {
           mtime: 300,
         };
       case "context/put":
-        return { id: "ctx1" };
+        return { id: "ctx1", source: { label: "Design - World" } };
+      case "veistra/attach-to-agent":
+        return { delivered: 1 };
       default:
         throw new Error(`unexpected ${method}`);
     }
@@ -795,10 +797,11 @@ describe("Canvas app", () => {
         title: "Design - World, 1 element",
         bytesBase64: "cG5n",
       });
-      expect(bridge.invoke).toHaveBeenCalledWith(
-        "veistra/attach-to-agent",
-        expect.objectContaining({ label: "Canvas selection" }),
-      );
+      // One chip, named as the Context strip names the item; no words typed.
+      expect(bridge.invoke).toHaveBeenCalledWith("veistra/attach-to-agent", {
+        contextId: "ctx1",
+        label: "Design - World",
+      });
     });
 
     it("sends a model frame's card as JSON text", async () => {
@@ -811,6 +814,12 @@ describe("Canvas app", () => {
       expect(button.disabled).toBe(false);
       fireEvent.click(screen.getByText("Send card"));
       await waitFor(() => expect(puts()).toHaveLength(1));
+      await waitFor(() =>
+        expect(bridge.invoke).toHaveBeenCalledWith("veistra/attach-to-agent", {
+          contextId: "ctx1",
+          label: "Design - World",
+        }),
+      );
       const params = puts()[0]![1] as { kind: string; title: string; text: string };
       expect(params.kind).toBe("text");
       expect(params.title).toBe("Spec - Gurney");

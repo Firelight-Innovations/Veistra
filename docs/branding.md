@@ -220,9 +220,10 @@ window's size, rendered from `splash.html` in Chromium):
   string. Its `name` is `veistra-orchestrator`, the npm identity of a package
   marked `private` and never published — the same category as the `@veistra/*`
   scope, which is tier 2.
-- **Prose in `apps/tutorial/**` and in `docs/`.** The tutorials say Veistra
-  because they are teaching Veistra, and a tutorial written about a fork is a
-  tutorial that needs rewriting anyway.
+- **Prose in `docs/`, and the docs on veistra.com.** They say Veistra because
+  they are teaching Veistra, and docs written about a fork are docs that need
+  rewriting anyway. The Docs pane draws the website's pages as they are; a fork
+  points `account.webUrl` at its own site.
 
 ### The grammar `branding.toml` may use
 
@@ -348,15 +349,11 @@ yet", it does not go in.
 
 ### A drawing of a surface is a surface
 
-`apps/tutorial/` is a bundle in `OUTPUTS`, which looks like a mistake next to
-the rule that tutorial prose is never templated. The distinction is that its
-mocks do not *describe* the title bar, they *draw* it — `mocks/titleBar.tsx` and
-`mocks/windowBands.tsx` render the centred caption, and both drew the old
-two-word product name beside `Anvil` until they were wired to `PRODUCT_NAME` —
-a caption the shell itself had already stopped producing.
-
-The tutorials' whole argument is that the pictures are accurate. A picture that
-survives a rename by not being renamed is a picture that has quietly stopped
-being one, so anything that redraws a branded surface reads the name the same
-way the surface does. The prose around it still says Veistra, because prose about
-Veistra is teaching Veistra and a fork rewrites it anyway.
+Prose is never templated, but a bundle that *draws* a branded surface rather
+than describing it belongs in `OUTPUTS`. The bundled Tutorials app was the
+example: its mocks rendered the title bar's centred caption, and drew the old
+two-word product name until they were wired to `PRODUCT_NAME`. That app is gone
+(its content moved to veistra.com/docs), but the rule stands. A picture that
+survives a rename by not being renamed has quietly stopped being one, so
+anything that redraws a branded surface reads the name the same way the surface
+does.

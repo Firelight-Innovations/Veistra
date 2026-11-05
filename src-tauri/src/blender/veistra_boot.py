@@ -19,6 +19,7 @@
 #                     parts and the answers to the tab's presses (#320)
 #   events.jsonl      appended here, one line a press of the Veistra tab
 #   ask-<n>.png       the viewport an Ask the agent line names
+#   mention-<n>.png   the viewport a Mention in agent line names
 #
 # Commands: select (objects by name), viewport-only (maximise the 3D view, as
 # Ctrl Space does), capture (a picture of the 3D view, with the view it shows
@@ -33,6 +34,11 @@
 # what is typed into it on the window manager, which is never saved in the
 # file, and its operators make no undo step and add no datablock.
 #
+# Mention in agent (v3) puts the selected objects, the file or the viewport
+# in the agent tab's prompt as one chip, nothing typed: from the tab, from
+# the Outliner's and the 3D view's right-click menus, and on Ctrl+Alt+M. Its
+# keys go in the session's add-on keymap, which Blender never saves.
+#
 # Everything runs on Blender's main thread from a persistent bpy.app.timers
 # callback, which survives File > Open; every failure is caught, since a
 # timer that raises is unregistered for good.
@@ -46,13 +52,15 @@ import zlib
 
 import bpy
 
-VERSION = 2
+VERSION = 3
 CHANNEL = os.environ.get("VEISTRA_BLENDER_CHANNEL", "")
 POLL_SECONDS = 0.25
 # Veistra refuses a longer question (editor_notes.rs MAX_TEXT).
 MAX_TEXT = 4000
 # The long side of an Ask's picture, so it stays one small context item.
 MAX_SIDE = 1600
+# The agent tab's @ menu lists this many of the view layer's objects at most.
+MAX_OBJECTS = 400
 
 _last_id = None
 _last_state = None
@@ -161,6 +169,8 @@ def state():
         "dirty": bool(bpy.data.is_dirty),
         "view": view_of(view3d()),
         "fullscreen": bool(win.screen.show_fullscreen) if win is not None else False,
+        "objects": [{"name": o.name, "type": o.type}
+                    for o in list(view_layer().objects)[:MAX_OBJECTS]],
     }
     value.update(selection())
     return value
@@ -389,12 +399,21 @@ def _draw_view(found, path):
 
 
 def ask_picture(n):
-    """ask-<n>.png of the 3D view, or None when there is none to take: drawn
-    off screen, else Blender's screenshot of the area (sidebar and all)."""
+    """ask-<n>.png of the 3D view, or None when there is none to take."""
+    return view_picture("ask-%d.png" % n)
+
+
+def mention_picture(n):
+    """mention-<n>.png of the 3D view, or None when there is none to take."""
+    return view_picture("mention-%d.png" % n)
+
+
+def view_picture(name):
+    """The 3D view under `name` in the channel: drawn off screen, else
+    Blender's screenshot of the area (sidebar and all). None without one."""
     found = view3d()
     if found is None:
         return None
-    name = "ask-%d.png" % n
     try:
         _draw_view(found, _path(name))
         return name
@@ -494,6 +513,96 @@ class VEISTRA_OT_markup(bpy.types.Operator):
         return {"FINISHED"}
 
 
+MENTIONS = (
+    ("AUTO", "Mention to Veistra agent", "The selected objects, else the file"),
+    ("SELECTION", "Selected objects", "The selected objects, as one chip"),
+    ("SCENE", "This file", "The open .blend, as one chip"),
+    ("VIEWPORT", "Viewport", "A picture of the 3D view, as one chip"),
+)
+
+
+def mention_event(what, n):
+    """The line Mention in agent sends, or a Refused saying what is missing.
+    AUTO is the selection when there is one, else the file."""
+    names = [o["name"] for o in selection()["selected"]]
+    if what == "AUTO":
+        what = "SELECTION" if names else "SCENE"
+    event = {"kind": "mention", "what": what.lower(), "scene": bpy.data.filepath or None}
+    if what == "SELECTION":
+        if not names:
+            raise Refused("Select an object to mention first.")
+        event["nodes"] = names
+    elif what == "SCENE":
+        if not bpy.data.filepath:
+            raise Refused("Save the file first; Veistra mentions it by its path.")
+    elif what == "VIEWPORT":
+        png = mention_picture(n)
+        if not png:
+            raise Refused("No 3D view is open to take a picture of.")
+        event["png"] = png
+    return event
+
+
+class VEISTRA_OT_mention(bpy.types.Operator):
+    """Mention this to Veistra agent"""
+    bl_idname = "veistra.mention"
+    bl_label = "Mention to Veistra agent"
+    bl_options = {"INTERNAL"}
+
+    what: bpy.props.EnumProperty(items=MENTIONS, default="AUTO", options={"SKIP_SAVE"})
+
+    def execute(self, context):
+        n = next_n()
+        try:
+            event = mention_event(self.what, n)
+        except Refused as exc:
+            self.report({"WARNING"}, str(exc))
+            _tab["status"] = str(exc)
+            _redraw()
+            return {"CANCELLED"}
+        send(event, "Mention to Veistra agent", n)
+        _tab["status"] = "Sent to Veistra; the chip goes in the agent's prompt."
+        _redraw()
+        return {"FINISHED"}
+
+
+def _mention_menu(self, _context):
+    """Appended to the Outliner's and the 3D view's right-click menus."""
+    self.layout.separator()
+    self.layout.operator("veistra.mention", text="Mention to Veistra agent").what = "SELECTION"
+
+
+# Each is looked up by name: a Blender without one of them still gets the rest.
+MENTION_MENUS = ("OUTLINER_MT_object", "OUTLINER_MT_context_menu",
+                 "VIEW3D_MT_object_context_menu")
+_keymaps = []
+
+
+def register_mentions():
+    for name in MENTION_MENUS:
+        menu = getattr(bpy.types, name, None)
+        if menu is not None:
+            menu.append(_mention_menu)
+    keyconfig = bpy.context.window_manager.keyconfigs.addon
+    if keyconfig is None:  # in the background there is no keymap to add to
+        return
+    for name, space in (("3D View", "VIEW_3D"), ("Outliner", "OUTLINER")):
+        km = keyconfig.keymaps.new(name=name, space_type=space)
+        item = km.keymap_items.new("veistra.mention", "M", "PRESS", ctrl=True, alt=True)
+        item.properties.what = "AUTO"
+        _keymaps.append((km, item))
+
+
+def unregister_mentions():
+    for name in MENTION_MENUS:
+        menu = getattr(bpy.types, name, None)
+        if menu is not None:
+            menu.remove(_mention_menu)
+    for km, item in _keymaps:
+        km.keymap_items.remove(item)
+    _keymaps.clear()
+
+
 def _lines(layout, text, width):
     for para in str(text).splitlines() or [""]:
         for line in textwrap.wrap(para, width) or [""]:
@@ -544,21 +653,28 @@ class VEISTRA_PT_notes(bpy.types.Panel):
         layout.prop(props, "question", text="")
         layout.operator("veistra.ask", text="Ask the agent")
         layout.operator("veistra.markup", text="Mark up the viewport")
+        layout.label(text="Mention to Veistra agent (Ctrl+Alt+M)")
+        row = layout.row(align=True)
+        for what, text in (("SELECTION", "Selection"), ("SCENE", "File"),
+                           ("VIEWPORT", "Viewport")):
+            row.operator("veistra.mention", text=text).what = what
         if _tab["status"]:
             _lines(layout, _tab["status"], width)
 
 
 CLASSES = (VeistraTabProps, VEISTRA_OT_verdict, VEISTRA_OT_ask, VEISTRA_OT_markup,
-           VEISTRA_PT_notes)
+           VEISTRA_OT_mention, VEISTRA_PT_notes)
 
 
 def register_tab():
     for cls in CLASSES:
         bpy.utils.register_class(cls)
     bpy.types.WindowManager.veistra = bpy.props.PointerProperty(type=VeistraTabProps)
+    register_mentions()
 
 
 def unregister_tab():
+    unregister_mentions()
     if hasattr(bpy.types.WindowManager, "veistra"):
         del bpy.types.WindowManager.veistra
     for cls in reversed(CLASSES):

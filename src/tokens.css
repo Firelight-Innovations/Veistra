@@ -133,6 +133,15 @@
   --chart-6: #9fd89a;
   --chart-grid: #222425;
 
+  /* --- colour: hues --------------------------------------------------------
+     The three a rainbow needs that the accents and charts do not have, so a
+     set of kinds (the agent tab's @ menu) can run red to pink: coral, amber,
+     yellow, lime, green, teal, sky, blue, violet, pink. Each is at least 4.5:1
+     on layer-2 in both themes; the light values are darker to keep that. */
+  --hue-yellow: #e3c245;
+  --hue-lime: #a3d65c;
+  --hue-sky: #5ab8ec;
+
   /* --- colour: editor syntax ---------------------------------------------- */
   --syn-keyword: #c49bf2;
   --syn-type: #7fc8f8;
@@ -341,6 +350,10 @@
   --chart-5: #a8326e;
   --chart-6: #23803b;
   --chart-grid: #eaebec;
+
+  --hue-yellow: #826600;
+  --hue-lime: #6b7f00;
+  --hue-sky: #0b7bc4;
 
   --syn-keyword: #7a3fc4;
   --syn-type: #1f63b5;

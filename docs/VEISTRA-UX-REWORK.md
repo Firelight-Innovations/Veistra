@@ -5,6 +5,11 @@ Design canvas: "Veistra Design System", page **v0.3 · UX — isolated environme
 
 ## 0. The principle
 
+> **Amended 2026-11:** main is no longer read-only. A main cluster is worked in like a worktree
+> (files, terminals, apps and agents can all write), with no banner, lock or status-bar label.
+> Worktree clusters are unchanged and still the way to keep a change on its own branch. The
+> rule below is kept as the original design.
+
 **Nobody works on main: no agent, and not you.** Every cluster is bound to one **environment**: a local worktree or a cloud session. Everything in the cluster (explorer, file viewer, terminals, viewers, Play) reads that environment. Engines (Godot, Blender) run **headless** for agents. Veistra shows their output in **read-only viewers** that you can play and comment on. You edit by hand only by opening the real editor on purpose. Work reaches main one way: a reviewed PR from the Git page.
 
 Every feature built after this rework plugs into this model.
@@ -13,7 +18,7 @@ Every feature built after this rework plugs into this model.
 
 ```
 Project
-├── main (read-only in Veistra: browse and view only)
+├── main (worked in directly; read-only until the 2026-11 amendment)
 ├── Environments
 │   ├── Local worktree   .veistra/worktrees/<name>, branch wt/<name>, local agent or you
 │   ├── Cloud session    worker VM checkout, branch agent/<item>, streamed
@@ -29,11 +34,11 @@ Project
    - a new local worktree (branch prefilled from a Plane work item),
    - an existing environment,
    - a cloud session,
-   - or browse main (read-only).
+   - or work on main (once "browse main (read-only)").
 
    It then asks for a starting layout: Code, Godot, Blender or Watch an agent. Board 04 shows the dialog.
 2. Every cluster shows its environment twice. The **cluster tab** carries a chip (wt, cloud, main). An **environment bar** above the panes shows kind, branch, base, ahead/behind, path or VM, agent state, and actions (Review & merge; for cloud: Pull into local worktree, Stop session).
-3. Terminals open with cwd set to the environment. Nothing in Veistra can write to main: any such write is refused with a message.
+3. Terminals open with cwd set to the environment. Writes to main used to be refused with a message; since the 2026-11 amendment main is writable like any worktree.
 4. **Cloud sessions stream.** The agent terminal is live output plus a "Message the cloud agent" box. The explorer reads the VM's disk over IAP and copies nothing until you pull. "Open as cluster" on the Cloud agents page creates a cluster bound to that session.
 5. **Leaving an environment:**
    - The Git page lists every environment with its state and ahead count.

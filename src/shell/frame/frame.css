@@ -93,7 +93,7 @@
 .frame__bottomhandle {
   position: absolute;
   left: 0;
-  width: var(--band-w, 100%);
+  right: 0;
   bottom: var(--band-h, 0px);
   height: var(--w-resize-handle);
   background: var(--bg);
@@ -124,8 +124,8 @@
 .frame__bottom {
   position: absolute;
   left: 0;
+  right: 0;
   bottom: 0;
-  width: var(--band-w, 100%);
   background: var(--bg);
   display: flex;
   min-height: 0;
@@ -134,17 +134,12 @@
   overflow: hidden;
 }
 
-/* The band is drawn over the foot of the column, so what sits above it gives up
-   that height. Whole width: the tool window's own bottom margin grows. Under the
-   left columns only (`Frame.tsx`'s `useBandWidth`): just those columns' panes
-   lift, and the rightmost one keeps the full height. */
-.frame__main:not([data-band-split]) .frame__toolwindow {
+/* The band is drawn over the foot of the column, across its whole width, so the
+   tool window above it gives up that height: its own bottom margin grows, and
+   every pane column shrinks together. No column keeps the full height — the band
+   is never under some columns and beside another. */
+.frame__main .frame__toolwindow {
   margin-bottom: calc(var(--space-1-5, 6px) + var(--band-h, 0px));
-}
-
-.pane-split__child[data-band-under] > .pane,
-.pane-split__child[data-band-under] > .pane-split {
-  bottom: var(--band-h, 0px);
 }
 
 /* --- everything left of the rail, as one hideable box ---------------------
@@ -155,9 +150,8 @@
    as direct children of the row. */
 .frame__workspace-body {
   flex: 1;
-  /* A rail page pulls out from beyond this box's right edge; clip it here so
-     it never paints over the rail beside. `clip`, not `hidden`, so this does
-     not become a scroll container. */
+  /* Clip here so nothing inside ever paints over the rail beside. `clip`, not
+     `hidden`, so this does not become a scroll container. */
   overflow: clip;
   display: flex;
   min-width: 0;
@@ -208,11 +202,11 @@
 /* --- the right-hand box ----------------------------------------------------
    The rail and the docked page are ONE rounded card: the same surface, hairline
    and radius as a pane, and the same 6px gutter to the title bar above, the
-   status bar below and the window edge on the right. A page pulling out of the
+   status bar below and the window edge on the right. A page opening beside the
    rail widens this card leftward; there is no second card and no seam.
 
-   `overflow: hidden` clips the docked page while it slides out from behind the
-   rail. It does not clip an expanded page, on purpose: that one is positioned
+   `overflow: hidden` holds the docked page inside the card's rounded corners.
+   It does not clip an expanded page, on purpose: that one is positioned
    against `.frame__split` (this box is not positioned), so it can span the
    panes while this box stays the width of the rail. */
 .frame__side {

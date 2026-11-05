@@ -8,6 +8,7 @@
  */
 import { useCallback, useState, type PointerEvent, type ReactNode } from "react";
 import { Send } from "lucide-react";
+import { chipAllToAgent, type ContextRef } from "./context";
 import "./send-footer.css";
 
 /** How long a button says "Sent" before it goes back to its label. */
@@ -72,10 +73,20 @@ export function SendButton({
   );
 }
 
+/** What a send's `put` answers: the item or items it stored, each of which becomes a chip. */
+function storedItems(put: unknown): ContextRef[] {
+  const isItem = (v: unknown): v is ContextRef =>
+    typeof v === "object" && v !== null && typeof (v as ContextRef).id === "string";
+  return (Array.isArray(put) ? put : [put]).filter(isItem);
+}
+
 /**
- * The "put it in the agent's context" call, with the shared "Sent" flash and
- * the shared failure sentence. `id` says which button flashes; `what` is what
- * the error names ("the scene tree").
+ * Every Send button's action: `put` stores the thing in the context store, and
+ * each item it answers with becomes one chip on the prompt of the agent the
+ * person last worked in ({@link chipAllToAgent}). Never a sentence: what the agent
+ * is asked to do is the item's `prompt`. With the shared "Sent" flash and the
+ * shared failure sentence; `id` says which button flashes, `what` is what a
+ * message names ("the scene tree").
  */
 export function useSendAction(
   onError: (message: string | null) => void,
@@ -86,7 +97,13 @@ export function useSendAction(
     async (id: string, what: string, put: () => Promise<unknown>) => {
       onError(null);
       try {
-        await put();
+        const said = await chipAllToAgent(storedItems(await put()));
+        if (!said.delivered) {
+          onError(
+            `${capital(what)} is in the Context strip, but no agent took it: ${said.reason}.`,
+          );
+          return;
+        }
         setSent(id);
         setTimeout(() => setSent((s) => (s === id ? null : s)), SENT_MS);
       } catch (err) {
@@ -97,3 +114,5 @@ export function useSendAction(
   );
   return { sent, send };
 }
+
+const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);

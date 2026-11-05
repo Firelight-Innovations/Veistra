@@ -142,14 +142,14 @@ export const onEnvelope = (cb: (envelope: Envelope) => void) =>
   on(EVENT, (payload) => cb(payload as Envelope));
 
 /**
- * A context item another app handed to this tab (`veistra/attach-to-agent`),
- * with the words it asked for on either side of the chip, if any.
+ * A context item another app handed to this tab (`veistra/attach-to-agent`).
+ * It becomes one chip; what the app asks of the agent is in the item itself.
  */
 export interface Attached {
   contextId: string;
   label: string;
-  before?: string;
-  after?: string;
+  /** The chip's glyph and colour, when the app named one (`godot-node`). */
+  kind?: string;
 }
 
 export const onAttach = (cb: (item: Attached) => void) =>
@@ -224,15 +224,17 @@ export interface Refusal {
 }
 
 /**
- * Mirrors `apps::READ_ONLY`. The shell refuses a write on a main checkout
- * before the agent tab's own code runs, with this code and no `data`, so the
- * tab names it for what it is rather than "Could not send that."
+ * Mirrors `apps::READ_ONLY`. The shell refuses a write in a read-only
+ * environment before the agent tab's own code runs, with this code and no
+ * `data`, so the tab names it for what it is rather than "Could not send
+ * that." No environment is read-only today (main used to be), so this is
+ * kept for the guard rather than seen.
  */
 export const READ_ONLY = -32003;
 
 export function refusalOf(err: unknown): Refusal | null {
   if (err instanceof VeistraRpcError && err.code === READ_ONLY) {
-    return { code: "mainCheckout", hint: null };
+    return { code: "readOnly", hint: null };
   }
   if (!(err instanceof VeistraRpcError) || err.code !== REFUSED) return null;
   const data = err.data as Partial<Refusal> | undefined;

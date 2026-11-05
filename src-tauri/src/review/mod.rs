@@ -251,7 +251,8 @@ pub fn edit<T>(
     change: impl FnOnce(&mut Vec<ReviewComment>) -> Result<T>,
 ) -> Result<T> {
     // Every note mutation goes through here, and the notes live in the checkout's
-    // own `.veistra/`, so main is refused once for all five commands.
+    // own `.veistra/`, so a read-only environment is refused once for all five
+    // commands. Main is not one.
     crate::environments::guard_cluster_write(app, cluster_id, "review comment")?;
     let root = checkout(app, cluster_id).ok_or_else(|| {
         AppError::Review(
@@ -321,7 +322,7 @@ mod tests {
     use super::*;
 
     /// `edit` needs an app handle, which a unit test cannot build, so the two
-    /// facts that make main read-only here are checked in the source: the
+    /// facts that make the read-only guard hold here are checked in the source: the
     /// guard runs before the checkout is resolved, and every note-writing
     /// command reaches the store through `edit` and nothing else.
     #[test]
@@ -345,11 +346,12 @@ mod tests {
         }
     }
 
+    /// Main used to refuse review notes; it takes them like a worktree now.
     #[test]
-    fn a_review_write_is_refused_on_main_and_allowed_elsewhere() {
-        use crate::environments::{refuse_write_on_main, Environment};
-        assert!(refuse_write_on_main(Some(&Environment::Main), "review comment").is_err());
-        assert!(refuse_write_on_main(None, "review comment").is_ok());
+    fn a_review_write_is_allowed_on_main_and_elsewhere() {
+        use crate::environments::{refuse_read_only_write, Environment};
+        assert!(refuse_read_only_write(Some(&Environment::Main), "review comment").is_ok());
+        assert!(refuse_read_only_write(None, "review comment").is_ok());
     }
 
     fn draft(path: &str, start: u32, end: u32, body: &str) -> ReviewDraft {

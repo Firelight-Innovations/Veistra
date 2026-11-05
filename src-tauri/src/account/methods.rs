@@ -1,8 +1,9 @@
-//! The `account/*` methods, as Home and Usage reach them.
+//! The `account/*` methods, as Home and the shell reach them.
 //!
-//! One dispatch shared by every app that shows the account, the way `files`
+//! One dispatch shared by everything that shows the account, the way `files`
 //! and `viewer` share theirs: there is one sign-in, so there is one place that
-//! answers for it. Each app's own `call` hands `account/*` here.
+//! answers for it. Home's own `call` hands `account/*` here, and the shell's
+//! title-bar avatar and Settings pages reach it through [`account_call`].
 
 use super::{Account, AccountError, DeviceInfo};
 use crate::settings::{self, keys};
@@ -108,14 +109,27 @@ fn query(params: Option<&Value>, keys: &[&str]) -> String {
     }
 }
 
-/// The Usage app's dispatch: it answers `account/*` and nothing of its own.
-pub fn app_call(
-    app: &AppHandle,
-    _context: &crate::apps::CallContext,
-    method: &str,
+/// The shell's door to [`call`]: the title bar's account menu and the Account,
+/// Billing and Usage pages of Settings. Those are not app frames, so they have
+/// no `app_call` instance to name; this is the same dispatch Home reaches.
+///
+/// On a blocking worker for the reason `commands::app_call` gives: every read
+/// here is an HTTP round trip to the account service, and a synchronous command
+/// would hold the main thread for it.
+#[tauri::command]
+pub async fn account_call(
+    app: AppHandle,
+    method: String,
     params: Option<Value>,
 ) -> Result<Value, RpcError> {
-    call(app, method, params)
+    tauri::async_runtime::spawn_blocking(move || call(&app, &method, params))
+        .await
+        .unwrap_or_else(|e| {
+            Err(RpcError::new(
+                INTERNAL_ERROR,
+                format!("the account call did not complete: {e}"),
+            ))
+        })
 }
 
 pub fn call(app: &AppHandle, method: &str, params: Option<Value>) -> Result<Value, RpcError> {

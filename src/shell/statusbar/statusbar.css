@@ -317,20 +317,6 @@ button.statusbar__update:hover .statusbar__update-label {
   white-space: nowrap;
 }
 
-/* The trailing "main is read-only" chip, shown only while the active
-   cluster's environment is `main` — every v3 board that opens on main draws
-   it in the right cluster, past the status chips. No exact token for the
-   crop's amber; `--txt-info`/`--info-subtle` (a settled fallback for "worth
-   noting, not wrong") stand in per the common brief. */
-.statusbar__readonly {
-  font-family: var(--sans);
-  font-size: 11px;
-  font-weight: 400;
-  line-height: 1;
-  color: var(--txt-info, var(--text-dim));
-  white-space: nowrap;
-}
-
 /* The diff-stat readout. Same face as the branch beside it, the additions and
    deletions in green and red, and the file count in the bar's ordinary dim
    text. */

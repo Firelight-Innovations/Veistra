@@ -1,9 +1,13 @@
-# veistra-dock v1
+# veistra-dock v2
 #
 # The Veistra dock (#320): the notes on the selected node, Looks good and
 # Still broken on a fixed one, Ask the agent and Mark up the viewport. The
 # editor plugin adds it only when Veistra started this editor, and hands it
 # the channel folder.
+#
+# v2 adds Mention in agent: the selected nodes, the scene, the open script or
+# the viewport, put in the agent tab's prompt as one chip with nothing typed.
+# The plugin's Ctrl+Alt+M and its right-click menus come here too.
 #
 # Two files beside cmd.json (DECISIONS X5). notes.json is Veistra's, read
 # every READ_SEC and replaced whole by a rename, so it is never half written;
@@ -39,7 +43,16 @@ var _head: Label
 var _list: VBoxContainer
 var _ask: TextEdit
 var _ask_button: Button
+var _mention_button: MenuButton
 var _status: Label
+
+# Mention in agent's menu, by id.
+const MENTION_ITEMS := [
+	["The selected nodes", "selection"],
+	["This scene", "scene"],
+	["The open script", "script"],
+	["The viewport", "viewport"],
+]
 
 
 func setup(dir: String, node_path: Callable, camera: Callable, screen: Callable) -> void:
@@ -75,6 +88,16 @@ func _ready() -> void:
 	row.add_child(_ask_button)
 	row.add_child(_button("Mark up the viewport", _on_markup))
 	add_child(row)
+	_mention_button = MenuButton.new()
+	_mention_button.text = "Mention to Veistra agent"
+	_mention_button.flat = false
+	_mention_button.tooltip_text = "Mention this to Veistra agent"
+	var popup := _mention_button.get_popup()
+	for i in MENTION_ITEMS.size():
+		popup.add_item(MENTION_ITEMS[i][0], i)
+	popup.id_pressed.connect(func(id: int) -> void: mention(MENTION_ITEMS[id][1]))
+	_mention_button.about_to_popup.connect(_on_mention_menu)
+	add_child(_mention_button)
 	_status = Label.new()
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	add_child(_status)
@@ -284,6 +307,69 @@ func _on_ask() -> void:
 func _on_markup() -> void:
 	if _send({"kind": "markup"}, "Mark up"):
 		_say("Opening Mark up in Veistra.")
+
+
+# Only what there is to mention can be pressed.
+func _on_mention_menu() -> void:
+	var popup := _mention_button.get_popup()
+	popup.set_item_disabled(0, _selected_paths().is_empty())
+	popup.set_item_disabled(1, _scene() == "")
+	popup.set_item_disabled(2, _open_script() == "")
+
+
+# The script open in the Script screen, when it is a file of its own (a
+# built-in script lives inside its scene and has no path to name).
+func _open_script() -> String:
+	var script = EditorInterface.get_script_editor().get_current_script()
+	if script == null:
+		return ""
+	var path: String = script.resource_path
+	return path if path.begins_with("res://") and not path.contains("::") else ""
+
+
+# Ctrl+Alt+M: the open script on the Script screen, else the selected nodes,
+# else the scene.
+func mention_now() -> void:
+	if str(_screen.call()) == "Script" and _open_script() != "":
+		mention("script")
+	elif not _selected_paths().is_empty():
+		mention("selection")
+	else:
+		mention("scene")
+
+
+# Mention in agent: "selection", "scene", "script", "viewport", or "file"
+# with a res:// path. One line, a picture first for the viewport; Veistra
+# makes the chip and answers.
+func mention(what: String, path: String = "") -> void:
+	var n := _next_n()
+	var event := {"kind": "mention", "what": what, "scene": _scene()}
+	match what:
+		"selection":
+			event["nodes"] = _selected_paths()
+			if event["nodes"].is_empty():
+				_say("Select a node to mention first.")
+				return
+		"scene":
+			if _scene() == "":
+				_say("Save the scene first; Veistra mentions it by its file.")
+				return
+		"script":
+			event["what"] = "file"
+			event["path"] = _open_script()
+			if event["path"] == "":
+				_say("Open a script that is saved as its own file first.")
+				return
+		"file":
+			event["path"] = path
+		"viewport":
+			var image := _viewport_image()
+			if image == null or image.save_png(_dir.path_join("mention-%d.png" % n)) != OK:
+				_say("The viewport has no picture to send.")
+				return
+			event["png"] = "mention-%d.png" % n
+	if _send(event, "Mention to Veistra agent", n):
+		_say("Sent to Veistra; the chip goes in the agent's prompt.")
 
 
 # What the editor shows in its main screen: the 2D canvas when that is up,

@@ -5,9 +5,10 @@
 //! module decides *where* a session may run and *who* may drive it, which are
 //! questions about the shell's layout that the crate cannot answer:
 //!
-//! - **Only a local worktree.** The cluster's write environment must be
-//!   `LocalWorktree`, and the crate's `Worktree::new` refuses a main checkout
-//!   on its own as well (handoff §0: no agent on main).
+//! - **Only a local worktree or main.** The cluster's write environment must
+//!   be `LocalWorktree` or `Main`, and the crate's `Worktree::new` checks that
+//!   the folder is a git checkout. Handoff §0 kept agents off main; that rule
+//!   was lifted, and main is worked in like a worktree.
 //! - **Only the tab's own frame, or the shell on its behalf.** Every method but
 //!   `agent-tab/harnesses` needs the calling instance, which reaches here only
 //!   through [`call_for`] from `commands::app_call`. The MCP `app_call` path
@@ -258,6 +259,16 @@ fn home_of(snapshot: &ShellSnapshot, instance_id: &str) -> Option<Home> {
         })
 }
 
+impl Home {
+    /// The folder the tab's session ran in: [`worktree_path`] for this home.
+    fn root(&self) -> Result<PathBuf, RpcError> {
+        worktree_path(
+            self.environment.as_ref(),
+            self.project.as_deref().map(Path::new),
+        )
+    }
+}
+
 impl Sessions {
     fn homes(&self) -> std::sync::MutexGuard<'_, HashMap<String, Home>> {
         self.homes.lock().unwrap_or_else(|e| e.into_inner())
@@ -362,7 +373,7 @@ impl Sessions {
         let open = |id: &str| snapshot.instances.iter().any(|i| i.id == id);
         let mut homes = self.homes();
         for (id, home) in homes.iter().filter(|(id, _)| !open(id)) {
-            if let Ok(root) = worktree_path(home.environment.as_ref()) {
+            if let Ok(root) = home.root() {
                 self.save_history(host, id, &root);
             }
             self.history.forget(id);
@@ -377,7 +388,7 @@ impl Sessions {
             .collect();
         for id in moved {
             if let Some(home) = homes.get(&id) {
-                if let Ok(root) = worktree_path(home.environment.as_ref()) {
+                if let Ok(root) = home.root() {
                     self.save_history(host, &id, &root);
                 }
             }
@@ -405,7 +416,7 @@ impl Sessions {
     pub fn stop_all(&self) {
         if let Some(host) = self.host.get() {
             for (id, home) in self.homes().iter() {
-                if let Ok(root) = worktree_path(home.environment.as_ref()) {
+                if let Ok(root) = home.root() {
                     self.save_history(host, id, &root);
                 }
             }
@@ -1063,17 +1074,23 @@ fn worktree(app: &AppHandle, context: &CallContext) -> Result<Worktree, RpcError
         .cluster_id
         .as_deref()
         .and_then(|id| app.state::<ShellState>().cluster_write_environment(id));
-    let path = worktree_path(env.as_ref())?;
+    let path = worktree_path(env.as_ref(), context.project.as_deref())?;
     Worktree::new(&path).map_err(|e| host_error(HostError::NotAWorktree(e)))
 }
 
-/// The path of a local worktree environment. Pure, so the rule is tested.
-fn worktree_path(env: Option<&Environment>) -> Result<PathBuf, RpcError> {
-    match env {
-        Some(Environment::LocalWorktree { path, .. }) => Ok(Path::new(path).to_path_buf()),
+/// Where an agent runs for a cluster: a local worktree's path, or, on the
+/// main checkout, the cluster's project, which is that checkout. Pure, so
+/// the rule is tested.
+pub(super) fn worktree_path(
+    env: Option<&Environment>,
+    project: Option<&Path>,
+) -> Result<PathBuf, RpcError> {
+    match (env, project) {
+        (Some(Environment::LocalWorktree { path, .. }), _) => Ok(Path::new(path).to_path_buf()),
+        (Some(Environment::Main), Some(project)) => Ok(project.to_path_buf()),
         _ => Err(refused(
             "notAWorktree",
-            "agents run in a local worktree, and this cluster is not on one",
+            "agents run in a local worktree or the main checkout, and this cluster is on neither",
             Value::Null,
         )),
     }
@@ -1440,9 +1457,12 @@ mod tests {
         );
     }
 
-    /// Handoff §0: never on main. Only a local worktree has a path to run in.
+    /// Handoff §0 kept agents off main; that rule was lifted. A local worktree
+    /// runs in its own path and main in the cluster's project, the checkout
+    /// itself. Design, and a cluster with no environment, still have nowhere.
     #[test]
-    fn only_a_local_worktree_runs_an_agent() {
+    fn a_local_worktree_or_main_runs_an_agent() {
+        let project = Path::new("C:/repo");
         let worktree = Environment::LocalWorktree {
             name: "x".into(),
             path: "C:/wt/x".into(),
@@ -1450,15 +1470,24 @@ mod tests {
             base: "main".into(),
         };
         assert_eq!(
-            worktree_path(Some(&worktree)).unwrap(),
+            worktree_path(Some(&worktree), Some(project)).unwrap(),
             Path::new("C:/wt/x")
+        );
+        assert_eq!(
+            worktree_path(Some(&Environment::Main), Some(project)).unwrap(),
+            project,
+            "main runs in the checkout"
         );
         let design = Environment::Design {
             path: "C:/wt/design".into(),
             branch: "wt/design".into(),
         };
-        for env in [Some(&Environment::Main), Some(&design), None] {
-            let err = worktree_path(env).unwrap_err();
+        for (env, project) in [
+            (Some(&Environment::Main), None),
+            (Some(&design), Some(project)),
+            (None, Some(project)),
+        ] {
+            let err = worktree_path(env, project).unwrap_err();
             assert_eq!(code_of(&err), Some("notAWorktree"), "{env:?}");
         }
     }

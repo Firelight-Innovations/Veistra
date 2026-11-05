@@ -7,9 +7,9 @@
  */
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import { MotionGlobalConfig } from "framer-motion";
 import type { FrameSlots } from "../contract";
 import Frame from "./Frame";
+import frameCss from "./frame.css?raw";
 
 afterEach(cleanup);
 
@@ -120,6 +120,76 @@ describe("Frame's terminal band", () => {
     expect(handle?.previousElementSibling?.getAttribute("data-region")).toBe("toolwindow");
   });
 
+  // Braden's report: with Files beside the editor and Agent, the band opened
+  // under the Files column only, and every column right of it kept the full
+  // height. The band belongs below the whole pane grid, whatever its shape.
+  it("spans every pane column, as the tool window's sibling rather than inside a column", () => {
+    const tree = (
+      <div className="pane-split" data-dir="row">
+        <div className="pane-split__child" data-testid="files">
+          <div className="pane" />
+        </div>
+        <div className="pane-split__child" data-testid="editor">
+          <div className="pane" />
+        </div>
+      </div>
+    );
+    const { container, getByTestId } = render(
+      <Frame
+        kind="main"
+        slots={slots({ toolWindow: tree, bottomPanel: <div>band</div> })}
+        bottomCollapsed={false}
+        bottomHeight={260}
+      />,
+    );
+    const main = container.querySelector(".frame__main") as HTMLElement;
+    const band = container.querySelector('[data-region="bottom"]') as HTMLElement;
+    const handle = container.querySelector('[data-region="bottomhandle"]') as HTMLElement;
+
+    // Children of the column that holds the whole tool window, after it.
+    expect(band.parentElement).toBe(main);
+    expect(handle.parentElement).toBe(main);
+    expect(band.closest(".pane-split__child")).toBeNull();
+    expect(band.closest('[data-region="toolwindow"]')).toBeNull();
+
+    // No column is singled out to sit over or beside the band.
+    expect(container.querySelector("[data-band-under]")).toBeNull();
+    expect(getByTestId("files").hasAttribute("data-band-under")).toBe(false);
+    expect(getByTestId("editor").hasAttribute("data-band-under")).toBe(false);
+    expect(main.hasAttribute("data-band-split")).toBe(false);
+    expect(main.style.getPropertyValue("--band-w")).toBe("");
+
+    // The whole tool window gives up the band's height.
+    expect(main.style.getPropertyValue("--band-h")).toBe("260px");
+  });
+
+  // jsdom cannot lay the band out, so pin the declarations its width rests on:
+  // pinned to both edges of `.frame__main`, with no width of its own to narrow it.
+  it("pins the band and its handle to both edges of the column in the stylesheet", () => {
+    const css = frameCss.replace(/\/\*[\s\S]*?\*\//g, "");
+    const decls = (selector: string) => {
+      const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const body = new RegExp(`(?:^|\\})\\s*${escaped}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? "";
+      return new Map(
+        body
+          .split(";")
+          .filter((d) => d.includes(":"))
+          .map((d) => [d.slice(0, d.indexOf(":")).trim(), d.slice(d.indexOf(":") + 1).trim()]),
+      );
+    };
+    for (const selector of [".frame__bottom", ".frame__bottomhandle"]) {
+      const d = decls(selector);
+      expect(d.get("position"), selector).toBe("absolute");
+      expect(d.get("left"), selector).toBe("0");
+      expect(d.get("right"), selector).toBe("0");
+      expect(d.has("width"), selector).toBe(false);
+    }
+    expect(decls(".frame__main").get("position")).toBe("relative");
+    expect(decls(".frame__main .frame__toolwindow").get("margin-bottom")).toContain("--band-h");
+    expect(css).not.toContain("data-band-under");
+    expect(css).not.toContain("--band-w");
+  });
+
   it("stops a drag where the tool window keeps its minimum", () => {
     const heights: number[] = [];
     const { container } = render(
@@ -144,6 +214,45 @@ describe("Frame's terminal band", () => {
 
     // 600 (column) - 6 (handle) - 120 (tool window minimum) = 474.
     expect(heights).toEqual([474]);
+  });
+
+  /** Every height written to `el` from now on, in order. A spring would write
+   *  the heights in between; an instant toggle writes only where it lands. */
+  const watchHeights = (el: HTMLElement) => {
+    const written: string[] = [];
+    let last = el.style.height;
+    new MutationObserver(() => {
+      if (el.style.height !== last) written.push((last = el.style.height));
+    }).observe(el, { attributes: true, attributeFilter: ["style"] });
+    return written;
+  };
+
+  // Opening and shutting from the toolbar is instant: the band jumps straight
+  // to where it is going, with no spring writing the heights in between.
+  it("opens the band to its height in one step, and shuts it in one step", async () => {
+    const band = <div>band</div>;
+    const at = (collapsed: boolean) => (
+      <Frame
+        kind="main"
+        slots={slots({ bottomPanel: band })}
+        bottomCollapsed={collapsed}
+        bottomHeight={260}
+      />
+    );
+    const { container, rerender } = render(at(true));
+    const bottom = container.querySelector('[data-region="bottom"]') as HTMLElement;
+    expect(bottom.style.height).toBe("0px");
+    const written = watchHeights(bottom);
+
+    rerender(at(false));
+    await waitFor(() => expect(bottom.style.height).toBe("260px"));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(written).toEqual(["260px"]);
+
+    rerender(at(true));
+    await waitFor(() => expect(bottom.style.height).toBe("0px"));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(written).toEqual(["260px", "0px"]);
   });
 
   // Each observer the frame makes, with what it watches and what it runs.
@@ -171,10 +280,6 @@ describe("Frame's terminal band", () => {
 
   it("re-fits a maximized band to the column when the column changes size", async () => {
     observeByHand();
-    // The mount's spring is not under test here, and while one runs, each of its
-    // steps overwrites what the observer writes. Waiting for it to read 0px was
-    // flaky on a slow runner. With animations skipped it lands at once and stops.
-    MotionGlobalConfig.skipAnimations = true;
     try {
       const { container } = render(
         <Frame
@@ -201,12 +306,11 @@ describe("Frame's terminal band", () => {
       await new Promise((r) => setTimeout(r, 300));
       expect(band.style.height).toBe("694px");
     } finally {
-      MotionGlobalConfig.skipAnimations = false;
       restore();
     }
   });
 
-  it("lets a maximized band spring open, though its observer reports as it starts", async () => {
+  it("opens a maximized band to the whole column at once, though its observer reports as it starts", async () => {
     observeByHand();
     // The column's size from the first layout on, as a browser has it before any observer starts.
     Element.prototype.getBoundingClientRect = function (this: Element) {
@@ -219,6 +323,8 @@ describe("Frame's terminal band", () => {
       const { container, rerender } = render(
         <Frame kind="main" slots={slots({ bottomPanel: band })} bottomCollapsed bottomMaximized />,
       );
+      const bottom = container.querySelector('[data-region="bottom"]') as HTMLElement;
+      const written = watchHeights(bottom);
       rerender(
         <Frame
           kind="main"
@@ -236,12 +342,11 @@ describe("Frame's terminal band", () => {
           ?.resized(),
       );
 
-      const bottom = container.querySelector('[data-region="bottom"]') as HTMLElement;
-      await new Promise((r) => setTimeout(r, 100));
-      const midway = parseFloat(bottom.style.height);
-      expect(midway).toBeGreaterThan(0);
-      expect(midway).toBeLessThan(694);
+      // 700 (column) - 6 (handle) = 694, reached in one step from shut.
       await waitFor(() => expect(bottom.style.height).toBe("694px"));
+      await new Promise((r) => setTimeout(r, 100));
+      expect(bottom.style.height).toBe("694px");
+      expect(written.filter((h) => h !== "694px")).toEqual([]);
     } finally {
       restore();
     }

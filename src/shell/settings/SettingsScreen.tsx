@@ -1,43 +1,49 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { motion } from "framer-motion";
+import { X } from "lucide-react";
 import SettingRow from "./SettingRow";
+import SettingsNav from "./SettingsNav";
+import SettingsSection, { SectionsContext, type SectionsState } from "./SettingsSection";
 import McpPanel from "./McpPanel";
 import CloudAccountPanel from "./CloudAccountPanel";
 import BuiltInSkillsPanel from "./BuiltInSkillsPanel";
 import TelemetryPanel from "./TelemetryPanel";
+import ProfilePanel from "./account/ProfilePanel";
+import BillingPanel from "./account/BillingPanel";
+import UsagePanel from "./usage/UsagePanel";
+import {
+  DEFAULT_PAGE,
+  landing,
+  pages as resolvePages,
+  readCollapsed,
+  search,
+  writeCollapsed,
+  type Page,
+  type PanelId,
+  type Section,
+} from "./pages";
 import { settingsBackdrop, settingsScreen } from "../motion";
 import { closeSettings } from "../settingsSurface";
-import { X } from "lucide-react";
 import { CLAIMED_FIELD_CLASS, useTitlebarSearch } from "../titlebarSearch";
-import type { Setting, SettingsGroup } from "../../bindings";
+import type { Setting } from "../../bindings";
 import type { SettingsSession } from "./useSettings";
 import "./settings.css";
 
 /**
- * The settings screen: a header, a list of sections, and the selected one.
+ * The settings screen: a large modal over the dimmed window, with a sidebar of
+ * pages on the left and the picked page's collapsible sections on the right.
+ * `pages.ts` decides which section goes on which page.
  *
- * ## Why it covers the band between the two bars, and not the window
- *
- * The title bar stays because it *is* the window controls: this is a frameless
- * Tauri window, so minimise, maximise and close are drawn by the shell in
- * `.frame__titlebar` rather than by the OS, and covering them would leave the
- * window unclosable for as long as settings was open.
- *
- * The status bar stays for an unrelated reason — it keeps reporting while any
- * transient surface is up, as every one of them in this shell does.
- * `settings.css` spells out both.
+ * The backdrop covers the band between the title bar and the status bar, not
+ * the window. The title bar *is* the window controls in this frameless window,
+ * so covering it would leave the window unclosable while settings was open;
+ * the status bar keeps reporting, as it does under every transient surface.
  *
  * Nothing below is per-setting: every row comes from the schema Rust publishes,
- * so adding a setting is a Rust-only edit. The MCP, Google account, built-in
- * skills and usage data panels are the exceptions; each file says why.
+ * so adding a setting is a Rust-only edit. The panels (MCP, Google account,
+ * built-in skills, telemetry, profile, billing, usage) are the exceptions;
+ * each file says why.
  */
-
-/** The sections that get an extra panel. The only ids this file knows. */
-const MCP_GROUP = "mcp";
-const CLOUD_GROUP = "cloud";
-const SKILLS_GROUP = "skills";
-const TELEMETRY_GROUP = "telemetry";
-
 export default function SettingsScreen({
   session,
   landOn,
@@ -45,46 +51,123 @@ export default function SettingsScreen({
   session: SettingsSession;
   landOn: string | null;
 }) {
-  // `landOn` is read exactly here and nowhere else — an initialiser, so it is
-  // seen once at mount and never again. That is the whole contract: it is a
-  // *request* from whatever opened the screen (an app's own settings button, such
-  // as the canvas's Drawing style), not a selection. Once the sidebar has been clicked, `picked` is
-  // the answer and an unchanged prop cannot take it back. Making this controlled
-  // would mean a click that the next render silently undid.
-  const [picked, setPicked] = useState<string | null>(landOn);
-  const [filter, setFilter] = useState("");
+  // What was asked for: a page id or a section id. Seeded from `landOn` once;
+  // after that a sidebar click is the answer, and only a *new* request from
+  // outside (the avatar menu while the screen is up) replaces it.
+  const [request, setRequest] = useState<string | null>(landOn);
+  const lastLandOn = useRef(landOn);
+  useEffect(() => {
+    if (landOn === lastLandOn.current) return;
+    lastLandOn.current = landOn;
+    if (landOn !== null) {
+      setRequest(landOn);
+      setFilter("");
+    }
+  }, [landOn]);
 
-  // One search bar on screen: this screen's filter lives in the title bar's
-  // field rather than in a second one beneath it. Escape is left to the
-  // listener below, which closes the screen.
+  const [filter, setFilter] = useState("");
+  const [collapsed, setCollapsed] = useState(() => readCollapsed(storage()));
+  // Folds made during a search, forgotten as the search changes, so a search
+  // never rewrites what is remembered.
+  const [searchFolded, setSearchFolded] = useState<Set<string>>(new Set());
+  useEffect(() => setSearchFolded(new Set()), [filter]);
+
   useTitlebarSearch({ placeholder: "Search settings", value: filter, onChange: setFilter });
 
-  // Escape closes, and this is deliberately a listener on `document` rather than
-  // an entry in `../keys/useKeyboard.ts`. That hook is the *window's* accelerator
-  // table — it lives in a region this one may not import (STANDARDS.md §1.2), and
-  // it is scoped to a window where this screen is mounted above one. A
-  // full-window surface that swallows Escape is the one case where a local
-  // listener is the correct shape rather than a shortcut: the key means "leave
-  // this surface", and the surface is the only thing that knows it is up.
+  const all = useMemo(() => resolvePages(session.groups), [session.groups]);
+  const visible = useMemo(() => all.filter((p) => p.sections.length > 0), [all]);
+  const landed = landing(request, visible);
+  // A page with nothing on it yet (the snapshot has not landed) is not shown;
+  // the first page that has something is, until it does.
+  const page: Page | null =
+    visible.find((p) => p.id === landed.page) ??
+    visible.find((p) => p.id === DEFAULT_PAGE) ??
+    visible[0] ??
+    null;
+
+  // A deep link's section is unfolded, once per request, and remembered open.
+  const unfoldedFor = useRef<string | null>(null);
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
+    if (landed.section === null || unfoldedFor.current === request) return;
+    unfoldedFor.current = request;
+    setCollapsed((prev) => {
+      if (!prev.has(landed.section as string)) return prev;
+      const next = new Set(prev);
+      next.delete(landed.section as string);
+      writeCollapsed(storage(), next);
+      return next;
+    });
+  }, [landed.section, request]);
+
+  const needle = filter.trim();
+  const filtering = needle !== "";
+  const found = useMemo(
+    () => (filtering ? search(visible, needle) : []),
+    [visible, needle, filtering],
+  );
+
+  const go = useCallback((next: string) => {
+    setRequest(next);
+    setFilter("");
+  }, []);
+
+  const sections: SectionsState = useMemo(
+    () => ({
+      isOpen: (id) => (filtering ? !searchFolded.has(id) : !collapsed.has(id)),
+      toggle: (id) => {
+        const flip = (prev: Set<string>) => {
+          const next = new Set(prev);
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+          return next;
+        };
+        if (filtering) {
+          setSearchFolded(flip);
+          return;
+        }
+        setCollapsed((prev) => {
+          const next = flip(prev);
+          writeCollapsed(storage(), next);
+          return next;
+        });
+      },
+      needle: filtering ? needle : "",
+      landing: filtering ? null : landed.section,
+      go,
+    }),
+    [filtering, searchFolded, collapsed, needle, landed.section, go],
+  );
+
+  // Escape closes. A listener on `document` rather than an entry in the
+  // window's accelerator table (`../keys/useKeyboard.ts`), which is a region
+  // this one may not import; stopped so it does not also reach the surface
+  // behind (closing a terminal's find bar on the way out, say).
+  // Ctrl+F is caught in the capture phase, before the window's own find.
+  const searchRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const onEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      // Stopped here so it does not also reach whatever the window behind would
-      // have done with it — closing a terminal's find bar, say, on the way out.
       event.stopPropagation();
       closeSettings();
     };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
+    const onFind = (event: globalThis.KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "f") return;
+      event.preventDefault();
+      event.stopPropagation();
+      searchRef.current?.focus();
+      searchRef.current?.select();
+    };
+    document.addEventListener("keydown", onEscape);
+    document.addEventListener("keydown", onFind, true);
+    return () => {
+      document.removeEventListener("keydown", onEscape);
+      document.removeEventListener("keydown", onFind, true);
+    };
   }, []);
 
-  // Focus comes into the screen when it opens. Ctrl+, can open it from a
-  // terminal, a field or an app's frame, and focus left there would send typing
-  // to the surface behind and keep Escape from ever reaching the listener above.
-  // On the way out it goes back, unless something else took it first: a click
-  // on the status bar's git controls, say, which shut this screen. The title
-  // bar's field counts as the screen's own while claimed: the filter is typed
-  // there, and it turns back into a button as the claim is released.
+  // Focus comes into the screen when it opens, so typing does not reach the
+  // surface behind, and goes back on the way out unless something else took
+  // it first. The title bar's claimed field counts as the screen's own.
   const dialog = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const before = document.activeElement;
@@ -103,43 +186,22 @@ export default function SettingsScreen({
     };
   }, []);
 
-  const needle = filter.trim().toLowerCase();
-  const filtering = needle !== "";
-
-  // Resolving `picked` against the real groups is derived, not an effect that
-  // writes it back. `groups` is empty until the first snapshot arrives, so an
-  // effect would run twice and still leave one frame with no section on screen —
-  // and an effect that corrected `picked` would be a second writer racing the
-  // user's click. This reads the state without touching it, and does the "land
-  // on the first section if that id is not registered" rule for free.
-  //
-  // Typed as nullable because it genuinely is: before the snapshot lands there
-  // is no index 0 to fall back to.
-  const selected: SettingsGroup | null =
-    session.groups.find((group) => group.id === picked) ?? session.groups[0] ?? null;
-
-  const found = useMemo(
-    () => (filtering ? matching(session.groups, needle) : []),
-    [session.groups, needle, filtering],
-  );
+  const content = useRef<HTMLDivElement>(null);
+  const pick = (id: string) => {
+    go(id);
+    content.current?.scrollTo?.({ top: 0 });
+  };
 
   return (
-    /* Two motion elements, and neither of them moves a box. The backdrop dims
-       and the screen settles forward out of it — the shape a sheet arrives in,
-       rather than search's unroll, because settings is a place you go to and not
-       an extension of the control that opened it. Both halves are paint-only
-       (`opacity` and `transform`); see the settings block in `../motion` for why
-       a screen full of scroll containers must not animate its own box. */
+    /* Both motion elements are paint-only (`opacity`, `transform`); see the
+       settings block in `../motion` for why this screen must not animate a box. */
     <motion.div
       className="settings__backdrop"
       variants={settingsBackdrop}
       initial="initial"
       animate="animate"
       exit="exit"
-      // Only a click that landed on the backdrop itself. Comparing target to
-      // currentTarget rather than stopping propagation on the surface, because
-      // the surface is full of controls and a blanket `stopPropagation` there
-      // would be a rule every one of them has to keep working around.
+      // Only a click on the backdrop itself, not one that bubbled from inside.
       onClick={(event) => {
         if (event.target === event.currentTarget) closeSettings();
       }}
@@ -152,11 +214,10 @@ export default function SettingsScreen({
         aria-modal="true"
         aria-label="Settings"
         tabIndex={-1}
+        onKeyDown={(event) => trapTab(event, dialog.current)}
       >
         <header className="settings__header">
           <h1 className="settings__heading">Settings</h1>
-          {/* The filter is typed in the title bar's search field, which this
-              screen claims while it is mounted — see `useTitlebarSearch` above. */}
           <button
             type="button"
             className="k-btn k-btn--ghost k-btn--icon k-btn--lg"
@@ -167,9 +228,8 @@ export default function SettingsScreen({
           </button>
         </header>
 
-        {/* A refusal, not a failure to load: the value on screen has already
-            been rolled back by the time this appears, so it explains a control
-            that snapped back rather than warning about one that will. */}
+        {/* A refusal, not a failure to load: the value has already been rolled
+            back, so this explains a control that snapped back. */}
         {session.error !== null && (
           <p className="settings__error" role="alert">
             {session.error}
@@ -177,61 +237,38 @@ export default function SettingsScreen({
         )}
 
         <div className="settings__body">
-          <nav
-            className="settings__nav"
-            role="tablist"
-            aria-label="Settings sections"
-            data-dimmed={filtering || undefined}
-          >
-            {session.groups.map((group) => {
-              const changed = session.changedIn(group);
-              const current = selected !== null && selected.id === group.id;
-              return (
-                <button
-                  key={group.id}
-                  type="button"
-                  role="tab"
-                  className="settings__nav-item"
-                  aria-selected={current}
-                  data-current={current || undefined}
-                  onClick={() => {
-                    setPicked(group.id);
-                    // Picking a section while a filter is up has to clear it, or
-                    // the click changes the highlighted row and nothing else —
-                    // the flat list is still what the pane is showing.
-                    setFilter("");
-                  }}
-                >
-                  <span className="settings__nav-title">{group.title}</span>
-                  {changed > 0 && (
-                    <span
-                      className="k-badge k-badge--count"
-                      title={`${changed} changed from the default`}
-                    >
-                      {changed}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </nav>
+          <SettingsNav
+            pages={visible}
+            current={page?.id ?? ""}
+            filter={filter}
+            onFilter={setFilter}
+            onPick={pick}
+            session={session}
+            searchRef={searchRef}
+          />
 
           <div
+            ref={content}
             className="settings__content"
-            role="tabpanel"
-            aria-label={filtering ? "Matching settings" : (selected?.title ?? "Settings")}
+            role="region"
+            aria-label={filtering ? "Matching settings" : (page?.title ?? "Settings")}
           >
-            {/* Nothing at all until the first snapshot lands, and no spinner —
-                the frame is already drawn, and a loader inside it for the few
-                milliseconds an in-process read takes reads as a fault rather
-                than as progress. The same call `SearchOverlay` makes. */}
-            <div className="settings__column">
-              {filtering ? (
-                <Matches found={found} typed={filter.trim()} session={session} />
-              ) : (
-                selected !== null && <Section group={selected} session={session} />
-              )}
-            </div>
+            <SectionsContext.Provider value={sections}>
+              <div className="settings__page">
+                {filtering ? (
+                  <Results found={found} typed={needle} session={session} />
+                ) : (
+                  page !== null && (
+                    <>
+                      <h2 className="settings__page-title">{page.title}</h2>
+                      {page.sections.map((section) => (
+                        <SectionView key={section.id} section={section} session={session} />
+                      ))}
+                    </>
+                  )
+                )}
+              </div>
+            </SectionsContext.Provider>
           </div>
         </div>
       </motion.div>
@@ -239,103 +276,123 @@ export default function SettingsScreen({
   );
 }
 
-/** One section: what it is for, a way to undo it, and everything in it. */
-function Section({ group, session }: { group: SettingsGroup; session: SettingsSession }) {
+/** localStorage, or nothing where it cannot be reached. */
+function storage(): Storage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+/** Tab and Shift+Tab stay inside the modal, the loop `../dialogs/Dialog.tsx` uses. */
+function trapTab(event: KeyboardEvent, root: HTMLElement | null): void {
+  if (event.key !== "Tab" || root === null) return;
+  const items = Array.from(
+    root.querySelectorAll<HTMLElement>("a[href], button, input, select, textarea, [tabindex]"),
+  ).filter((el) => !(el as HTMLButtonElement).disabled && el.getAttribute("tabindex") !== "-1");
+  if (items.length === 0) return;
+  const first = items[0];
+  const last = items[items.length - 1];
+  const active = document.activeElement;
+  const inside = active instanceof HTMLElement && items.includes(active);
+  if (!inside || (event.shiftKey && active === first)) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+  } else if (!event.shiftKey && active === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function PanelFor({ id }: { id: PanelId }) {
+  switch (id) {
+    case "profile":
+      return <ProfilePanel />;
+    case "billing":
+      return <BillingPanel />;
+    case "usage":
+      return <UsagePanel />;
+  }
+}
+
+/** One section of a page: a panel draws its own; a schema group is drawn here. */
+function SectionView({
+  section,
+  session,
+  rows,
+}: {
+  section: Section;
+  session: SettingsSession;
+  /** The rows a search matched. Absent: every row, with the group's panels. */
+  rows?: Setting[];
+}) {
+  if (section.panel !== null) return <PanelFor id={section.panel} />;
+  const group = section.group;
+  if (group === null) return null;
   const changed = session.changedIn(group);
+  const searching = rows !== undefined;
 
   return (
-    <>
-      <div className="settings__section-head">
-        <div className="settings__section-text">
-          <h2 className="settings__section-title">{group.title}</h2>
-          {group.description !== "" && (
-            <p className="settings__section-description">{group.description}</p>
-          )}
-        </div>
-        {/* Disabled rather than hidden. A control that vanishes when there is
-            nothing to do is a control nobody learns is there, and its disabled
-            state is itself the answer to "have I changed anything in here". */}
+    <SettingsSection
+      id={section.id}
+      title={section.title}
+      description={section.description}
+      actions={
+        // Disabled rather than hidden: its disabled state is the answer to
+        // "have I changed anything in here".
         <button
           type="button"
-          className="k-btn k-btn--secondary k-btn--sm"
+          className="k-btn k-btn--ghost k-btn--sm"
           disabled={changed === 0}
           onClick={() => session.resetGroup(group)}
         >
-          Reset section
+          Reset
         </button>
-      </div>
-
-      {group.id === MCP_GROUP && <McpPanel />}
-      {group.id === CLOUD_GROUP && <CloudAccountPanel />}
-      {group.id === TELEMETRY_GROUP && <TelemetryPanel />}
-
-      {/* The skills panel draws each mode row inside its skill's card. */}
-      {group.id === SKILLS_GROUP ? (
+      }
+    >
+      {!searching && group.id === "mcp" && <McpPanel />}
+      {!searching && group.id === "cloud" && <CloudAccountPanel />}
+      {!searching && group.id === "telemetry" && <TelemetryPanel />}
+      {!searching && group.id === "skills" ? (
         <BuiltInSkillsPanel group={group} session={session} />
       ) : (
-        group.settings.map((setting) => (
+        (rows ?? group.settings).map((setting) => (
           <SettingRow key={setting.key} setting={setting} session={session} />
         ))
       )}
-    </>
+    </SettingsSection>
   );
 }
 
-/**
- * Everything the filter matched, from every section at once.
- *
- * Sections become sticky headings rather than a nav selection, because the point
- * of typing is that you do not know which section it is in. The MCP panel is
- * deliberately absent: it is not a setting and has no title, description or key
- * to match against, so a filter cannot honestly say whether it belongs here.
- */
-function Matches({
+/** Everything a search matched, page by page, every section open. */
+function Results({
   found,
   typed,
   session,
 }: {
-  found: Match[];
+  found: ReturnType<typeof search>;
   typed: string;
   session: SettingsSession;
 }) {
   if (found.length === 0) {
     return <p className="settings__empty">No setting matches “{typed}”.</p>;
   }
-
   return (
     <>
-      {found.map(({ group, settings }) => (
-        <div className="settings__matches" key={group.id}>
-          <h2 className="settings__matches-heading">{group.title}</h2>
-          {settings.map((setting) => (
-            <SettingRow key={setting.key} setting={setting} session={session} />
+      {found.map(({ page, sections }) => (
+        <div className="settings__result" key={page.id}>
+          <h2 className="settings__result-page">{page.title}</h2>
+          {sections.map(({ section, settings }) => (
+            <SectionView
+              key={section.id}
+              section={section}
+              session={session}
+              rows={settings ?? undefined}
+            />
           ))}
         </div>
       ))}
     </>
   );
-}
-
-interface Match {
-  group: SettingsGroup;
-  settings: Setting[];
-}
-
-/**
- * Sections that have something matching in them, in the order they already sit.
- *
- * Matches on the key as well as the visible text, which is not a developer
- * affordance: a key is what an error message, a support answer or a colleague
- * names a setting by, and `terminal.scrollback` should find its row whether or
- * not the title happens to contain the word.
- */
-function matching(groups: SettingsGroup[], needle: string): Match[] {
-  const found: Match[] = [];
-  for (const group of groups) {
-    const settings = group.settings.filter((setting) =>
-      `${setting.title} ${setting.description} ${setting.key}`.toLowerCase().includes(needle),
-    );
-    if (settings.length > 0) found.push({ group, settings });
-  }
-  return found;
 }

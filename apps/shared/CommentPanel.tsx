@@ -19,8 +19,8 @@ export interface CommentPanelProps {
   error: string | null;
   onResolve: (id: string, note: string) => void | Promise<void>;
   /**
-   * Looks good or Still broken on a comment an agent marked fixed. Without
-   * it a fixed comment can only be resolved with a note, like an open one.
+   * Resolve ("good") or Still broken on a comment an agent completed. Without
+   * it a completed comment can only be resolved with a note, like an open one.
    */
   onVerdict?: (id: string, verdict: Verdict, reply?: string) => void | Promise<void>;
   /** What to say when there is nothing to show — each viewer's own honest
@@ -117,8 +117,7 @@ function CommentCard({
     if (!onVerdict) return;
     setBusy(true);
     try {
-      await onVerdict(comment.id, v, v === "broken" ? note.trim() || undefined : undefined);
-      setNote("");
+      await onVerdict(comment.id, v);
     } finally {
       setBusy(false);
     }
@@ -155,15 +154,12 @@ function CommentCard({
         </p>
       )}
 
+      {/* The agent says it is done: a note to check and resolve it, not a form. */}
       {fixedByAgent && onVerdict && (
-        <div className="k-comment-card__resolve-form">
-          <textarea
-            className="k-comment-card__resolve-input"
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            placeholder="If it is still broken, say what you saw"
-            rows={2}
-          />
+        <div className="k-comment-card__done">
+          <p className="k-comment-card__done-note" role="note">
+            The agent completed this. Check it, then resolve it.
+          </p>
           <div className="k-comment-card__resolve-actions">
             <button type="button" onClick={() => void verdict("broken")} disabled={busy}>
               Still broken
@@ -174,7 +170,7 @@ function CommentCard({
               onClick={() => void verdict("good")}
               disabled={busy}
             >
-              Looks good
+              Resolve
             </button>
           </div>
         </div>
