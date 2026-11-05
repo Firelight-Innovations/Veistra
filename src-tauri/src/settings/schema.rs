@@ -681,17 +681,36 @@ static CLOUD: Group = Group {
 // The Veistra account (`crate::account`): sign-in, usage and limits. The
 // addresses are settings because neither is a secret; the sign-in itself is a
 // credential and goes to the OS credential store.
+//
+// Both defaults are the live production service, so every build signs in
+// without setup. Rejected: an empty default filled in at build time. That is
+// what shipped first, and every build made without the variable said
+// "Veistra accounts are not set up on this build", silently. The address is
+// public (it is in every request the app sends), like `wire::CLIENT_ID`.
+//
+// `webUrl` is Firebase Hosting's own domain, not veistra.com, until veistra.com
+// moves off Render: Render serves the static pages but has no `/api`, so its
+// dashboard could not sign anyone in. It is also the origin the service sends
+// in `verification_uri`, so the approve page and "Manage on veistra.com" land
+// on the same site, with the same session cookie. Change both defaults back to
+// veistra.com with the DNS move (the website's `docs/firebase-hosting.md`).
+
+/// The account service on Cloud Run, called directly: Hosting would cut a
+/// request at 60 s (`docs/account-api.md`, Base address).
+pub const DEFAULT_ACCOUNT_API: &str = "https://account-622707038832.us-central1.run.app";
+/// The website the account pages and the docs are read from.
+pub const DEFAULT_ACCOUNT_WEB: &str = "https://veistra-prod.web.app";
 
 static ACCOUNT_SETTINGS: &[Setting] = &[
     Setting {
         key: keys::ACCOUNT_API_URL,
         title: "Account service URL",
-        description: "The Veistra account service the app signs in and reads usage through: the \
-                      `api` service's run.app address, everything before /v1. Empty until it is \
-                      deployed, and the app skips the sign-in screen until it is set.",
+        description: "The Veistra account service the app signs in and reads usage through: its \
+                      run.app address, everything before /v1. Empty turns Veistra accounts off \
+                      in this build.",
         control: Control::Text {
-            default: "",
-            placeholder: "https://api-….us-central1.run.app",
+            default: DEFAULT_ACCOUNT_API,
+            placeholder: DEFAULT_ACCOUNT_API,
         },
         applies: Applies::Next {
             what: "the next sign-in or usage read",
@@ -700,10 +719,10 @@ static ACCOUNT_SETTINGS: &[Setting] = &[
     Setting {
         key: keys::ACCOUNT_WEB_URL,
         title: "Website",
-        description: "Where Open on veistra.com and Manage account go.",
+        description: "Where the Docs pages and the veistra.com links are read from.",
         control: Control::Text {
-            default: "https://veistra.com",
-            placeholder: "https://veistra.com",
+            default: DEFAULT_ACCOUNT_WEB,
+            placeholder: DEFAULT_ACCOUNT_WEB,
         },
         applies: Applies::Next {
             what: "the next link opened",

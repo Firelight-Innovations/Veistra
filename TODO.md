@@ -10,11 +10,12 @@ before it is built.
 
 1. **There is no Veistra harness yet.** Agents run inside whatever harness the
    terminal or agent tab launches; Veistra has no agent harness of its own.
-2. **Login and usage do not work yet.** Settings → Account, Billing and Usage
-   and the account menu in the title bar are drawn, but signing in and reading
-   usage do not complete end to end. Start from `src/shell/account/`,
-   `src/shell/settings/account/`, `src/shell/settings/usage/` and the
-   `account/*` calls in `src-tauri`.
+2. **Login and usage: wired, not yet checked on Windows.** The app now defaults
+   to the live account service and to `veistra-prod.web.app`, and the service
+   answers usage and runs (`docs/account-api.md`). Still open: one sign-in in a
+   real Veistra from a clean profile, sign-out, and a restart that stays signed
+   in; and recording runs (`POST /v1/runs`), without which the usage page's
+   run counts stay at zero. Billed totals stay at zero until the gateway exists.
 3. **Agents output only scripts, not the finished artifact.** Asked for a game
    (Elijah's game, for example), an agent writes the scripts and stops: there is
    no built, runnable result at the end. The deliverable should be the artifact

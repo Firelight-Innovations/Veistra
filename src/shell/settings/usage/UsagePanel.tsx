@@ -17,6 +17,7 @@ import SettingsSection, { useSections } from "../SettingsSection";
 import {
   type DayBar,
   type Range,
+  alertTitle,
   type Run,
   type Runs,
   type Source,
@@ -234,8 +235,12 @@ function Overview({ usage }: { usage: Usage }) {
       {limit && (
         <>
           <BreakdownRow
-            name={`Alert at ${limit.alert_pct}%`}
-            detail="An email when spend crosses it, once a month."
+            name={alertTitle(limit)}
+            detail={
+              limit.alert_pct === null
+                ? "No email is sent as spend nears the limit."
+                : "An email when spend crosses it, once a month."
+            }
           />
           <BreakdownRow
             name={
@@ -336,7 +341,8 @@ function Bar({ bar, top }: { bar: DayBar; top: number }) {
 
 function RunsTable({ runs, now }: { runs: Run[] | null; now: Date }) {
   if (runs === null) return null;
-  if (runs.length === 0) return <p className="settings-usage__cap">No runs in this range yet.</p>;
+  // Runs are the newest of every range: `/v1/runs` takes a project, not dates.
+  if (runs.length === 0) return <p className="settings-usage__cap">No runs yet.</p>;
   return (
     <table className="settings-usage__table">
       <thead>
@@ -395,12 +401,12 @@ function BlockedNote({
     return (
       <div className="settings-usage__blocked">
         <p className="settings-usage__cap">
-          Veistra accounts are not set up on this build. The account service address goes in
-          Settings, Account.
+          Veistra accounts are not set up on this build: the account service address is empty. It is
+          under Developer, Account service.
         </p>
         {go && (
-          <button type="button" className="k-btn k-btn--secondary" onClick={() => go("account")}>
-            Open Account
+          <button type="button" className="k-btn k-btn--secondary" onClick={() => go("developer")}>
+            Open Developer
           </button>
         )}
       </div>

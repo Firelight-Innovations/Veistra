@@ -34,7 +34,8 @@ export interface Me {
 export interface Limit {
   monthly_limit_micros: number;
   spent_this_period_micros: number;
-  alert_pct: number;
+  /** `null` when the 80% email is off, which the dashboard can do. */
+  alert_pct: number | null;
   pause_at_limit: boolean;
   projected_date: string | null;
 }

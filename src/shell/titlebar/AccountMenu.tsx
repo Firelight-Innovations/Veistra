@@ -130,7 +130,12 @@ export default function AccountMenu({
   const label = accountLabel(account.status);
   const items = accountMenuItems(account.status, {
     openSettings: onOpenSettings,
-    signIn: () => void account.signIn(),
+    // The menu has nowhere to say why a sign-in could not start (the service
+    // unreachable, say), so a refusal opens the Account page, which does.
+    signIn: () =>
+      void account.signIn().then((ok) => {
+        if (!ok) onOpenSettings("account");
+      }),
     cancelSignIn: () => void account.cancelSignIn(),
     signOut: () => void account.signOut(),
     openWeb: (page) => void accountCall("account/open-web", { page }).catch(() => {}),

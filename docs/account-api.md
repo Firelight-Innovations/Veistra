@@ -1,7 +1,8 @@
 # Account API: what the desktop app sends
 
-The desktop app's half of the contract with the Veistra account service (`api` in the
-`veistra-cloud` repo). The system design doc ("Veistra Accounts, Dashboard and Docs: System
+The desktop app's half of the contract with the Veistra account service, which lives in the
+website repository (Firelight-Innovations/Veistra-Website, `services/account/`; its half is that
+repository's `docs/account-api.md`). The system design doc ("Veistra Accounts, Dashboard and Docs: System
 Design") decides the behaviour; this page pins the requests and replies the app depends on.
 `src-tauri/src/account/` implements it, and `account/tests.rs` runs every case below against a
 scripted server.
@@ -12,9 +13,22 @@ request.
 ## Base address
 
 The app calls Cloud Run's `run.app` address directly, never through Firebase Hosting, which cuts
-requests at 60 s. The address is the `account.apiUrl` setting (Settings, Account), or the
-`VEISTRA_ACCOUNT_API` environment variable, and is everything before `/v1`. Empty means "not
-deployed yet": the app shows no sign-in screen, and Settings → Account says so.
+requests at 60 s. The address is everything before `/v1`:
+
+- the `VEISTRA_ACCOUNT_API` environment variable, for an agent's instance pointed at a test
+  service;
+- else the `account.apiUrl` setting (Settings → Developer → Account service), whose default is the
+  production service, `https://account-622707038832.us-central1.run.app`.
+
+Empty turns Veistra accounts off in that build: the app shows no sign-in screen, and Settings →
+Account and Usage say so.
+
+`account.webUrl` is the website: the approve page, "Manage on veistra.com", "Open on veistra.com"
+and the Docs pages. Its default is `https://veistra-prod.web.app`, Firebase Hosting's own domain,
+until veistra.com moves off Render. Render serves the static pages but has no `/api`, so its
+dashboard cannot sign anyone in. It is also the origin the service puts in `verification_uri`, so
+the browser holds one session cookie for both. Both defaults go back to veistra.com with the DNS
+move.
 
 The shell reads these endpoints through the `account/*` methods (`src-tauri/src/account/`): Home
 calls them as an app, and the shell's title-bar avatar and Settings' Account, Billing and Usage
@@ -67,7 +81,14 @@ The app waits `interval` seconds before each poll (5 if absent) and reacts to:
 | 400 `access_denied` | Stops; shows "Sign-in cancelled" (the approve screen's Cancel calls deny) |
 | 400 `expired_token` | Stops; shows "This code expired" |
 | No answer (network) | Polls again until the code's own expiry |
+| 5xx, or 429 (Cloud Run's own front end) | Polls again until the code's own expiry: the service leaves an approved code approved, so a later poll collects the tokens |
+| Any other error | Stops; shows the problem's `detail` (else `title`) |
 | 200 tokens | Calls `GET /v1/me`, stores the refresh token, shows "Signed in" |
+
+`access_denied` also answers a denied code that has since expired, a code approved for an account
+that was disabled before the app collected it, and a code whose device was signed out first. All
+read as "Sign-in cancelled". An approval in a code's last seconds keeps it alive one more minute,
+so the next poll still collects the tokens.
 
 The app also stops on its own once `expires_in` has passed, without another request.
 
@@ -81,8 +102,11 @@ Form: `grant_type=refresh_token`, `refresh_token`, `client_id`. The reply has th
 **new** `refresh_token`; the app writes it to Windows Credential Manager before it uses the new
 access token.
 
-- `400 invalid_grant` (revoked, expired, or the family ended after reuse): the app deletes its
-  stored token and shows the sign-in screen.
+- `400 invalid_grant` (revoked, expired, the account disabled, or the family ended after reuse):
+  the app deletes its stored token and shows the sign-in screen.
+- `429` with `Retry-After: 60` (this address's refresh budget is spent): the app keeps its refresh
+  token, shows the problem's words ("Too many requests. Wait a minute, then try again."), and the
+  next read tries again. It never signs out on a 429 or a 5xx.
 - The app never sends two refreshes at once. Two requests with the same token would look like a
   copied token and end the device's family.
 - If a refresh reply is lost on the network, the server has already rotated the token and the
@@ -93,6 +117,17 @@ access token.
 
 Form: `token`, `token_type_hint=refresh_token`, `client_id`. Any reply is accepted; the app forgets
 the token locally whatever happens.
+
+### Rate limits
+
+Each Cloud Run instance keeps its limits in memory, one budget per purpose: device codes and the
+token endpoint per address, run writes per device. The address is the last `X-Forwarded-For`
+entry Google's front end saw, which for the app (calling `run.app` directly) is its own. IPv6 is
+counted by /64.
+
+- `POST /v1/device/code` over its limit: `429` problem, `Retry-After: 60`. The app shows its words.
+- A device-code poll over its limit: `400 {"error": "slow_down"}`, never a 429 problem.
+- A refresh over its limit: `429`, as above.
 
 ## Reads
 
@@ -138,9 +173,17 @@ All take `Authorization: Bearer <access token>`.
 }
 ```
 
-`limit` is `null` when the workspace has no limit. `projected_date` is computed by the server
-(remaining budget over the last 7 days' average daily spend) and is `null` with fewer than 3 days
-of data, so the web and the app never disagree about it.
+`limit` is `null` when the workspace has no limit. `limit.alert_pct` is `null` when the 80% email
+is off, which the dashboard can do; Settings → Usage then says "No spend alert". `projected_date`
+is computed by the server (remaining budget over the last 7 days' average daily spend) and is
+`null` with fewer than 3 days of spend or when it falls after the billing period, so the web and
+the app never disagree about it. The app never recomputes it.
+
+Days are UTC calendar days, and `period` is the current UTC month. `7d` and `30d` end today and
+include it. `by_source` lists only sources with spend in the range, and `daily` only days with
+spend; the chart fills the gaps with zero. `projects` names every project the workspace has used,
+whatever the filter. Billed sources are written by the service's own gateway and workers, which
+are not built yet, so every billed total is `0` until they are.
 
 ### `GET /v1/runs[?project=<name>&cursor=<opaque>&limit=<n>]`
 
@@ -162,10 +205,36 @@ Newest first.
 
 `harness` is one of `veistra_harness`, `claude_code`, `codex`, `cloud_worker`, `gpu_render`.
 `status` is `running`, `finished` or `failed`. `billed: false` rows (own Claude, own Codex) show
-"Your plan" in place of a cost.
+"Your plan" in place of a cost. `limit` defaults to 20 and is capped at 100; `next_cursor` is
+opaque, and a cursor the service did not send is `400`. The runs are the newest of every range:
+this endpoint takes a project, not dates.
 
 ## Not yet sent by the app
 
-- `POST`, `PATCH /v1/runs` (recording runs, including unbilled ones).
-- `POST /v1/models/messages` on the gateway. The access token for it comes from
-  `Account::access_token`.
+### `POST /v1/runs`, `PATCH /v1/runs/{id}`
+
+Served, and not yet called: the app does not record runs yet, so `unbilled_runs` and the runs
+table stay empty until it does. Deciding what one run is (an agent tab's send, its session, a
+terminal agent) comes first. As the service takes them:
+
+- Bearer token and a JSON body. A cookie is refused, so the website cannot write a run.
+- `POST` body: `{"id": "<UUID the app chooses>", "name": "…", "project": "…", "harness":
+  "claude_code" | "codex"}`. The service sets `started_at` and `status: "running"`, and answers
+  `201` with the run in the `/v1/runs` shape. The same `id` again answers the same run, so a retry
+  after a lost reply is still one run; there is no `Idempotency-Key` header. Another workspace's
+  `id` is `409`.
+- A billed harness is `400`: a client never states a cost. Billed runs come from the service's own
+  meters.
+- `PATCH` body: `{"status": "finished" | "failed", "tokens": 560000 | null}`. Answers the run. A
+  billed run, or another workspace's, is `404`.
+- Run writes have their own budget per device.
+
+### The gateway
+
+`POST /v1/models/messages`. The access token for it comes from `Account::access_token`.
+
+## Known gap
+
+If the reply to a successful refresh is lost on the network, the server has already rotated the
+token, so the app's retry with the old one reads as reuse and ends the family: the person signs
+in again. Nothing on either side can tell that apart from a copied token (website review, F40).

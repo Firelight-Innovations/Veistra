@@ -18,8 +18,9 @@ Two things, both plain text the site already publishes:
 | The index | `{web}/llms.txt` | The contents rail, the overview, Home's cards |
 | One page | `{web}/docs/<path>.md` | The page itself, as Markdown |
 
-`{web}` is the `account.webUrl` setting, `https://veistra.com` by default, so a
-staging site works the same way.
+`{web}` is the `account.webUrl` setting, so a staging site works the same way.
+Its default is `https://veistra-prod.web.app` until veistra.com moves off Render
+(`docs/account-api.md`, Base address); both serve the same build of the site.
 
 `llms.txt` is the [llms.txt](https://llmstxt.org) shape: a `# Title`, a
 `> summary`, then `## Section` headings, each over a list of

@@ -26,7 +26,8 @@ export interface SourceTotal {
 export interface Limit {
   monthly_limit_micros: number;
   spent_this_period_micros: number;
-  alert_pct: number;
+  /** `null` when the 80% email is off, which the dashboard can do. */
+  alert_pct: number | null;
   pause_at_limit: boolean;
   projected_date: string | null;
 }
@@ -206,11 +207,27 @@ export function usedLabel(limit: Limit): string {
   return `${shown}% used`;
 }
 
-/** The one sentence under the page's header: where this month stands. */
+/** `Alert at 80%`, or that there is none. */
+export function alertTitle(limit: Limit): string {
+  return limit.alert_pct === null ? "No spend alert" : `Alert at ${limit.alert_pct}%`;
+}
+
+/**
+ * The one sentence under the page's header: where this month stands. With no
+ * limit there is no month's figure in the reply, only the range's total, so
+ * the sentence names the range unless the range is the month.
+ */
 export function statusSentence(usage: Usage): string {
   const limit = usage.limit;
-  const spent = money(limit?.spent_this_period_micros ?? usage.totals.cost_micros);
-  if (limit === null) return `You've spent ${spent} this month. No monthly limit is set.`;
+  if (limit === null) {
+    const spent = money(usage.totals.cost_micros);
+    const when =
+      usage.range.from === usage.period.from
+        ? "this month"
+        : `from ${shortDate(usage.range.from)} to ${shortDate(usage.range.to)}`;
+    return `You've spent ${spent} ${when}. No monthly limit is set.`;
+  }
+  const spent = money(limit.spent_this_period_micros);
   if (spentPercent(limit) >= 100) {
     return `You've reached your ${money(limit.monthly_limit_micros)} monthly limit.`;
   }
