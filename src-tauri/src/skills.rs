@@ -50,6 +50,8 @@ pub struct File {
 pub enum Trigger {
     /// The session is canvas work: see [`Signals`].
     CanvasWork,
+    /// The session is Godot work: see [`Signals`].
+    GodotWork,
 }
 
 /// A skill this build ships.
@@ -102,8 +104,23 @@ pub static AGENT_READY_CANVAS: Bundled = Bundled {
     ],
 };
 
+/// The Godot skill, on for Godot work unless the user says otherwise. An agent
+/// asked for a game wrote the scripts and stopped, leaving nothing that runs
+/// (TODO.md, known issue 3); this is what it was missing. With it the agent
+/// gets the Godot path in [`crate::godot::AGENT_ENV`] (see [`godot_path_wanted`]).
+pub static FINISH_GODOT_GAME: Bundled = Bundled {
+    name: "finish-godot-game",
+    setting: keys::SKILLS_FINISH_GODOT_GAME,
+    trigger: Trigger::GodotWork,
+    files: &[
+        skill_file!("finish-godot-game", "SKILL.md"),
+        skill_file!("finish-godot-game", "references/godot-text-formats.md"),
+        skill_file!("finish-godot-game", "scripts/check_game.gd"),
+    ],
+};
+
 /// Every skill this build ships.
-pub static BUNDLED: &[&Bundled] = &[&AGENT_READY_CANVAS];
+pub static BUNDLED: &[&Bundled] = &[&AGENT_READY_CANVAS, &FINISH_GODOT_GAME];
 
 // --- frontmatter -----------------------------------------------------------
 
@@ -166,7 +183,8 @@ impl Mode {
     }
 }
 
-/// What makes a session canvas work. Any one of them is enough.
+/// What makes a session canvas work, or Godot work. Any one of a kind's
+/// signals is enough for that kind.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Signals {
     /// The worktree has a canvas: a `.json` under `canvas/`.
@@ -175,11 +193,23 @@ pub struct Signals {
     pub names_canvas: bool,
     /// A Design (canvas) pane is open in the session's cluster.
     pub canvas_open: bool,
+    /// The worktree has a Godot project, script or scene
+    /// ([`crate::godot::detect::has_godot_sources`]).
+    pub godot_files: bool,
+    /// The prompt names Godot, a scene or a script ([`names_godot`]). The
+    /// only signal an empty folder can give, which is where a new game starts.
+    pub names_godot: bool,
+    /// The Godot app, in either mode, is open in the session's cluster.
+    pub godot_open: bool,
 }
 
 impl Signals {
     pub fn canvas_work(&self) -> bool {
         self.canvas_files || self.names_canvas || self.canvas_open
+    }
+
+    pub fn godot_work(&self) -> bool {
+        self.godot_files || self.names_godot || self.godot_open
     }
 }
 
@@ -190,8 +220,17 @@ pub fn wanted(skill: &Bundled, mode: Mode, signals: &Signals) -> bool {
         Mode::Off => false,
         Mode::Auto => match skill.trigger {
             Trigger::CanvasWork => signals.canvas_work(),
+            Trigger::GodotWork => signals.godot_work(),
         },
     }
+}
+
+/// Whether a session is handed the Godot executable: for Godot work, and
+/// whenever the Godot skill is on for every session, since the skill's checks
+/// need it. Independent of the skill being off: the path helps any agent that
+/// works on a game, and costs nothing once Godot has been found.
+pub fn godot_path_wanted(godot_skill: Mode, signals: &Signals) -> bool {
+    godot_skill == Mode::On || signals.godot_work()
 }
 
 /// Whether `root` has a canvas: any `.json` file under `root/canvas/`, at
@@ -217,6 +256,20 @@ pub fn has_canvas_files(root: &Path) -> bool {
 /// Whether `text` names a canvas, in a chip or written out.
 pub fn names_canvas(text: &str) -> bool {
     text.contains("veistra://canvas/")
+}
+
+/// Whether `text` names Godot, or a scene or script of one, in a chip or
+/// written out. Any case: people write "godot" and "Godot" alike.
+pub fn names_godot(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("godot")
+        || lower
+            // A chip is `[@x.gd](<veistra://file/x.gd>)`, so split on what
+            // surrounds a path rather than on whitespace alone.
+            .split(|c: char| c.is_whitespace() || "()<>[]`'\",;:".contains(c))
+            // A full stop or question mark after the name is the sentence's.
+            .map(|word| word.trim_end_matches(['.', '?', '!']))
+            .any(|word| word.ends_with(".gd") || word.ends_with(".tscn"))
 }
 
 // --- installing -------------------------------------------------------------
@@ -676,11 +729,60 @@ mod tests {
         for skill in BUNDLED {
             let front = frontmatter(skill.skill_md()).expect("frontmatter");
             assert_eq!(front.name, skill.name);
-            assert!(
-                front.description.starts_with("Structure every"),
-                "{front:?}"
-            );
+            // Claude reads the frontmatter as YAML, where an unquoted value
+            // holding ": " is a second key and the skill fails to load.
+            assert!(!front.description.contains(": "), "{front:?}");
+            assert!(!front.description.is_empty(), "{front:?}");
         }
+        let description = |skill: &Bundled| frontmatter(skill.skill_md()).unwrap().description;
+        assert!(description(&AGENT_READY_CANVAS).starts_with("Structure every"));
+        assert!(description(&FINISH_GODOT_GAME).starts_with("Deliver a Godot game"));
+    }
+
+    #[test]
+    fn the_godot_skill_md_makes_the_agent_finish_and_check_the_game() {
+        let text = FINISH_GODOT_GAME.skill_md();
+        // Finished: scenes use the scripts and one of them is the main scene.
+        assert!(text.contains("run/main_scene"));
+        assert!(text.contains("Do not stop when the scripts are written"));
+        // Run with the executable Veistra hands over, under the name it uses.
+        assert!(text.contains(crate::godot::AGENT_ENV));
+        assert!(text.contains("--import"));
+        assert!(text.contains("scripts/check_game.gd"));
+        // Godot exits 0 after a script error, so the output has to be read.
+        assert!(text.contains("SCRIPT ERROR"));
+        assert!(text.contains("not just the exit code"));
+        // Looked at, not only run, with the folder made first.
+        assert!(text.contains("--write-movie"));
+        assert!(text.contains("mkdir -p"));
+        // And the person is told how to play it in Veistra.
+        assert!(text.contains("F5"));
+        assert!(text.contains("references/godot-text-formats.md"));
+    }
+
+    #[test]
+    fn the_godot_checker_reports_problems_and_a_verdict() {
+        let file = FINISH_GODOT_GAME
+            .files
+            .iter()
+            .find(|f| f.path == "scripts/check_game.gd")
+            .unwrap();
+        let text = std::str::from_utf8(file.bytes).unwrap();
+        assert!(text.starts_with("## "), "a doc comment, then the script");
+        assert!(text.contains("extends SceneTree"), "it runs with -s");
+        // The lines SKILL.md tells the agent to look for.
+        for line in ["PROBLEM: ", "CHECK PASSED", "CHECK FAILED"] {
+            assert!(text.contains(line), "{line}");
+        }
+        assert!(text.contains("application/run/main_scene"));
+        assert!(text.contains("quit(1)"));
+        // Godot before 4.5 has no Logger, and a script naming an unknown
+        // class fails to parse there; so it is looked up, and the class
+        // that extends it is source text compiled only when it exists.
+        assert!(text.contains("ClassDB.class_exists(\"Logger\")"));
+        assert!(!text
+            .lines()
+            .any(|l| l.trim_start().starts_with("extends Logger")));
     }
 
     #[test]
@@ -707,6 +809,82 @@ mod tests {
             text.contains("canvas_lint.py"),
             "the script stays as a fallback"
         );
+    }
+
+    #[test]
+    fn auto_is_on_for_godot_work_from_files_a_prompt_or_an_open_pane() {
+        let none = Signals::default();
+        let skill = &FINISH_GODOT_GAME;
+        assert!(!wanted(skill, Mode::Auto, &none));
+        let canvas = Signals {
+            canvas_files: true,
+            names_canvas: true,
+            canvas_open: true,
+            ..none
+        };
+        assert!(
+            !wanted(skill, Mode::Auto, &canvas),
+            "canvas work is not Godot"
+        );
+        assert!(!wanted(
+            &AGENT_READY_CANVAS,
+            Mode::Auto,
+            &Signals {
+                godot_files: true,
+                names_godot: true,
+                godot_open: true,
+                ..none
+            }
+        ));
+        for one in [
+            Signals {
+                godot_files: true,
+                ..none
+            },
+            Signals {
+                names_godot: true,
+                ..none
+            },
+            Signals {
+                godot_open: true,
+                ..none
+            },
+        ] {
+            assert!(wanted(skill, Mode::Auto, &one), "{one:?}");
+            assert!(!wanted(skill, Mode::Off, &one));
+        }
+        assert!(wanted(skill, Mode::On, &none));
+    }
+
+    #[test]
+    fn the_godot_path_goes_with_godot_work_or_the_skill_switched_on() {
+        let none = Signals::default();
+        let godot = Signals {
+            names_godot: true,
+            ..none
+        };
+        assert!(!godot_path_wanted(Mode::Auto, &none));
+        assert!(godot_path_wanted(Mode::Auto, &godot));
+        assert!(godot_path_wanted(Mode::On, &none), "the skill needs it");
+        assert!(
+            godot_path_wanted(Mode::Off, &godot),
+            "any agent on a game can use it"
+        );
+        assert!(!godot_path_wanted(Mode::Off, &none));
+    }
+
+    #[test]
+    fn a_prompt_names_godot_by_name_or_by_a_scene_or_script() {
+        // Elijah's prompt named Godot, in an empty folder.
+        assert!(names_godot("Make me a platformer in Godot"));
+        assert!(names_godot("use GODOT 4"));
+        assert!(names_godot(
+            "Fix [@player.gd](<veistra://file/scripts/player.gd>)"
+        ));
+        assert!(names_godot("why does levels/one.tscn crash?"));
+        assert!(names_godot("Look at main.tscn."));
+        assert!(!names_godot("Make me a todo app"));
+        assert!(!names_godot("the .gdignore file and the gds report"));
     }
 
     #[test]
@@ -889,13 +1067,109 @@ mod tests {
         assert!(!dir.exists());
     }
 
+    /// The checker against a real Godot 4: a game it passes, then the two
+    /// ways Elijah's project could fail. CI has no Godot, so this runs only
+    /// with `VEISTRA_TEST_GODOT` naming one (`cargo test -- --ignored`).
+    #[test]
+    #[ignore = "needs Godot 4: set VEISTRA_TEST_GODOT and run with --ignored"]
+    fn the_godot_checker_passes_a_game_and_fails_scripts_without_a_main_scene() {
+        let godot = PathBuf::from(std::env::var_os("VEISTRA_TEST_GODOT").expect("a Godot 4"));
+        let dir = tempfile::tempdir().unwrap();
+        let checker = dir.path().join("check_game.gd");
+        let source = FINISH_GODOT_GAME
+            .files
+            .iter()
+            .find(|f| f.path == "scripts/check_game.gd");
+        std::fs::write(&checker, source.unwrap().bytes).unwrap();
+        let game = dir.path().join("game");
+        std::fs::create_dir_all(&game).unwrap();
+        let write = |name: &str, text: &str| std::fs::write(game.join(name), text).unwrap();
+        let project = "config_version=5\n\n[application]\n\nconfig/name=\"Dodge\"\n";
+        write(
+            "project.godot",
+            &format!("{project}run/main_scene=\"res://main.tscn\"\n"),
+        );
+        write(
+            "player.gd",
+            "extends Node2D\n\nfunc _process(d: float) -> void:\n\tposition.x += d\n",
+        );
+        write(
+            "main.tscn",
+            "[gd_scene load_steps=2 format=3]\n\n\
+             [ext_resource type=\"Script\" path=\"res://player.gd\" id=\"1\"]\n\n\
+             [node name=\"Main\" type=\"Node2D\"]\n\n\
+             [node name=\"Player\" type=\"Node2D\" parent=\".\"]\nscript = ExtResource(\"1\")\n",
+        );
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new(&godot)
+                .args(["--headless", "--path"])
+                .arg(&game)
+                .args(args)
+                .output()
+                .unwrap();
+            let text = String::from_utf8_lossy(&out.stdout).into_owned()
+                + &String::from_utf8_lossy(&out.stderr);
+            (out.status.code(), text)
+        };
+        let check = || run(&["-s", checker.to_str().unwrap(), "--", "--frames", "10"]);
+        assert_eq!(run(&["--import"]).0, Some(0));
+
+        let (code, text) = check();
+        assert_eq!(code, Some(0), "{text}");
+        assert!(text.contains("ran res://main.tscn for 10 frames"), "{text}");
+        assert!(text.contains("CHECK PASSED"), "{text}");
+
+        write(
+            "player.gd",
+            "extends Node2D\n\nfunc _ready() -> void:\n\tprint(SPED)\n",
+        );
+        let (code, text) = check();
+        assert_eq!(code, Some(1), "{text}");
+        assert!(
+            text.contains("PROBLEM: res://player.gd does not parse"),
+            "{text}"
+        );
+
+        write("project.godot", project);
+        let (code, text) = check();
+        assert_eq!(code, Some(1), "{text}");
+        assert!(text.contains("PROBLEM: no main scene"), "{text}");
+        assert!(text.contains("CHECK FAILED"), "{text}");
+    }
+
+    #[test]
+    fn claude_gets_one_plugin_folder_holding_both_skills() {
+        let root = tempfile::tempdir().unwrap();
+        let places = places(root.path(), false);
+        let mut spec = launch(Harness::Claude);
+        let both = [&AGENT_READY_CANVAS, &FINISH_GODOT_GAME];
+        assert!(equip(&mut spec, &both, &places).is_empty());
+        assert_eq!(spec.plugins.len(), 1);
+        let plugin = &spec.plugins[0];
+        assert!(plugin.join("skills/agent-ready-canvas/SKILL.md").is_file());
+        let godot = plugin.join("skills/finish-godot-game");
+        assert!(godot.join("SKILL.md").is_file());
+        assert!(godot.join("scripts/check_game.gd").is_file());
+        assert!(godot.join("references/godot-text-formats.md").is_file());
+    }
+
     #[test]
     fn the_listing_names_each_harness_and_its_folder() {
         let root = tempfile::tempdir().unwrap();
         let places = places(root.path(), false);
         install(&root.path().join("home/.codex/skills"), &AGENT_READY_CANVAS).unwrap();
         let list = list(|_| Mode::Auto, &places);
-        assert_eq!(list.len(), 1);
+        let names: Vec<&str> = list.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["agent-ready-canvas", "finish-godot-game"]);
+        let godot = &list[1];
+        assert_eq!(godot.setting_key, keys::SKILLS_FINISH_GODOT_GAME);
+        assert!(godot.description.starts_with("Deliver a Godot game"));
+        let codex = godot.installs.iter().find(|i| i.harness == Harness::Codex);
+        assert_eq!(
+            codex.unwrap().owner,
+            Owner::Absent,
+            "only the canvas skill was installed"
+        );
         let skill = &list[0];
         assert_eq!(skill.name, "agent-ready-canvas");
         assert_eq!(skill.setting_key, keys::SKILLS_AGENT_READY_CANVAS);

@@ -654,14 +654,31 @@ pub fn call_for(
                 // Built-in skills, read only when this send starts a process;
                 // the side chat only answers, so it gets none.
                 if !side && host.running(&target) != Some(harness) {
+                    let snapshot = app.state::<ShellState>().snapshot();
+                    let open = |apps: &[&str]| {
+                        context
+                            .cluster_id
+                            .as_deref()
+                            .is_some_and(|cluster| app_open(&snapshot, cluster, apps))
+                    };
+                    let root = worktree.path();
                     let signals = crate::skills::Signals {
-                        canvas_files: crate::skills::has_canvas_files(&worktree.path()),
+                        canvas_files: crate::skills::has_canvas_files(&root),
                         names_canvas: crate::skills::names_canvas(&text),
-                        canvas_open: context.cluster_id.as_deref().is_some_and(|cluster| {
-                            canvas_open(&app.state::<ShellState>().snapshot(), cluster)
-                        }),
+                        canvas_open: open(CANVAS_APPS),
+                        godot_files: crate::godot::detect::has_godot_sources(&root),
+                        names_godot: crate::skills::names_godot(&text),
+                        godot_open: open(GODOT_APPS),
                     };
                     crate::skills::equip_live(app, &mut launch, &signals);
+                    // The Godot skill's checks run Godot from the agent's
+                    // shell, which would not find it where Veistra did.
+                    let godot_skill = crate::skills::mode(app, &crate::skills::FINISH_GODOT_GAME);
+                    if crate::skills::godot_path_wanted(godot_skill, &signals) {
+                        if let Some(found) = crate::godot::find_live(app) {
+                            launch.env.push(crate::godot::agent_env(&found));
+                        }
+                    }
                 }
                 // What the chips name goes after the text, as far as the
                 // agent said it can take it: plain text until discovery has asked.
@@ -1110,9 +1127,17 @@ fn has_agent_tab(snapshot: &ShellSnapshot, id: &str) -> bool {
         .any(|i| i.id == id && i.app_id == ID)
 }
 
-/// Whether a Design (canvas) pane is open in cluster `cluster`, which makes a
-/// session there canvas work (`skills::Signals`). Pure, so it is tested.
-fn canvas_open(snapshot: &ShellSnapshot, cluster: &str) -> bool {
+/// The Design (canvas) app, whose pane makes a session canvas work.
+const CANVAS_APPS: &[&str] = &["canvas"];
+
+/// The Godot app under both of its ids, Editor mode's and Play's, whose pane
+/// makes a session Godot work.
+const GODOT_APPS: &[&str] = &["godot-viewer", "play"];
+
+/// Whether a pane of one of `apps` is open in cluster `cluster`, which makes
+/// a session there that app's kind of work (`skills::Signals`). Pure, so it
+/// is tested.
+fn app_open(snapshot: &ShellSnapshot, cluster: &str, apps: &[&str]) -> bool {
     snapshot
         .windows
         .iter()
@@ -1123,7 +1148,7 @@ fn canvas_open(snapshot: &ShellSnapshot, cluster: &str) -> bool {
             snapshot
                 .instances
                 .iter()
-                .any(|i| i.id == tab && i.app_id == "canvas")
+                .any(|i| i.id == tab && apps.contains(&i.app_id.as_str()))
         })
 }
 
@@ -1640,9 +1665,33 @@ mod tests {
             instance("canvas-1", "canvas"),
             instance("agent-tab-2", "agent-tab"),
         ];
-        assert!(canvas_open(&shot, "c1"));
-        assert!(!canvas_open(&shot, "c2"), "another cluster's canvas");
-        assert!(!canvas_open(&shot, "c9"));
+        assert!(app_open(&shot, "c1", CANVAS_APPS));
+        assert!(
+            !app_open(&shot, "c2", CANVAS_APPS),
+            "another cluster's canvas"
+        );
+        assert!(!app_open(&shot, "c9", CANVAS_APPS));
+        assert!(!app_open(&shot, "c1", GODOT_APPS), "a canvas is not Godot");
+    }
+
+    #[test]
+    fn a_godot_pane_in_either_mode_makes_godot_work() {
+        let mut shot = snapshot(vec![
+            cluster("c1", &["agent-tab-1", "godot-viewer-1"], "C:/wt/a"),
+            cluster("c2", &["agent-tab-2", "play-2"], "C:/wt/b"),
+            cluster("c3", &["agent-tab-3"], "C:/wt/c"),
+        ]);
+        shot.instances = vec![
+            instance("agent-tab-1", "agent-tab"),
+            instance("godot-viewer-1", "godot-viewer"),
+            instance("agent-tab-2", "agent-tab"),
+            instance("play-2", "play"),
+            instance("agent-tab-3", "agent-tab"),
+        ];
+        assert!(app_open(&shot, "c1", GODOT_APPS), "Editor mode");
+        assert!(app_open(&shot, "c2", GODOT_APPS), "Play mode");
+        assert!(!app_open(&shot, "c3", GODOT_APPS));
+        assert!(!app_open(&shot, "c1", CANVAS_APPS));
     }
 
     fn instance(id: &str, app_id: &str) -> crate::shell_state::SurfaceInstance {

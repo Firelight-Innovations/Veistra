@@ -34,7 +34,9 @@ agent tab ── agent-tab/* ── AgentHost ── Adapter ── harness proc
 - **Built-in skills.** A descriptor's `skills` (`SkillDelivery`) says how Veistra's built-in
   skills reach the harness: a per-session plugin folder (Claude), a marked copy in the harness's
   user skills folder (Codex), or a hint in the first prompt. `src-tauri/src/skills.rs` picks the
-  skills and puts the files in place; a new harness only chooses a variant.
+  skills and puts the files in place; a new harness only chooses a variant. A session doing Godot
+  work also gets `VEISTRA_GODOT`, the Godot executable Veistra found, so the `finish-godot-game`
+  skill can run the game from the agent's own shell.
 - **`agent-tab/harnesses`.** It answers one `HarnessInfo` per descriptor, with these fields:
   - the harness's name
   - what stands in its way, as a `Hint`
