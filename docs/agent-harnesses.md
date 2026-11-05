@@ -1,6 +1,6 @@
 # Agent harnesses
 
-A harness is a coding agent the agent tab can run: Claude and Codex today, with Pi next. This page
+A harness is a coding agent the agent tab can run: Veistra's own, Claude and Codex. This page
 describes the boundary between a harness and the rest of Veistra, and how to add a harness.
 
 `src-tauri/src/harness.rs` is a different thing. It recognises a harness that runs in a terminal, so
@@ -32,7 +32,8 @@ agent tab ── agent-tab/* ── AgentHost ── Adapter ── harness proc
   gets its own type that implements `Adapter` and translates, and a new `Protocol` variant that
   `AgentHost::send` maps to that type.
 - **Built-in skills.** A descriptor's `skills` (`SkillDelivery`) says how Veistra's built-in
-  skills reach the harness: a per-session plugin folder (Claude), a marked copy in the harness's
+  skills reach the harness: a per-session plugin folder (Claude), a per-session folder of skills
+  named in `session/new`'s `_meta.veistra.skills` (Veistra's own), a marked copy in the harness's
   user skills folder (Codex), or a hint in the first prompt. `src-tauri/src/skills.rs` picks the
   skills and puts the files in place; a new harness only chooses a variant.
 - **`agent-tab/harnesses`.** It answers one `HarnessInfo` per descriptor, with these fields:
@@ -90,7 +91,8 @@ These rules come from handoff §0 and design AGT-002 and AGT-004. Review refuses
 breaks one.
 
 - Veistra runs the user's own, unmodified binary, signed in by the user. It never reads, stores
-  or logs a token. It starts a sign-in only when the user types `/login` in the tab
+  or logs a token. Veistra's own harness is Veistra's program, but the rest holds for it: its key
+  is the user's, kept by its own sign-in (`veistra-agent login`), never seen by the app. It starts a sign-in only when the user types `/login` in the tab
   (`agent-tab/login`): that runs the harness's own CLI sign-in (`claude auth login`, `codex login`),
   which opens a browser and keeps its credentials itself, and nothing it prints is read. `sign_in`
   is the same command for the user's own terminal.
@@ -99,7 +101,7 @@ breaks one.
 - The adapter is pinned to a tested version. Record that version in
   `docs/agent-host-versions.md`. The user installs it, from their terminal or with the tab's
   Install button (see [Installing from the tab](#installing-from-the-tab)); Veistra never ships
-  either the harness or its adapter.
+  a third party's harness or adapter. Its own, `@veistra/agent`, installs the same way.
 - Every session that `harness::spec` builds starts in the harness's ask-first mode,
   `Policy::ask_first`. If the agent refuses to switch to it, the session does not run.
 - The tab must never offer two kinds of mode:
@@ -112,7 +114,7 @@ breaks one.
   every option's choices, and never starts a session in one. One exception, decided by the owner
   in 2026-10: Claude's `auto` is offered, and the calls it approves skip the guard.
 - `env` never carries a credential.
-- The UI calls a harness by its short name: "Claude", "Codex", "Pi".
+- The UI calls a harness by its short name: "Veistra", "Claude", "Codex".
 
 ## What the UI shows
 
@@ -164,16 +166,30 @@ would type (`Setup.cliInstall` or `Setup.adapterInstall`) and has an Install but
 
 ## Veistra's own harness
 
-Veistra's harness is a modified Pi. It is listed first and shows "Coming soon" until it has a
-descriptor. To wire it:
+`harness/veistra.rs` runs `veistra-agent-acp` from `@veistra/agent` (`packages/veistra-agent`): Pi,
+pinned and unmodified, run through its SDK, with Veistra's modules around it, speaking ACP itself.
+It is first in `REGISTRY`, so a new tab runs it. Why it is built this way, and what it can do:
+`docs/design/VEISTRA-HARNESS.md`.
 
-1. Give the modified Pi an ACP entry point (an adapter like `pi-acp`, or Pi itself), and verify
-   it as step 1 of [Adding a harness](#adding-a-harness) says, including its ask-first mode.
-2. Add `Harness::Veistra` and its descriptor, and put it first in `REGISTRY`. That also makes it
-   the harness a new tab runs.
-3. Its sign-in is the Veistra backend's, run by its own CLI the way `claude auth login` is. The
-   token stays in the harness's own store and never in `env`. The backend and its sign-in are
-   built separately; this repository only adds the descriptor.
+- **No third-party adapter.** The agent speaks ACP, so the descriptor's `adapter` is the agent and
+  its `cli` is `veistra-agent`, the sign-in program from the same package. `cli_env` is `None`:
+  there is no separate binary to point the agent at. `CliInstall::WithAdapter` makes the tab's
+  Install one pinned `npm i -g` of that package.
+- **This checkout.** With nothing on PATH, the host runs the agent `pnpm build` compiled, through
+  the launchers in `packages/veistra-agent/bin/` (`harness/managed.rs`), once its `dist/` exists.
+  Signing in from the tab finds the same build.
+- **Signing in.** `/login` runs `veistra-agent login` with no terminal, so it serves a one-time form
+  on `127.0.0.1`, opens it in the browser, saves the key in the agent's own home and exits. A
+  provider's usual environment variable works too. A signed-out `session/new` answers
+  `auth_required`, and the tab shows the `signedOut` hint.
+- **Modes.** `default` (ask before edits, commands and tools), `acceptEdits` and `plan`. Every
+  one asks the user, or refuses, before anything but a read in the worktree, so none is in
+  `config::NOT_OFFERED`. The agent refuses a path outside the worktree itself, before asking, and
+  the host's guard checks every request it does ask again.
+- **Commands.** It lists its skills as `skill:<name>`, which the tab groups under `/skills`. It has
+  no CLI session, so the tab offers it none of Claude's or Codex's terminal commands.
+- **Show calls.** It names a tool's MCP server and tool in `_meta.veistra`, from the server names
+  the host gave it, which `veistra_call::is_show` reads.
 
 ## Models
 

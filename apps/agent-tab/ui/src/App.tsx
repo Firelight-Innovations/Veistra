@@ -36,7 +36,7 @@ import type {
   SettingTrouble,
 } from "./protocol.generated";
 import { completion, isLogin, matching, offered, skillCommands, commandSupport } from "./commands";
-import { harnessChoices, type RunningModel } from "./harnesses";
+import { FIRST_HARNESS, harnessChoices, type RunningModel } from "./harnesses";
 import { useSetup } from "./useSetup";
 import { latestUsage } from "./meters";
 import { latestValidation } from "./validation";
@@ -426,7 +426,7 @@ export default function App() {
         : (current?.commands ?? []),
     [status?.harness, status?.commands, current?.commands, running, chosen],
   );
-  const skillList = skillCommands(reportedCommands, running ?? chosen ?? "claude");
+  const skillList = skillCommands(reportedCommands, running ?? chosen ?? FIRST_HARNESS);
 
   // A tab with no session yet takes the harness and model last picked; one
   // that reattaches to its own session keeps what that session chose.
@@ -497,7 +497,9 @@ export default function App() {
         }
         return;
       }
-      if (commandSupport(text, reportedCommands, running ?? chosen ?? "claude") === "terminal") {
+      if (
+        commandSupport(text, reportedCommands, running ?? chosen ?? FIRST_HARNESS) === "terminal"
+      ) {
         void rpc.cliCommand(text).then(
           () => {
             setDraft("");
@@ -681,7 +683,7 @@ export default function App() {
         .filter((s) => nameHit(s) || s.description.toLowerCase().includes(skillQuery))
         .sort((a, b) => Number(nameHit(b)) - Number(nameHit(a)))
         .map((s) => ({ ...s, support: "agent" as const }))
-    : matching(draft, offered(reportedCommands, running ?? chosen ?? "claude"));
+    : matching(draft, offered(reportedCommands, running ?? chosen ?? FIRST_HARNESS));
   // The issue-link form covers both menus, so neither takes keys while it is open.
   const mentionOpen = issuePicker === null && mentions.query !== null && menuClosedFor !== draft;
   // What the Godot and Blender panes report they have open: the @ menu's

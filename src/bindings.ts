@@ -2149,7 +2149,7 @@ export function resetSettingsGroup(id: string): Promise<number> {
 export type SkillMode = "auto" | "on" | "off";
 
 /** Mirrors `skills::How`: how one harness is given a built-in skill. */
-export type SkillHow = "plugin" | "userSkills" | "hint";
+export type SkillHow = "plugin" | "folder" | "userSkills" | "hint";
 
 /** Mirrors `skills::Owner`: who owns the folder a harness reads it from. */
 export type SkillOwner = "absent" | "veistra" | "user";
@@ -2157,7 +2157,7 @@ export type SkillOwner = "absent" | "veistra" | "user";
 /** Mirrors `skills::Install`: where one harness has a built-in skill. */
 export interface SkillInstall {
   /** The agent tab's harness id (`veistra_agent_host::Harness`). */
-  harness: "claude" | "codex";
+  harness: "veistra" | "claude" | "codex";
   /** Its name, as the agent tab shows it. */
   name: string;
   how: SkillHow;

@@ -71,9 +71,11 @@ jobs:
       # version a contributor's own `corepack` will select.
       - uses: pnpm/action-setup@v4
 
+      # 22, not the 20 the other workflows pin: Veistra's own agent runs Pi,
+      # which needs Node 22.19 or newer, and its tests run a real agent process.
       - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
 
       # No `dtolnay/rust-toolchain` action here, deliberately. It is the one

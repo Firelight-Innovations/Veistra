@@ -8,8 +8,10 @@ parallel or vague-on-purpose (noted inline). Updated 2026-08-21.
 Reported by Braden on 2026-11-04. Pick one up by name; each needs scoping
 before it is built.
 
-1. **There is no Veistra harness yet.** Agents run inside whatever harness the
-   terminal or agent tab launches; Veistra has no agent harness of its own.
+1. **There is no Veistra harness yet.** First cut built: Pi with Veistra's own
+   modules, run as `@veistra/agent` (`docs/design/VEISTRA-HARNESS.md`). Still
+   open: a turn against a real provider in the tab on Windows, publishing the
+   package to npm, and the Veistra account as its model provider (item 2).
 2. **Login and usage do not work yet.** Settings → Account, Billing and Usage
    and the account menu in the title bar are drawn, but signing in and reading
    usage do not complete end to end. Start from `src/shell/account/`,

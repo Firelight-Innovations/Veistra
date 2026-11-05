@@ -72,6 +72,17 @@ describe("the commands on offer", () => {
     expect(all.some((entry) => entry.name === "workflows")).toBe(false);
   });
 
+  it("offers Veistra only the tab's own commands and the skills its agent lists", () => {
+    const listed = [cmd("skill:agent-ready-canvas", "what to do with it")];
+    expect(skillCommands(listed, "veistra").map((entry) => entry.name)).toEqual([
+      "skill:agent-ready-canvas",
+    ]);
+    const all = offered(listed, "veistra");
+    expect(all.every((entry) => entry.support === "native")).toBe(true);
+    expect(all.some((entry) => entry.name === "compact")).toBe(false);
+    expect(commandSupport("/permissions", listed, "veistra")).toBeNull();
+  });
+
   it("routes explicit commands without misreading unknown commands or ordinary text", () => {
     expect(commandSupport("/compact focus here", AGENT)).toBe("agent");
     expect(commandSupport("/permissions", AGENT)).toBe("terminal");

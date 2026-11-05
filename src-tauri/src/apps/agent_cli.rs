@@ -18,6 +18,13 @@ pub(super) fn open(
     command: &str,
 ) -> Result<Value, RpcError> {
     validate(command)?;
+    if harness == Harness::Veistra {
+        // Its agent has no terminal session; every command it takes, it lists.
+        return Err(RpcError::new(
+            INVALID_PARAMS,
+            "Veistra's agent has no terminal session to run this in",
+        ));
+    }
     let cluster = context
         .cluster_id
         .as_deref()

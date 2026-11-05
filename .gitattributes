@@ -9,6 +9,10 @@
 # worse than no format check, so the working tree is pinned to LF.
 *               text=auto eol=lf
 
+# The one exception: batch files cmd.exe runs, which it parses safely only with CRLF. Neither
+# formatter reads them.
+*.cmd           text eol=crlf
+
 # Binary assets git must never translate.
 *.png           binary
 *.ico           binary

@@ -37,8 +37,9 @@ import { defineConfig } from "vitest/config";
  *
  * jsdom 30 declares `engines.node` of `^22.22.2 || ^24.15.0 || >=26.0.0` and
  * pulls undici 8, which calls `require("node:worker_threads").markAsUncloneable`
- * unconditionally. That function does not exist on Node 20, which every
- * workflow pins, so the jsdom worker dies before a single test runs. undici 7 —
+ * unconditionally. That function does not exist on Node 20, which the release
+ * workflows still pin, so the jsdom worker dies before a single test runs. (The
+ * verify workflow runs Node 22, which Veistra's own agent needs.) undici 7 —
  * what jsdom 29 pulls — guards the same call behind a runtime-feature check and
  * falls back to a no-op, and jsdom 29 supports `^20.19.0` on purpose. Nothing
  * about the paragraphs above changes: 29 is one major back, same DOM, same
@@ -54,8 +55,8 @@ import { defineConfig } from "vitest/config";
  * and the summary reads as a smaller suite that passed. CI reported "47 files /
  * 787 tests passed" for a run where this file never executed. So a Node or jsdom
  * bump is checked by the file count, not by the word "passed" — and `.nvmrc`
- * names the Node the workflows run, because a local pass on a newer one is not
- * evidence.
+ * names the Node the verify workflow runs, because a local pass on a newer one
+ * is not evidence.
  */
 
 /**

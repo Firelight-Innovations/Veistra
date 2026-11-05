@@ -794,8 +794,10 @@ fn pasted_images(params: &Value) -> Vec<Value> {
 }
 
 /// The arguments that start `harness`'s own sign-in, which opens a browser.
+/// Veistra's own serves its key form on 127.0.0.1 and opens that.
 fn login_args(harness: Harness) -> &'static [&'static str] {
     match harness {
+        Harness::Veistra => &["login"],
         Harness::Claude => &["auth", "login"],
         Harness::Codex => &["login"],
     }
@@ -806,8 +808,10 @@ fn login_args(harness: Harness) -> &'static [&'static str] {
 /// its output.
 fn login(app: &AppHandle, instance: &str, harness: Harness) -> Result<(), RpcError> {
     let descriptor = harness.descriptor();
-    let cli = veistra_agent_host::harness::which(
-        descriptor.cli,
+    // As the session finds it, so this checkout's own build of Veistra's agent
+    // signs in too.
+    let cli = veistra_agent_host::harness::installed_cli(
+        harness,
         super::agent_install::search_path().as_deref(),
         super::agent_install::pathext().as_deref(),
     )

@@ -59,7 +59,7 @@ export function HistoryPanel({
           onChange={(e) => setHarness(e.target.value as Harness | "")}
         >
           <option value="">{strings.history.original}</option>
-          {["claude", "codex"].map((id) => (
+          {["veistra", "claude", "codex"].map((id) => (
             <option key={id} value={id}>
               {strings.harnessName[id]}
             </option>

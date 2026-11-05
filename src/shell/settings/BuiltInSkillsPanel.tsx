@@ -88,6 +88,8 @@ function installNote(install: SkillInstall): string {
   switch (install.how) {
     case "plugin":
       return "Plugin folder, passed to each session that gets it";
+    case "folder":
+      return "Skills folder, passed to each session that gets it";
     case "hint":
       return "Named in the first prompt of each session that gets it";
     case "userSkills":
