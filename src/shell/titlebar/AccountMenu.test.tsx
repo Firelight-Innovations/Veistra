@@ -167,6 +167,36 @@ describe("AccountMenu", () => {
     expect(document.activeElement).toBe(button);
   });
 
+  it("sends a sign-in that could not start to the Account page, which says why", async () => {
+    bindings.accountCall.mockImplementation((method: string) =>
+      method === "account/status"
+        ? Promise.resolve(base)
+        : Promise.reject({
+            code: -32603,
+            message: "Could not reach the Veistra account service.",
+            data: { reason: "unreachable" },
+          }),
+    );
+    const onOpenSettings = vi.fn();
+    render(<AccountMenu onOpenSettings={onOpenSettings} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Account" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Sign in…" }));
+    await waitFor(() => expect(onOpenSettings).toHaveBeenCalledWith("account"));
+  });
+
+  it("stays put when the sign-in starts", async () => {
+    bindings.accountCall.mockImplementation((method: string) =>
+      Promise.resolve(method === "account/sign-in" ? waiting : base),
+    );
+    const onOpenSettings = vi.fn();
+    render(<AccountMenu onOpenSettings={onOpenSettings} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Account" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Sign in…" }));
+    await waitFor(() => expect(bindings.accountCall).toHaveBeenCalledWith("account/sign-in"));
+    await act(async () => {});
+    expect(onOpenSettings).not.toHaveBeenCalled();
+  });
+
   it("opens Settings on Usage from its row", async () => {
     answer(signedIn);
     const onOpenSettings = vi.fn();

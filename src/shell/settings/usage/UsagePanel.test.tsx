@@ -162,4 +162,55 @@ describe("Settings → Usage", () => {
     render(<UsagePanel />);
     await screen.findByText(/Veistra accounts are not set up/);
   });
+
+  it("draws an empty month as zeros, with no limit and no runs", async () => {
+    // What the live service answers a new account: the contract's empty shape.
+    const empty: Usage = {
+      ...usage,
+      totals: { cost_micros: 0, by_source: {}, unbilled_runs: { own_claude: 0, own_codex: 0 } },
+      daily: [],
+      projects: [],
+      limit: null,
+    };
+    bindings.accountCall.mockImplementation((method: string) => {
+      if (method === "account/usage") return Promise.resolve(empty);
+      if (method === "account/runs") return Promise.resolve({ runs: [], next_cursor: null });
+      if (method === "account/status") return Promise.resolve(signedInStatus);
+      return Promise.resolve(null);
+    });
+    render(<UsagePanel />);
+    await screen.findByText("You've spent $0.00 this month. No monthly limit is set.");
+    expect(screen.getByText("No runs yet.")).toBeTruthy();
+    expect(screen.getAllByText("0 runs")).toHaveLength(2);
+    expect(screen.queryByRole("meter")).toBeNull();
+  });
+
+  it("shows an alert the dashboard turned off as no alert", async () => {
+    signedIn();
+    const answer = bindings.accountCall.getMockImplementation()!;
+    const quiet = { ...usage, limit: { ...usage.limit!, alert_pct: null } };
+    bindings.accountCall.mockImplementation((method: string, params?: unknown) =>
+      method === "account/usage" ? Promise.resolve(quiet) : answer(method, params),
+    );
+    render(<UsagePanel />);
+    await screen.findByText("No spend alert");
+    expect(screen.queryByText(/null/)).toBeNull();
+  });
+
+  it("puts an unreachable service in words, not in place of the page", async () => {
+    bindings.accountCall.mockImplementation((method: string) =>
+      method === "account/status"
+        ? Promise.resolve(signedInStatus)
+        : Promise.reject({
+            code: -32603,
+            message:
+              "Could not reach the Veistra account service. Check the internet connection and try again.",
+            data: { reason: "unreachable" },
+          }),
+    );
+    render(<UsagePanel />);
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(/^Could not reach the Veistra account service/);
+    expect(screen.getByRole("radio", { name: "7 days" })).toBeTruthy();
+  });
 });

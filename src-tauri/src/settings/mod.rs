@@ -16,7 +16,10 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 
-pub use schema::keys;
+/// Read by `account::tests`; the app reads it through the setting's default.
+#[cfg(test)]
+pub use schema::DEFAULT_ACCOUNT_API;
+pub use schema::{keys, DEFAULT_ACCOUNT_WEB};
 
 /// The event every window and every app frontend listens on, so a setting
 /// changed in one window reaches the others without either of them asking.

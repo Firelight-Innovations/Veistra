@@ -1,8 +1,8 @@
 //! The Docs app's Rust half: Veistra's documentation, read from the website.
 //!
 //! None of the pages are in this build. They live under `<web>/docs`, where
-//! `<web>` is the `account.webUrl` setting (`https://veistra.com` unless it is
-//! pointed at a staging site), and the site lists every page in `<web>/llms.txt`
+//! `<web>` is the `account.webUrl` setting (the production site unless it is
+//! pointed at a staging one), and the site lists every page in `<web>/llms.txt`
 //! with a plain-Markdown copy of each beside its HTML. This module fetches those
 //! two kinds of file and nothing else, so a change to the site reaches Veistra
 //! without a release. `docs/docs-app.md` is the whole account.
@@ -27,8 +27,8 @@ use std::time::{Duration, Instant};
 use tauri::AppHandle;
 use veistra_rpc::{RpcError, INTERNAL_ERROR, INVALID_PARAMS, METHOD_NOT_FOUND};
 
-/// The site, when the setting is blank.
-const DEFAULT_WEB: &str = "https://veistra.com";
+/// The site, when the setting is blank: the setting's own default.
+const DEFAULT_WEB: &str = settings::DEFAULT_ACCOUNT_WEB;
 
 /// How long a fetched file is used without asking again. The site's own CDN
 /// caches for five minutes (`s-maxage=300`), so asking sooner gets the same

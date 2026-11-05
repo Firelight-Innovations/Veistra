@@ -153,9 +153,9 @@ impl AccountError {
 
     pub fn describe(&self) -> String {
         match self {
-            AccountError::NotConfigured => {
-                "The account service address is not set. Add it in Settings, Account.".into()
-            }
+            AccountError::NotConfigured => "Veistra accounts are off in this build: the account \
+                 service address is empty (Settings, Developer, Account service)."
+                .into(),
             AccountError::SignedOut => "This computer is not signed in to Veistra.".into(),
             AccountError::Failed(failure) => failure.describe(),
         }
@@ -369,6 +369,10 @@ impl Account {
                 // A dropped connection is not an answer; the code is still
                 // good until it expires, so keep asking.
                 Err(Failure::Unreachable(_)) => continue,
+                // Nor is the service failing, or Cloud Run's own front end
+                // refusing one request: an approved code stays approved, and a
+                // later poll collects its tokens. The expiry check above ends it.
+                Err(Failure::Status { status, .. }) if status >= 500 || status == 429 => continue,
                 Err(other) => Outcome::Failed(other.describe()),
             };
             self.finish(generation, Some(outcome));

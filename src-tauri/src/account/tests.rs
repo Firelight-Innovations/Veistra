@@ -307,6 +307,77 @@ fn an_expired_code_ends_the_sign_in_as_expired() {
 }
 
 #[test]
+fn a_server_error_or_a_429_while_polling_is_not_an_answer() {
+    // The service leaves an approved code approved when it fails, so the
+    // next poll collects the tokens (`docs/account-api.md`, the poll table).
+    let server = Server::start();
+    server
+        .reply(CODE, 200, code_reply(600))
+        .reply(
+            TOKEN,
+            503,
+            serde_json::json!({"title": "Something went wrong on our side."}),
+        )
+        .reply(
+            TOKEN,
+            429,
+            serde_json::json!({"title": "Too many requests."}),
+        )
+        .reply(TOKEN, 502, serde_json::json!({}))
+        .reply(TOKEN, 200, tokens("access-1", "refresh-1"))
+        .reply(ME, 200, me());
+    let account = Account::new(Box::<MemoryStore>::default());
+    let started = account.start(&server.base, &device()).unwrap();
+
+    let user = account.poll(
+        &server.base,
+        started.generation,
+        started.interval,
+        &no_sleep,
+    );
+    assert_eq!(user.unwrap().email, "b@example.com");
+    assert_eq!(server.seen(TOKEN).len(), 4);
+    assert_eq!(stored_refresh(&account).as_deref(), Some("refresh-1"));
+}
+
+#[test]
+fn a_4xx_problem_while_polling_ends_the_sign_in_in_words() {
+    let server = Server::start();
+    server.reply(CODE, 200, code_reply(600)).reply(
+        TOKEN,
+        400,
+        serde_json::json!({"title": "Send a form.", "detail": "The body was not a form."}),
+    );
+    let account = Account::new(Box::<MemoryStore>::default());
+    let started = account.start(&server.base, &device()).unwrap();
+    account.poll(
+        &server.base,
+        started.generation,
+        started.interval,
+        &no_sleep,
+    );
+    assert_eq!(
+        account.status(&server.base).outcome,
+        Some(Outcome::Failed("The body was not a form.".into()))
+    );
+}
+
+#[test]
+fn an_unreachable_service_says_so_in_plain_words() {
+    // Port 9 (discard) is closed on loopback: the connection is refused.
+    let account = Account::new(Box::<MemoryStore>::default());
+    let error = account.start("http://127.0.0.1:9", &device()).unwrap_err();
+    assert_eq!(error.reason(), "unreachable");
+    assert!(
+        error
+            .describe()
+            .starts_with("Could not reach the Veistra account service."),
+        "{}",
+        error.describe()
+    );
+}
+
+#[test]
 fn a_code_past_its_lifetime_stops_polling_without_asking_again() {
     let server = Server::start();
     server.reply(CODE, 200, code_reply(0));
@@ -407,6 +478,131 @@ fn invalid_grant_on_refresh_signs_this_computer_out() {
     );
     assert!(account.status(&server.base).user.is_none());
     assert!(stored_refresh(&account).is_none());
+}
+
+#[test]
+fn a_refresh_over_its_limit_keeps_the_token_and_says_to_wait() {
+    // `429` with `Retry-After: 60`: the stored token is still good, so this
+    // computer stays signed in and the next read tries again.
+    let server = Server::start();
+    server
+        .reply(
+            TOKEN,
+            429,
+            serde_json::json!({
+                "type": "https://veistra.com/problems/rate-limited",
+                "title": "Too many requests. Wait a minute, then try again.",
+                "status": 429
+            }),
+        )
+        .reply(TOKEN, 200, tokens("access-1", "refresh-2"))
+        .reply(ME, 200, me());
+    let account = signed_in(&server, "refresh-1");
+
+    let error = account.get(&server.base, "v1/me").unwrap_err();
+    assert_eq!(error.reason(), "failed");
+    assert_eq!(
+        error.describe(),
+        "Too many requests. Wait a minute, then try again."
+    );
+    assert_eq!(stored_refresh(&account).as_deref(), Some("refresh-1"));
+    assert!(account.status(&server.base).user.is_some());
+
+    assert_eq!(account.get(&server.base, "v1/me").unwrap(), me());
+    assert_eq!(server.seen(TOKEN)[1].form["refresh_token"], "refresh-1");
+    assert_eq!(stored_refresh(&account).as_deref(), Some("refresh-2"));
+}
+
+#[test]
+fn a_server_error_on_refresh_keeps_this_computer_signed_in() {
+    let server = Server::start();
+    server.reply(
+        TOKEN,
+        500,
+        serde_json::json!({"title": "Something went wrong on our side."}),
+    );
+    let account = signed_in(&server, "refresh-1");
+    let error = account
+        .get(&server.base, "v1/usage?range=period")
+        .unwrap_err();
+    assert_eq!(error.describe(), "Something went wrong on our side.");
+    assert_eq!(stored_refresh(&account).as_deref(), Some("refresh-1"));
+}
+
+#[test]
+fn usage_and_runs_are_read_with_the_bearer_token_and_passed_through_whole() {
+    // The contract's own example, with the alert email off: the frontend
+    // reads `alert_pct: null`, so nothing here may turn it into a number.
+    let usage = serde_json::json!({
+        "range": {"from": "2026-11-01", "to": "2026-11-04"},
+        "period": {"from": "2026-11-01", "to": "2026-11-30", "resets": "2026-12-01"},
+        "totals": {
+            "cost_micros": 0,
+            "by_source": {},
+            "unbilled_runs": {"own_claude": 3, "own_codex": 1}
+        },
+        "daily": [],
+        "projects": ["Anomaly"],
+        "limit": {
+            "monthly_limit_micros": 50_000_000,
+            "spent_this_period_micros": 0,
+            "alert_pct": null,
+            "pause_at_limit": true,
+            "projected_date": null
+        },
+        "synced_at": "2026-11-04T18:00:00.000Z"
+    });
+    let runs = serde_json::json!({
+        "runs": [{
+            "id": "3b2f8c1e-6a4d-4e8b-9c1f-2d3e4f5a6b7c", "name": "Fix the crate",
+            "project": "Anomaly", "harness": "claude_code", "status": "finished",
+            "started_at": "2026-11-04T17:20:00.000Z", "tokens": null,
+            "cost_micros": null, "billed": false
+        }],
+        "next_cursor": null
+    });
+    let server = Server::start();
+    server
+        .reply(TOKEN, 200, tokens("access-1", "refresh-2"))
+        .reply("GET /v1/usage?range=7d&project=Anomaly", 200, usage.clone())
+        .reply("GET /v1/runs?limit=50", 200, runs.clone());
+    let account = signed_in(&server, "refresh-1");
+
+    assert_eq!(
+        account
+            .get(&server.base, "v1/usage?range=7d&project=Anomaly")
+            .unwrap(),
+        usage
+    );
+    assert_eq!(account.get(&server.base, "v1/runs?limit=50").unwrap(), runs);
+    let seen = server.seen("GET /v1/runs?limit=50");
+    assert_eq!(seen[0].auth.as_deref(), Some("Bearer access-1"));
+    // One refresh served both reads.
+    assert_eq!(server.seen(TOKEN).len(), 1);
+}
+
+#[test]
+fn the_shipped_defaults_are_the_live_service_and_its_site() {
+    use crate::settings::{DEFAULT_ACCOUNT_API, DEFAULT_ACCOUNT_WEB};
+    // Called directly, never through Hosting, and everything before `/v1`.
+    assert!(
+        DEFAULT_ACCOUNT_API.starts_with("https://") && DEFAULT_ACCOUNT_API.ends_with(".run.app")
+    );
+    assert_eq!(
+        wire::url(DEFAULT_ACCOUNT_API, "v1/me"),
+        format!("{DEFAULT_ACCOUNT_API}/v1/me")
+    );
+    // The approve page the service sends and the pages the app opens are one
+    // site, so the browser's session cookie covers both.
+    assert!(DEFAULT_ACCOUNT_WEB.starts_with("https://") && !DEFAULT_ACCOUNT_WEB.ends_with('/'));
+    assert!(super::methods::safe_to_open(&format!(
+        "{DEFAULT_ACCOUNT_WEB}/device"
+    )));
+    assert!(
+        Account::new(Box::<MemoryStore>::default())
+            .status(DEFAULT_ACCOUNT_API)
+            .configured
+    );
 }
 
 #[test]
