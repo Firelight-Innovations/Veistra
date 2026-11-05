@@ -1,0 +1,55 @@
+/*
+ * Small shared pieces the shell's regions draw alike. Tokens only.
+ */
+
+/* --- avatar ----------------------------------------------------------------
+   Width, height and type size come from the component, so one rule serves the
+   22px title-bar button and the 64px Profile row. */
+
+.k-avatar {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--txt-on-accent);
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+
+.k-avatar--photo {
+  object-fit: cover;
+  background: var(--bg-layer-3);
+}
+
+.k-avatar--empty {
+  background: var(--bg-layer-3);
+  color: var(--txt-secondary);
+}
+
+/* --- segmented ---------------------------------------------------------------
+   The track is `.k-tabs--segmented`; a segment is a button, so it takes the
+   font and cursor a tab in a strip would have inherited. */
+
+.k-segment {
+  padding: 0 var(--space-3);
+  color: var(--txt-tertiary);
+  font: var(--type-body);
+  cursor: pointer;
+}
+
+.k-segment:hover {
+  color: var(--txt-primary);
+}
+
+.k-segment[aria-selected="true"] {
+  font: var(--type-body-strong);
+}
+
+.k-segment:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}

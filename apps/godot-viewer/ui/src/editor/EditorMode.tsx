@@ -7,12 +7,11 @@
  * cannot be placed (the backend's `popOut`, or a placement that failed) the
  * same editor runs in its own window and the pane says so.
  *
- * The Veistra bar keeps the toolbar's five slots: the mode; the environment,
- * project and scene; one state chip; Viewport only, Mark up and Send
- * selection; Pop out and Close. The three actions need the Veistra plugin
- * (`src-tauri/src/godot/veistra_editor.gd`), which is opt-in per project, and
- * each says why while it cannot act. Opening is always a press, never a
- * mount: starting an editor behind someone's back would be a surprise.
+ * The bar's five slots: the mode; the environment, project and scene; one
+ * state chip; Viewport only, Mark up and Send selection, which need the
+ * opt-in Veistra plugin (`src-tauri/src/godot/veistra_editor.gd`) and say why
+ * while they cannot act; Pop out. No Close: Godot is quit from inside it,
+ * which asks to save first. In the pane the editor opens by itself (`AutoOpen`).
  *
  * One poll drives the view: `godot/editor-state` every half second, one call
  * at a time. It also says when an agent works in this environment, which is
@@ -22,11 +21,12 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { reportPainted } from "@veistra/bridge";
 import type { CameraPose } from "@veistra/markup";
 import type { MarkupExport } from "@veistra/markup/layer";
-import { Maximize2, PenLine, PictureInPicture2, Scan, Send, X } from "lucide-react";
+import { Maximize2, PenLine, PictureInPicture2, Scan, Send } from "lucide-react";
 import { EditorReason } from "../../../../shared/EditorReason";
 import { useEditorEvents } from "../../../../shared/editorEvents";
+import { revealName, usePublishReport, type RevealRequest } from "../../../../shared/editorReveal";
 import { errorText } from "../../../../shared/godot";
-import { base64Blob, GODOT_TARGET, sendMarkup } from "../../../../shared/markupFlow";
+import { base64Blob, GODOT_TARGET, markupToAgent } from "../../../../shared/markupFlow";
 import type { WindowRect } from "../../../../shared/nativeBox";
 import { dock, embedRect, embedStill, popOut } from "../../../../shared/nativeWindow";
 import { useNativeBox } from "../../../../shared/useNativeBox";
@@ -40,7 +40,6 @@ import { focusIfDropped, type ModeProps } from "../modes";
 import { resolvePins } from "../play/pins";
 import { getState as readScenes } from "../rpc";
 import {
-  closeEditor,
   editorAck,
   editorCapture,
   editorOpenScene,
@@ -55,17 +54,14 @@ import {
   type EditorCamera,
   type EditorState,
 } from "./rpc";
+import PluginConsent from "./PluginConsent";
+import { godotPlace, godotReport, revealInGodot } from "./reveal";
 import { sendSelection } from "./selection";
 import "./editor.css";
 
 const FrameMarkup = lazy(() => import("../play/FrameMarkup"));
 
 const POLL_MS = 500;
-/**
- * How long Closing shows with the editor still running: the person may have
- * cancelled Godot's save prompt, and then the editor simply stays.
- */
-const CLOSING_MS = 15_000;
 /** How long Send selection says Sent. */
 const SENT_MS = 1800;
 
@@ -76,6 +72,9 @@ export interface EditorModeProps extends ModeProps {
   frameRect: WindowRect | null;
   /** The shell's open overlays (`veistra/overlays`). */
   overlays: WindowRect[];
+  /** A chip clicked in the agent tab, to show in the editor once it can. */
+  reveal?: RevealRequest | null;
+  onRevealHandled?: (n: number) => void;
 }
 
 interface Marking {
@@ -87,15 +86,9 @@ interface Marking {
 }
 
 /** Slot 3: one word for where the editor is. */
-export function editorChip(state: EditorState | null, closing: boolean): ToolbarStatus {
+export function editorChip(state: EditorState | null): ToolbarStatus {
   const editor = state?.editor;
   if (!editor) return { tone: "idle", label: "Not open" };
-  if (closing)
-    return {
-      tone: "warning",
-      label: "Closing",
-      title: "Godot asks to save anything unsaved first. Answer it in the editor.",
-    };
   const embed = editor.embed.state;
   switch (embed.kind) {
     case "waiting":
@@ -108,6 +101,49 @@ export function editorChip(state: EditorState | null, closing: boolean): Toolbar
       return { tone: "warning", label: "Own window", title: embed.reason };
   }
 }
+
+const NOT_NOW = "godot.plugin.notNow";
+
+const notNowKey = (root: string | null | undefined, rel: string) =>
+  `${NOT_NOW}.${root ?? ""}|${rel}`;
+
+/**
+ * Whether the plugin question was answered Not now, or the plugin removed, for
+ * this project in this environment. Every Godot frame shares one origin and so
+ * one `localStorage`, which is what lets every pane on the project skip the
+ * question. Storage can throw (blocked, private); then it is asked again.
+ */
+function saidNotNow(root: string | null | undefined, rel: string): boolean {
+  try {
+    return localStorage.getItem(notNowKey(root, rel)) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function rememberNotNow(root: string | null | undefined, rel: string): void {
+  try {
+    localStorage.setItem(notNowKey(root, rel), "1");
+  } catch {
+    // Asked again next time instead.
+  }
+}
+
+/**
+ * Where the editor goes in the pane, Editor mode opens it on mount, on the
+ * project shown, with no press. A project with no plugin is asked about it
+ * first (`PluginConsent`), and the editor opens on either answer. Nothing is
+ * opened by itself where it would pop out into its own window, where the
+ * first poll finds one open or just ended, or once it has ended in this
+ * mount, quit or crashed: the pane says so and Open the editor is a press.
+ * The read-only checkout, a cloud session and a missing Godot never get
+ * here; `App.tsx` shows the viewer for them.
+ *
+ * `waiting` is for the first poll and the status, `asking` for the plugin
+ * question, `done` once the editor was opened or there was a reason not to.
+ * It is never set back, so it happens once per mount.
+ */
+type AutoOpen = "waiting" | "asking" | "done";
 
 /** The editor's camera as the markup format names it, when the plugin read all of it. */
 function cameraPose(c: EditorCamera | undefined): CameraPose | null {
@@ -124,11 +160,12 @@ export default function EditorMode(props: EditorModeProps) {
   const [picked, setPicked] = useState<string | undefined>(undefined);
   const [scenes, setScenes] = useState<{ rel: string; list: string[] } | null>(null);
   const [opening, setOpening] = useState(false);
-  const [closing, setClosing] = useState(false);
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [marking, setMarking] = useState<Marking | null>(null);
   const [consentOpen, setConsentOpen] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [auto, setAuto] = useState<AutoOpen>("waiting");
   const [pickerOpen, setPickerOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
 
@@ -172,9 +209,16 @@ export default function EditorMode(props: EditorModeProps) {
   // The presses in the editor's own Veistra dock (#320): the poll hands them
   // on, and this mode carries each out and answers it (`editorEvents.ts`).
   const tab = useEditorEvents(
-    { tool: "godot", where: () => view?.scene || null, markup: beginMarkup },
+    {
+      tool: "godot",
+      where: () => view?.scene || null,
+      markup: beginMarkup,
+      place: () => godotPlace(editor, status?.environment.root ?? null),
+    },
     editorAck,
   );
+  // What the agent tab's @ menu lists from this editor (`editorMention.ts`).
+  usePublishReport("godot", godotReport(editor));
   const takeEvents = tab.take;
 
   // The poll. One call at a time: the next is asked for only once this one
@@ -208,20 +252,93 @@ export default function EditorMode(props: EditorModeProps) {
   }, [events, takeEvents]);
 
   const open = editor !== null;
-  // The editor going away ends Closing, and a Closing nobody answered lapses.
-  useEffect(() => {
-    if (!open) setClosing(false);
-  }, [open]);
-  useEffect(() => {
-    if (!closing) return;
-    const timer = setTimeout(() => setClosing(false), CLOSING_MS);
-    return () => clearTimeout(timer);
-  }, [closing]);
-  // Open the editor, and Close, go with what they changed: the focus is put
+  // The editor opening, or quitting, takes away what had the focus: it is put
   // back on the pane so F5 there is not the page's reload.
   useEffect(() => focusIfDropped(root.current), [open]);
 
   const rel = chosen?.rel;
+  const envRoot = status?.environment.root;
+  const pluginProblem = status?.pluginProblem ?? null;
+  // What Open the editor needs: a Godot 4 project, somewhere writable, and a
+  // surface that is the editor rather than the viewer.
+  const launchable =
+    chosen !== undefined &&
+    chosen.engineMajor >= 4 &&
+    status?.environment.readOnly === false &&
+    surface !== undefined &&
+    surface.surface !== "viewer";
+  const embedsHere = launchable && surface?.surface === "embedded";
+  const askFirst =
+    launchable && chosen.plugin === "no" && !pluginProblem && !saidNotNow(envRoot, chosen.rel);
+  const polled = ed !== null;
+
+  // A press clears what the pane said before; the open on mount keeps it, so
+  // a plugin install that failed just before is still said once Godot opens.
+  const openOn = useCallback(async (project: string | undefined, pressed: boolean) => {
+    if (pressed) {
+      setProblem(null);
+      setNotice(null);
+    }
+    setOpening(true);
+    setEnded(null);
+    try {
+      setEd(await openEditor(project));
+    } catch (e) {
+      setProblem(errorText(e));
+    } finally {
+      setOpening(false);
+    }
+  }, []);
+
+  // Opening on mount: decided once the first poll has said whether an editor
+  // runs, and once the status has named the project. An editor already open,
+  // or one that ended before this got there, settles it without opening one.
+  // The plugin question comes first, and either answer lets the open go on.
+  useEffect(() => {
+    if (!polled || auto === "done") return;
+    if (open || ended) {
+      setAuto("done");
+      return;
+    }
+    if (!launchable) return;
+    if (auto === "waiting" && askFirst) {
+      setAuto("asking");
+      setConsentOpen(true);
+      return;
+    }
+    if (consentOpen) return;
+    setAuto("done");
+    if (embedsHere) void openOn(rel, false);
+  }, [polled, auto, open, ended, launchable, askFirst, consentOpen, embedsHere, openOn, rel]);
+
+  // From mount until the open answers, the pane says Opening rather than
+  // offering a press that is about to happen by itself.
+  const starting =
+    opening || (auto !== "done" && embedsHere && !consentOpen && !open && !ended && !problem);
+
+  // A chip clicked in the agent tab: shown once the plugin can act, which on
+  // a pane that just opened is after the editor and its plugin have started.
+  // With no editor coming, or no plugin in it, the pane says so instead.
+  const { reveal, onRevealHandled } = props;
+  const revealing = useRef<number | null>(null);
+  useEffect(() => {
+    if (!reveal || revealing.current === reveal.n) return;
+    const give = (text: string | null) => {
+      if (text !== null) setNotice(text);
+      onRevealHandled?.(reveal.n);
+    };
+    if (editor && pluginReady && view) {
+      revealing.current = reveal.n;
+      revealInGodot(reveal, editor).then(give, (e: unknown) => {
+        setProblem(errorText(e));
+        give(null);
+      });
+    } else if (editor && editor.plugin.installed === "no") {
+      give(why ?? `Enable the Veistra plugin to show ${revealName(reveal)} in the editor.`);
+    } else if (!editor && polled && auto === "done" && !starting) {
+      give(`Open the editor to show ${revealName(reveal)} in it.`);
+    }
+  }, [reveal, onRevealHandled, editor, pluginReady, view, why, polled, auto, starting]);
   useEffect(() => {
     if (rel === undefined) return;
     let live = true;
@@ -244,23 +361,7 @@ export default function EditorMode(props: EditorModeProps) {
     generation: editor?.pid ?? null,
   });
 
-  const doOpen = () =>
-    void guarded(async () => {
-      setOpening(true);
-      setEnded(null);
-      setNotice(null);
-      try {
-        setEd(await openEditor(chosen?.rel));
-      } finally {
-        setOpening(false);
-      }
-    });
-
-  const doClose = () =>
-    void guarded(async () => {
-      await closeEditor();
-      setClosing(true);
-    });
+  const doOpen = () => void openOn(chosen?.rel, true);
 
   const doViewportOnly = () =>
     void guarded(async () => {
@@ -317,19 +418,30 @@ export default function EditorMode(props: EditorModeProps) {
       json.source = { ...json.source, engine: "godot", view: "editor", scene: m.scene || null };
       const pose = cameraPose(m.camera);
       if (pose) json.camera = pose;
-      await sendMarkup(GODOT_TARGET, result.png, json, m.scene || null);
-      setNotice("Markup sent to the agent.");
+      setNotice(await markupToAgent(GODOT_TARGET, result.png, json, m.scene || null));
     });
     endMarkup();
   };
 
+  // Removing the plugin is an answer to the question as well, so it is not
+  // asked again on this project.
   const changePlugin = async (install: boolean) => {
+    if (!chosen) return;
+    const project = chosen.rel;
+    setInstalling(true);
     await guarded(async () => {
-      await (install ? installPlugin(chosen?.rel) : removePlugin(chosen?.rel));
+      if (!install) rememberNotNow(envRoot, project);
+      await (install ? installPlugin(project) : removePlugin(project));
       await reloadStatus(false);
     });
+    setInstalling(false);
     setConsentOpen(false);
   };
+
+  const notNow = useCallback(() => {
+    if (rel !== undefined) rememberNotNow(envRoot, rel);
+    setConsentOpen(false);
+  }, [envRoot, rel]);
 
   // Slot 2: the environment first (DECISIONS X4), then which project, then
   // which scene. The scene picker opens a scene in the editor, so it is there
@@ -346,7 +458,7 @@ export default function EditorMode(props: EditorModeProps) {
           aria-label="Godot project"
           value={chosen?.rel ?? ""}
           disabled={open}
-          title={open ? "Close the editor to open another project." : undefined}
+          title={open ? "Quit the editor to open another project." : undefined}
           onFocus={() => setPickerOpen(true)}
           onBlur={() => setPickerOpen(false)}
           onChange={(e) => setPicked(e.target.value)}
@@ -440,22 +552,10 @@ export default function EditorMode(props: EditorModeProps) {
         icon={icon(popped ? Maximize2 : PictureInPicture2)}
         onClick={() => void guarded(() => (popped ? dock("godotEditor") : popOut("godotEditor")))}
       />
-      <ToolbarButton
-        label="Close the editor"
-        disabled={!open}
-        title={
-          open
-            ? "Close the editor. Godot asks to save anything unsaved first."
-            : "The editor is not open."
-        }
-        icon={icon(X)}
-        onClick={doClose}
-      />
     </>
   );
 
   const plugin = chosen?.plugin ?? "no";
-  const pluginProblem = status?.pluginProblem ?? null;
 
   return (
     <div className="ge" ref={root} tabIndex={-1} onKeyDown={keepReloadKeys}>
@@ -463,7 +563,7 @@ export default function EditorMode(props: EditorModeProps) {
         label="Godot"
         mode={modeSwitch}
         subject={subject}
-        status={editorChip(ed, closing)}
+        status={editorChip(ed)}
         actions={actions}
         leave={leave}
       />
@@ -540,19 +640,21 @@ export default function EditorMode(props: EditorModeProps) {
                   ? "No project.godot in this environment (looked four folders deep)."
                   : chosen.engineMajor < 4
                     ? `${chosen.name} is a Godot 3 project. Veistra drives Godot 4.x.`
-                    : surface?.surface === "popOut"
-                      ? "It opens in its own window, for the reason above."
-                      : "It opens here, in this pane, with its own dialogs inside it."}
+                    : starting
+                      ? "Opening it here, in this pane."
+                      : surface?.surface === "popOut"
+                        ? "It opens in its own window, for the reason above."
+                        : "It opens here, in this pane, with its own dialogs inside it."}
               </p>
               <button
                 type="button"
                 className="k-btn k-btn--primary"
-                disabled={!chosen || chosen.engineMajor < 4 || opening}
+                disabled={!chosen || chosen.engineMajor < 4 || starting}
                 onClick={doOpen}
               >
-                {opening ? "Opening…" : "Open the editor"}
+                {starting ? "Opening…" : "Open the editor"}
               </button>
-              {chosen && chosen.engineMajor >= 4 && (
+              {!starting && chosen && chosen.engineMajor >= 4 && (
                 <p className="ge__launch-text ge__launch-plugin">
                   {pluginProblem ??
                     (plugin === "yes"
@@ -599,48 +701,13 @@ export default function EditorMode(props: EditorModeProps) {
       </main>
 
       {consentOpen && chosen && (
-        <div className="ge__consent" role="dialog" aria-label="Enable the Veistra plugin">
-          <strong>Add the Veistra plugin to {chosen.name}?</strong>
-          <ul>
-            <li>
-              Three files, <code>addons/veistra/plugin.cfg</code>,{" "}
-              <code>addons/veistra/veistra_editor.gd</code> and{" "}
-              <code>addons/veistra/veistra_dock.gd</code>, and one <code>[editor_plugins]</code>{" "}
-              line in <code>{chosen.rel === "." ? "" : `${chosen.rel}/`}project.godot</code>.
-            </li>
-            <li>
-              While the editor runs from Veistra it reports the selected nodes, the edited scene,
-              the 3D camera and a picture of the viewport. It takes three commands, select a node,
-              open a scene and Viewport only, and saves or closes the editor when you press Save all
-              or Close here.
-            </li>
-            <li>
-              It adds a Veistra dock to the editor with the notes on the selected node. Its buttons
-              ask Veistra to act; the dock never writes the notes itself.
-            </li>
-            <li>It talks to Veistra through a temporary folder. No network port.</li>
-            <li>
-              It does nothing in an exported build, or when you open the project in Godot yourself.
-              Remove it here at any time.
-            </li>
-          </ul>
-          <div className="ge__consent-actions">
-            <button
-              type="button"
-              className="k-btn k-btn--secondary k-btn--sm"
-              onClick={() => setConsentOpen(false)}
-            >
-              Not now
-            </button>
-            <button
-              type="button"
-              className="k-btn k-btn--primary k-btn--sm"
-              onClick={() => void changePlugin(true)}
-            >
-              Add to this project
-            </button>
-          </div>
-        </div>
+        <PluginConsent
+          name={chosen.name}
+          rel={chosen.rel}
+          busy={installing}
+          onAdd={() => void changePlugin(true)}
+          onNotNow={notNow}
+        />
       )}
     </div>
   );

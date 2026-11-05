@@ -22,8 +22,8 @@ import ToolHealthBadge, { toolHealthLabel, unhealthyTools } from "./ToolHealthBa
 import type { UnhealthyTool } from "./HealthPopover";
 import { useCollapsedTitlebarActions } from "./useNarrowTitlebar";
 
-/** Where Upgrade goes until there is a plans page of our own to send people to. */
-export const UPGRADE_URL = "https://veistra.com";
+/** Where Upgrade goes; shared with Settings' Billing page (`../upgrade.ts`). */
+export { UPGRADE_URL } from "../upgrade";
 
 const MORE = "More actions";
 

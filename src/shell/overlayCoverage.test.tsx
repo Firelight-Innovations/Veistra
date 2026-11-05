@@ -54,7 +54,7 @@ describe("the shell's covers count as overlays", () => {
 
   it("an expanded rail page, and not a docked one", () => {
     const page = (mode: "docked" | "expanded") => (
-      <PageSurface mode={mode} reduced width={motionValue(380)} onSettled={() => {}}>
+      <PageSurface mode={mode} width={motionValue(380)}>
         <p>page</p>
       </PageSurface>
     );

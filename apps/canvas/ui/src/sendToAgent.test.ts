@@ -76,14 +76,22 @@ describe("what is put in the store", () => {
       title: "Design - World, 3 elements",
       label: "Design - World",
       bytesBase64: "aGk=",
+      prompt:
+        "3 elements I selected on the design canvas World, as a picture. Use it for what I ask.",
     });
   });
 
   it("sends a spec card as JSON text that parses back", async () => {
     const json = JSON.stringify({ name: "Gurney", size_m: 2 }, null, 2);
     await putSpecCard("Gurney", "canvas/world.json", json);
-    const params = bridge.invoke.mock.calls[0]![1] as { kind: string; title: string; text: string };
+    const params = bridge.invoke.mock.calls[0]![1] as {
+      kind: string;
+      title: string;
+      text: string;
+      prompt: string;
+    };
     expect(params.kind).toBe("text");
+    expect(params.prompt).toMatch(/spec card "Gurney"/);
     expect(params.title).toBe("Spec - Gurney");
     expect(params.text).toBe(specText("canvas/world.json", json));
     const body = params.text.split("```json\n")[1]!.split("\n```")[0]!;

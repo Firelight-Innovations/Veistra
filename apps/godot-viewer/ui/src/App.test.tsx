@@ -33,6 +33,7 @@ vi.mock("@veistra/bridge", () => ({
     return () => events.delete(event);
   },
   session: () => Promise.resolve({ projectPath: null, instanceId: "i1" }),
+  publish: vi.fn(),
 }));
 
 import App from "./App";
@@ -212,13 +213,14 @@ describe("Godot Viewer toolbar", () => {
 
   // Read once at mount, the status kept the main checkout's read-only answer
   // after the cluster moved to a worktree, and Open in Godot stayed disabled.
-  // On a worktree with Godot, Editor mode is now the editor itself.
-  it("turns to the editor once the cluster moves to a worktree", async () => {
+  // On a worktree with Godot, Editor mode is now the editor itself, and it
+  // opens by itself.
+  it("turns to the editor once the cluster moves to a worktree, and opens it", async () => {
     let readOnly = true;
     backend(undefined, {
       godotFound: "C:/godot.exe",
       readOnly: () => readOnly,
-      projects: [HALL],
+      projects: [{ ...HALL, plugin: "yes" }],
     });
     render(<App />);
     const open = (await screen.findByRole("button", {
@@ -226,13 +228,12 @@ describe("Godot Viewer toolbar", () => {
     })) as HTMLButtonElement;
     await waitFor(() => expect(open.title).toMatch(/read-only/));
     expect(open.disabled).toBe(true);
+    expect(calls("godot/editor-open")).toHaveLength(0);
     const reads = calls("godot/status").length;
     readOnly = false;
     events.get("project:changed")?.({ clusterId: "c1" });
-    const launch = (await screen.findByRole("button", {
-      name: "Open the editor",
-    })) as HTMLButtonElement;
-    expect(launch.disabled).toBe(false);
+    await waitFor(() => expect(calls("godot/editor-open")).toHaveLength(1));
+    expect(calls("godot/editor-open")[0]![1]).toEqual({ project: "." });
     expect(calls("godot/status").length).toBeGreaterThan(reads);
     expect(screen.queryByRole("button", { name: "Open in Godot" })).toBeNull();
   });
@@ -292,18 +293,21 @@ describe("Godot Viewer toolbar", () => {
   });
 
   // The editor was in its own window, and the pane showed the viewer with a
-  // footer saying so, until #316 put it in the pane.
-  it("shows the editor's box on an embedder's answer, and opens it only on a press", async () => {
+  // footer saying so, until #316 put it in the pane. It opens by itself now,
+  // once the plugin question is answered.
+  it("shows the editor's box on an embedder's answer, and opens it after the plugin question", async () => {
     backend(undefined, { godotFound: "C:/godot.exe", projects: [HALL] });
     render(<App />);
-    const launch = await screen.findByRole("button", { name: "Open the editor" });
+    const dialog = await screen.findByRole("dialog", { name: "Enable the Veistra plugin" });
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
     expect(screen.getByText(/It opens here, in this pane/)).toBeTruthy();
     // The viewer is not under it: no tree, no footer.
     expect(screen.queryByRole("button", { name: "Send tree" })).toBeNull();
     expect(calls("godot/editor-open")).toHaveLength(0);
-    fireEvent.click(launch);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Not now" }));
     await waitFor(() => expect(calls("godot/editor-open")).toHaveLength(1));
     expect(calls("godot/editor-open")[0]![1]).toEqual({ project: "." });
+    expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.queryByRole("note")).toBeNull();
   });
 
@@ -477,7 +481,8 @@ describe("Godot Editor surface (the backend's `editor`)", () => {
   });
 
   // Pop out: no embedder here (macOS, Linux, Wayland). The editor still opens
-  // from the pane, in its own window, and the line says why.
+  // from the pane, in its own window, and the line says why. Only on a press:
+  // a window of its own appearing by itself would be a surprise.
   it("pops out where there is no embedder, with the reason and Open the editor", async () => {
     backend(undefined, {
       godotFound: "/usr/bin/godot",
@@ -494,6 +499,12 @@ describe("Godot Editor surface (the backend's `editor`)", () => {
     expect(note.textContent).toContain("Linux with Wayland");
     expect(toolbar().nextElementSibling).toBe(note);
     expect(screen.getByText(/It opens in its own window, for the reason above/)).toBeTruthy();
+    const dialog = await screen.findByRole("dialog", { name: "Enable the Veistra plugin" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Not now" }));
+    await waitFor(() => expect(calls("godot/editor-state").length).toBeGreaterThan(2), {
+      timeout: 3000,
+    });
+    expect(calls("godot/editor-open")).toHaveLength(0);
     const launch = screen.getByRole("button", { name: "Open the editor" }) as HTMLButtonElement;
     expect(launch.disabled).toBe(false);
     fireEvent.click(launch);

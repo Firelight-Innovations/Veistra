@@ -27,6 +27,8 @@ vi.mock("@veistra/bridge", () => ({
   },
   reportPainted: vi.fn(),
   openIn: vi.fn(),
+  publish: vi.fn(),
+  OPENED_EVENT: "veistra:opened",
 }));
 
 import App from "./App";
@@ -83,18 +85,38 @@ const STATE = {
   },
 };
 
+/** Blender as `editor-open` starts it: its window not placed yet, the boot script not started. */
+const STARTING = {
+  file: "bed.blend",
+  opened: "bed.blend",
+  pid: 4100,
+  blender: "4.2",
+  embed: { state: { kind: "waiting" }, still: false },
+  booted: false,
+  script: null,
+  why: "Blender is starting.",
+  dirty: null,
+  lock: null,
+  conflict: null,
+  view: null,
+};
+
 function backend(
   put: () => unknown = () => ({ key: "k" }),
   state: object = {},
   comments: unknown[] = [],
 ) {
+  // Once opened, Blender runs, and every poll after says so.
+  let blender: typeof STARTING | null = null;
   bridge.invoke.mockImplementation((method: string) => {
     if (method === "blender-viewer/state") return Promise.resolve({ ...STATE, ...state });
     if (method === "comments/list") return Promise.resolve(comments);
     if (method === "context/put") return Promise.resolve(put());
-    if (method === "blender-viewer/editor-state") return Promise.resolve({ editor: null });
-    if (method === "blender-viewer/editor-open")
-      return Promise.resolve({ editor: null, ended: null });
+    if (method === "blender-viewer/editor-state") return Promise.resolve({ editor: blender });
+    if (method === "blender-viewer/editor-open") {
+      blender = STARTING;
+      return Promise.resolve({ editor: blender });
+    }
     return Promise.resolve(null);
   });
 }
@@ -237,21 +259,25 @@ describe("Blender Viewer toolbar", () => {
     render(<App />);
     const editor = await screen.findByRole("tab", { name: "Editor" });
     expect(editor.getAttribute("aria-selected")).toBe("true");
-    expect(await screen.findByRole("button", { name: "Open in Blender" })).toBeTruthy();
+    // Editor mode opens Blender by itself, on the file shown, with no press.
+    await waitFor(() => expect(calls("blender-viewer/editor-open")).toHaveLength(1));
+    expect(calls("blender-viewer/editor-open")[0]![1]).toEqual({ blend: "bed.blend" });
+    expect(await screen.findByText("Starting")).toBeTruthy();
     // Blender's bar, not the export's: no export chip and no export views.
     expect(screen.queryByRole("tablist", { name: "Export view" })).toBeNull();
     expect(screen.queryByText("Up to date")).toBeNull();
-    // Opening is a press, never a mount.
-    expect(calls("blender-viewer/editor-open")).toHaveLength(0);
   });
 
   it("starts Blender from Renders' Open in Blender, holding its lock, and goes to Editor", async () => {
     backend();
-    await renders();
+    render(<App />);
+    // Mounting in Editor mode opened it once already; Renders' press is its own call.
+    await waitFor(() => expect(calls("blender-viewer/editor-open")).toHaveLength(1));
+    fireEvent.click(await screen.findByRole("tab", { name: "Renders" }));
     const bar = screen.getByRole("toolbar", { name: "Blender" });
     fireEvent.click(within(bar).getByRole("button", { name: "Open in Blender" }));
-    await waitFor(() => expect(calls("blender-viewer/editor-open")).toHaveLength(1));
-    expect(calls("blender-viewer/editor-open")[0]![1]).toEqual({ blend: "bed.blend" });
+    await waitFor(() => expect(calls("blender-viewer/editor-open")).toHaveLength(2));
+    expect(calls("blender-viewer/editor-open")[1]![1]).toEqual({ blend: "bed.blend" });
     // The detached launch holds no lock, so the app no longer uses it.
     expect(calls("blender-viewer/open")).toHaveLength(0);
     await waitFor(() =>
@@ -259,6 +285,9 @@ describe("Blender Viewer toolbar", () => {
         "true",
       ),
     );
+    // Back in Editor mode the poll finds Blender running, so nothing opens a second one.
+    await screen.findByText("Starting");
+    expect(calls("blender-viewer/editor-open")).toHaveLength(2);
   });
 
   it("names who asked for an export it starts: the person", async () => {

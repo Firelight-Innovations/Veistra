@@ -51,9 +51,10 @@ who has never seen the repo.
   frontend, or an agent, uses to browse, edit and delete files.
 - **[The MCP server manager](../mcp-server-manager.md)** — how Veistra hosts
   MCP servers for a coding agent, and the rule that decides what earns one.
-- **[Tutorials](../tutorials.md)** — how the in-app Tutorials feature itself
-  is built, if you're adding or editing one. (Not to be confused with the
-  tutorial *content* in [the user docs](../user/tutorials/README.md).)
+- **[Docs](../docs-app.md)** — how the in-app Docs pane reads
+  [veistra.com/docs](https://veistra.com/docs) live, what it does offline, and
+  what the website must keep serving for installed builds. The docs and
+  tutorials themselves are written on the website, not in this repository.
 - **[Branding](../branding.md)** — which names are branding (configurable)
   and which are wire formats (frozen), and the two scripts that enforce the
   distinction.

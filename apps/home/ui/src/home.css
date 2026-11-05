@@ -426,7 +426,7 @@
   outline-offset: -1px;
 }
 
-/* --- Tutorials ------------------------------------------------------------ */
+/* --- Docs ----------------------------------------------------------------- */
 
 .home__cards {
   display: flex;
@@ -434,9 +434,8 @@
   gap: 8px;
 }
 
-/* A button now rather than a bare `li`. The card used to be inert and drawn at
-   0.72 opacity to say so; it opens the tutorial it names, so it is at full
-   strength and takes a hover like anything else that goes somewhere. */
+/* A button rather than a bare `li`: it opens the docs page it names, so it
+   takes a hover like anything else that goes somewhere. */
 .home__card {
   display: flex;
   align-items: flex-start;
@@ -460,16 +459,9 @@
   color: var(--text);
 }
 
-/* Read already: dimmed rather than hidden. The column offers the next few
-   unread ones, so a card only appears here having been read when everything
-   has been. */
-.home__card--done {
-  opacity: 0.6;
-}
-
-/* Drawn as the quiet caption it replaces rather than as a fourth card, because
-   it is a way *through* the list rather than an item in it. */
-.home__all-tutorials {
+/* Drawn as a quiet caption rather than as a fourth card, because it is a way
+   *through* the list rather than an item in it. */
+.home__all-docs {
   margin: 12px 0 0;
   padding: 0;
   border: 0;
@@ -483,17 +475,15 @@
   text-decoration-color: var(--line-2);
 }
 
-.home__all-tutorials:hover {
+.home__all-docs:hover {
   color: var(--text-dim);
   text-decoration-color: var(--accent-line);
 }
 
-.home__card-min {
-  flex: 0 0 auto;
-  margin-left: auto;
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-faint);
+.home__docs-url {
+  font-family: var(--mono);
+  color: var(--text-dim);
+  user-select: text;
 }
 
 .home__card-mark {

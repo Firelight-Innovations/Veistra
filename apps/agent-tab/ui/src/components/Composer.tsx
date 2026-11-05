@@ -6,6 +6,7 @@ import { useSlots } from "./registry";
 import type { ComposerProps } from "./types";
 import "./composer.css";
 import "./composer-effects.css";
+import "./kinds.css";
 
 /** What a press on the card that misses its controls should not take focus from. */
 const INTERACTIVE = "button, a, input, textarea, select, [role='menu'], [role='listbox']";

@@ -15,7 +15,7 @@ Viewer with their folder as the project.
 ### Before you file a bug
 
 **Veistra is pre-alpha.** The window runs, and so do its own apps: Home, the File
-Explorer, the File Viewer, Tutorials and Agents. Whatever the notes below call
+Explorer, the File Viewer, Docs and Agents. Whatever the notes below call
 new is where bugs are most likely. When you report one, include the message
 the app showed.
 

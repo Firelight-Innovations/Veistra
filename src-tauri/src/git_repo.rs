@@ -417,11 +417,13 @@ mod tests {
         assert_eq!(repo_state(dir.path()), RepoState::Ready);
     }
 
+    /// It used to be read-only, like every main checkout; it is writable now.
     #[test]
-    fn the_checkout_of_a_master_only_repository_is_read_only() {
+    fn the_checkout_of_a_master_only_repository_is_main_and_writable() {
         let dir = master_only();
         let env = crate::environments::effective_environment(None, Some(dir.path()));
-        assert!(crate::environments::refuse_write_on_main(env.as_ref(), "write").is_err());
+        assert_eq!(env, Some(crate::environments::Environment::Main));
+        assert!(crate::environments::refuse_read_only_write(env.as_ref(), "write").is_ok());
     }
 
     #[test]

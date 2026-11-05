@@ -120,11 +120,10 @@ export default defineConfig(async ({ mode }) => ({
         "godot-viewer": resolve(__dirname, "apps/godot-viewer/ui/index.html"),
         "blender-viewer": resolve(__dirname, "apps/blender-viewer/ui/index.html"),
         canvas: resolve(__dirname, "apps/canvas/ui/index.html"),
-        tutorial: resolve(__dirname, "apps/tutorial/ui/index.html"),
+        docs: resolve(__dirname, "apps/docs/ui/index.html"),
         agents: resolve(__dirname, "apps/agents/ui/index.html"),
         "agent-tab": resolve(__dirname, "apps/agent-tab/ui/index.html"),
         costs: resolve(__dirname, "apps/costs/ui/index.html"),
-        usage: resolve(__dirname, "apps/usage/ui/index.html"),
         projects: resolve(__dirname, "apps/projects/ui/index.html"),
         // Design Mode is disabled and ships no bundle unless
         // `VEISTRA_DESIGN_MODE=1` — the twin of the `design-mode` Cargo feature.

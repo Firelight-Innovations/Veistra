@@ -27,6 +27,8 @@ export interface EditorView {
   /** The main screen: `2D`, `3D`, `Script`, `AssetLib`. */
   screen: string;
   selected: SelectedNode[];
+  /** The edited scene's nodes, root first, capped; a plugin before v3 leaves it out. */
+  nodes?: Array<{ path: string; type: string }>;
   viewportOnly: boolean;
 }
 
@@ -107,10 +109,6 @@ export const editorState = (eventsSince = 0) =>
 export const editorAck = (n: number, ok: boolean, message: string) =>
   invoke<{ acked: number }>("godot/editor-ack", { n, ok, message });
 
-/** Asks, as the window's close button would: Godot offers to save first. */
-export const closeEditor = () =>
-  invoke<{ closing: boolean; via: "window" | "plugin" }>("godot/editor-close", {});
-
 export const editorSelection = () => invoke<EditorSelection>("godot/editor-selection", {});
 
 export const editorCapture = (what: "viewport" | "window" = "viewport") =>
@@ -125,6 +123,9 @@ export const editorSelect = (paths: string[]) =>
 
 export const editorOpenScene = (scene: string) =>
   invoke<{ scene: string }>("godot/editor-open-scene", { scene });
+
+/** A scene opens as a tab, a script in its editor, a resource in the Inspector (plugin v3). */
+export const editorEdit = (path: string) => invoke<{ path: string }>("godot/editor-edit", { path });
 
 export const setViewportOnly = (on: boolean) =>
   invoke<{ viewportOnly: boolean }>("godot/editor-viewport-only", { on });

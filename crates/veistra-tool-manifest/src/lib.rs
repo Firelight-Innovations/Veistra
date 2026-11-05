@@ -91,7 +91,7 @@ pub struct ToolSection {
 /// `dev-url` on every surface would mean a Vite server per surface — four of
 /// them for a package with four views. One server with several HTML entry
 /// points is what this repository's own `vite.config.ts` does for Home, Files,
-/// Viewer and Tutorials, so a plugin repo is laid out the way the orchestrator
+/// Viewer and Docs, so a plugin repo is laid out the way the orchestrator
 /// already is. Each surface picks its document out of the one bundle with
 /// [`Surface::path`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,7 +168,7 @@ pub enum Presentation {
     #[default]
     Pane,
     /// Covers its cluster and is absent from both menus, reachable only when
-    /// something calls `veistra/open` for it. Home and Tutorials are the
+    /// something calls `veistra/open` for it. Home and Docs are the
     /// first-party precedent.
     Cover,
 }

@@ -30,7 +30,6 @@ machine.
 | `presets.json` | `presets/store.rs` | saved layout presets, not the built-ins | a library the user built by hand, one preset at a time |
 | `plugins.json` | `plugins/store.rs` | one record per installed package, and its switch | which apps you installed and where from |
 | `mcp.json` | `mcp/store.rs` | only server switches moved from their shipped state | which MCP servers you turned on or off |
-| `tutorials.json` | `apps/tutorial.rs` | the set of completed tutorial ids | tutorials offer themselves again |
 | `telemetry.json` | `telemetry.rs` | the anonymous install id, launch and event counts, which feedback prompts were shown | a new anonymous id, and a feedback question may be asked again |
 | `mcp-endpoint.json` | `mcp/handoff.rs` | this launch's port, token and pid | nothing — rewritten at every launch |
 | `plugins/` | `plugins/install.rs` | unpacked plugin checkouts, one directory per id | a re-download, if the source is still there |
@@ -45,7 +44,9 @@ fn file(app: &AppHandle) -> Option<PathBuf> {
 
 On this machine that is `%APPDATA%\com.firelightinnovations.<identifier>\`, and
 the directory the rename orphaned still holds `layout.json`,
-`mcp-endpoint.json`, `projects.json`, `settings.json` and `tutorials.json`.
+`mcp-endpoint.json`, `projects.json`, `settings.json` and `tutorials.json` (the
+last written by the bundled Tutorials app, since replaced by Docs; nothing reads
+it now).
 
 Two more things are user data and are not in that directory:
 
@@ -71,7 +72,7 @@ migration is allowed to throw away.
 
 **Reconstructible with effort** — losing it is annoying rather than
 destructive: `layout.json` (rearrange the windows again), `mcp.json` (flip the
-switches again), `tutorials.json`, `telemetry.json`, `plugins/` (re-download).
+switches again), `telemetry.json`, `plugins/` (re-download).
 
 **Cheap** — regenerated without the user noticing: `mcp-endpoint.json`, and the
 WebView2 profile under `%LOCALAPPDATA%\<identifier>\EBWebView`.

@@ -16,6 +16,8 @@ vi.mock("@veistra/bridge", () => ({
   on: () => () => {},
   reportPainted: vi.fn(),
   openIn: vi.fn(),
+  publish: vi.fn(),
+  OPENED_EVENT: "veistra:opened",
 }));
 
 const drawn = {
@@ -134,8 +136,8 @@ function backend(
         return Promise.resolve([]);
       case "context/put":
         return Promise.resolve({ id: "ctx" });
-      case "context/insert":
-        return Promise.resolve({ inserted: true, count: 2 });
+      case "veistra/attach-to-agent":
+        return Promise.resolve({ delivered: 1 });
       default:
         return Promise.resolve(null);
     }
@@ -181,18 +183,18 @@ describe("Blender Viewer markup", () => {
       json: JSON.stringify(drawn),
     });
     await screen.findByRole("button", { name: "Send markup" });
-    expect(calls("context/insert")).toHaveLength(0);
+    expect(calls("veistra/attach-to-agent")).toHaveLength(0);
   });
 
-  it("sends the picture and the JSON as Blender, and types the references, on Send markup", async () => {
+  it("sends the picture and the JSON as Blender, one chip, on Send markup", async () => {
     backend();
     await openModel();
     fireEvent.click(await screen.findByRole("button", { name: "Finish drawing" }));
     fireEvent.click(await screen.findByRole("button", { name: "Send markup" }));
-    await waitFor(() => expect(calls("context/insert")).toHaveLength(1));
+    await waitFor(() => expect(calls("veistra/attach-to-agent")).toHaveLength(1));
     const keys = calls("context/put").map((c) => (c[1] as { key: string }).key);
-    expect(keys).toEqual(["blender/bed.blend/markup", "blender/bed.blend/markup-json"]);
-    expect(calls("context/insert")[0]![1]).toEqual({ itemIds: ["ctx", "ctx"] });
+    expect(keys).toEqual(["blender/bed.blend/markup-json", "blender/bed.blend/markup"]);
+    expect(calls("context/insert")).toHaveLength(0);
     // The first manual send offers to make it automatic.
     await screen.findByText(/Send automatically/);
   });
@@ -201,7 +203,7 @@ describe("Blender Viewer markup", () => {
     backend({ values: { "markup.autoSend": true } });
     await openModel();
     fireEvent.click(await screen.findByRole("button", { name: "Finish drawing" }));
-    await waitFor(() => expect(calls("context/insert")).toHaveLength(1));
+    await waitFor(() => expect(calls("veistra/attach-to-agent")).toHaveLength(1));
   });
 
   it("brings the earlier markup of this .blend back as Previous markup", async () => {

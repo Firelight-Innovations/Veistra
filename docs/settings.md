@@ -291,8 +291,53 @@ is nothing in the interface that points at it, though — see below.
 ## 9. Where the screen lives, and why it is not in `WindowRoot`
 
 The settings screen is mounted in `src/App.tsx`, as a **sibling** of
-`WindowRoot` rather than a child of it, and it covers the band between the title
-bar and the status bar.
+`WindowRoot` rather than a child of it. It is a large centred modal (up to
+1450 × 1160) over the shell's scrim (`--bg-backdrop`), and the scrim covers the
+band between the title bar and the status bar.
+
+### How the screen is arranged
+
+`src/shell/settings/pages.ts` decides where each schema group is drawn. The
+sidebar lists **pages** in three bands split by short dividers, with the account
+and the search above them and a Docs link (the Docs app, as Help ▸ Documentation
+opens it) pinned below:
+
+| Band | Page | Sections (schema group, or a panel) |
+|---|---|---|
+| 1 | Account | Profile (panel) |
+| 1 | Billing | Plan (panel) |
+| 1 | Usage | Your usage, Daily spend, Runs (one panel, the old Usage app) |
+| 2 | General | `appearance`, `keys`, `updates`, `telemetry` |
+| 2 | Editor | `editor`, `search` |
+| 2 | Terminal | `terminal` |
+| 2 | Agents | `skills` |
+| 2 | MCP servers | `mcp` |
+| 2 | Apps | `files`, `canvas`, `markup`, `godot`, `blender`, then any group no page names |
+| 2 | Source control | `github` |
+| 2 | Cloud | `cloud` |
+| 3 | Developer | `developer`, `account` as "Account service" (where this build reaches the account service and the website) |
+
+A group added in Rust with no edit to `pages.ts` still appears, at the end of
+Apps; name it in `PAGES` to put it somewhere better. A page with no sections
+(a feature compiled out) is not listed.
+
+- **The nav selects a page**; it does not scroll one long column. General is
+  where the screen opens when nothing asked for a page.
+- **Every section folds.** Its header is a button with `aria-expanded`; the folded
+  ids are kept in `localStorage` under `veistra.settings.collapsed` (the folded
+  ones, so a section a later build adds arrives open).
+- **Search** (the sidebar's box, Ctrl+F, or the title bar's field, which the
+  screen claims while it is up) filters rows across every page by title,
+  description or key, shows them page by page with every section unfolded, and
+  marks the hits. A panel matches as a whole on its keywords. Folding during a
+  search is forgotten with the search; it never rewrites what is remembered.
+  Escape clears the search first, then closes the screen.
+- **Deep links.** `openSettings(id)` and an app's `shell/open-settings` take a
+  page id (`account`, `billing`, `usage`, …) or a section id (`telemetry`,
+  `profile`, …). A section id opens its page with that section unfolded and
+  scrolled into view.
+- **Focus** comes into the modal as it opens, Tab and Shift+Tab stay inside it,
+  and focus goes back where it was on the way out.
 
 Search is the surface it most resembles, and the comparison is what settles it.
 Search is a mode a **window** is in: it is scoped to the active cluster's
@@ -354,6 +399,16 @@ Blunt list, because an undocumented absence reads as an oversight.
 - **No conditional rows.** Every setting is drawn regardless of what any other
   setting holds, so a row that is irrelevant given another's value is still
   drawn, still editable and still stored.
+- **Account and Billing draw only what the account service answers.** It has no
+  endpoint yet for: a profile photo (read or upload — the Profile photo row shows
+  initials and cannot be clicked), changing the name (Full name is text, not a
+  field), the signed-in devices and "log out of all devices" (so there is no
+  "Where you're logged in" table), the plan's renewal date, the payment method,
+  or invoices (so Billing has the plan card, the monthly limit and a link to
+  veistra.com, but no Payment or Invoices sections). Upgrade and Adjust plan open
+  `https://veistra.com`, as the title bar's Upgrade does (`src/shell/upgrade.ts`).
+  GitHub is a stored token, not an OAuth sign-in, so the avatar menu has no
+  "Sign in with GitHub" and no GitHub identity.
 - **`terminal.*` has two rows.** The shell picker and the launch terminal, and
   nothing else, because `src/shell/terminal/` was owned by another workstream
   when this landed. Font size, cursor style and scrollback are the obvious next

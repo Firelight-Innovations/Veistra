@@ -84,7 +84,7 @@ export default function BlendViewer({ file }: ViewerProps) {
           </p>
         )}
         <p className="app__note blend__note">
-          The thumbnail Blender saved with this file. The Blender Viewer app shows the model itself.
+          The thumbnail Blender saved with this file. The Blender app shows the model itself.
         </p>
         <HandoffActions path={file.path} />
       </div>

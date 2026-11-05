@@ -20,6 +20,9 @@ const bridge = vi.hoisted(() => {
   return {
     invoke: vi.fn(),
     listeners: new Map<string, (payload: unknown) => void>(),
+    /** Retained topics another app publishes, such as what the Godot pane reports. */
+    topics: new Map<string, (value: unknown) => void>(),
+    openIn: vi.fn(),
     VeistraRpcError,
   };
 });
@@ -30,6 +33,11 @@ vi.mock("@veistra/bridge", () => ({
     bridge.listeners.set(event, cb);
     return () => bridge.listeners.delete(event);
   },
+  subscribe: (topic: string, cb: (value: unknown) => void) => {
+    bridge.topics.set(topic, cb);
+    return () => bridge.topics.delete(topic);
+  },
+  openIn: bridge.openIn,
   reportPainted: vi.fn(),
   VeistraRpcError: bridge.VeistraRpcError,
 }));
@@ -360,12 +368,14 @@ describe("the agent tab", () => {
     expect(alert.textContent).toContain(strings.hint.harnessMissing(CLAUDE));
   });
 
-  it("says a main checkout is why, when the shell refuses the write before the tab's own code", async () => {
+  // This used to name the main checkout. Main is writable now, so the code
+  // means only a read-only environment, which none is today.
+  it("says a read-only environment is why, when the shell refuses the write before the tab's own code", async () => {
     backend(
       { status: null, seq: 0, items: [] },
       {
         "agent-tab/send": () =>
-          Promise.reject(new bridge.VeistraRpcError(-32003, "main is read-only")),
+          Promise.reject(new bridge.VeistraRpcError(-32003, "this environment is read-only")),
       },
     );
     render(<App />);
@@ -375,7 +385,7 @@ describe("the agent tab", () => {
       fireEvent.keyDown(prompt(), { key: "Enter" });
     });
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("main checkout");
+    expect(alert.textContent).toContain(strings.refusal.readOnly);
     expect(alert.textContent).not.toContain("Could not send that.");
     expect(prompt()).toHaveProperty("value", "go");
   });
@@ -1944,7 +1954,9 @@ describe("slash commands", () => {
     expect(screen.getByRole("group", { hidden: true, name: "Canvas selection" })).toBeTruthy();
   });
 
-  it("puts the words an app sent on either side of its chip, after what is typed", async () => {
+  // The words an app wants the agent to read travel inside the item, so
+  // nothing is typed for the person, even by a sender that still passes some.
+  it("puts only the chip after what is typed, never words around it", async () => {
     backend({ status: null, seq: 0, items: [] });
     render(<App />);
     await settingsButton();
@@ -1952,17 +1964,61 @@ describe("slash commands", () => {
     act(() =>
       bridge.listeners.get("agent-tab:attach")?.({
         contextId: "ctx_2",
-        label: ".veistra/feedback/t-1/packet.md",
+        label: "Take 1 feedback",
         before: "Playtest feedback: 2 notes. Read ",
         after: " first.",
       }),
     );
-    expect((prompt() as HTMLTextAreaElement).value).toBe(
-      "also Playtest feedback: 2 notes. Read @.veistra/feedback/t-1/packet.md first.",
+    expect((prompt() as HTMLTextAreaElement).value).toBe("also @Take 1 feedback ");
+    expect(screen.getByRole("group", { hidden: true, name: "Take 1 feedback" })).toBeTruthy();
+  });
+
+  it("draws a chip an editor sends in the kind it names", async () => {
+    backend({ status: null, seq: 0, items: [] });
+    render(<App />);
+    await settingsButton();
+    act(() =>
+      bridge.listeners.get("agent-tab:attach")?.({
+        contextId: "ctx_3",
+        label: "Godot · Enemy_02",
+        kind: "godot-node",
+      }),
     );
-    expect(
-      screen.getByRole("group", { hidden: true, name: ".veistra/feedback/t-1/packet.md" }),
-    ).toBeTruthy();
+    const chip = screen.getByRole("group", { hidden: true, name: "Godot · Enemy_02" });
+    expect(chip.closest("[data-kind]")?.getAttribute("data-kind")).toBe("godot-node");
+  });
+
+  // The Godot pane publishes its scene's nodes; the @ menu lists them under
+  // Godot, and a pick stores the node so its chip can select it again.
+  it("lists a running Godot's nodes under Godot, and makes a picked one a chip", async () => {
+    backend(
+      { status: null, seq: 0, items: [] },
+      {
+        "refs/search": () => Promise.resolve({ items: [] }),
+        "context/put": () => Promise.resolve({ id: "ctx_node" }),
+      },
+    );
+    render(<App />);
+    await settingsButton();
+    act(() =>
+      bridge.topics.get("godot/editor")?.({
+        tool: "godot",
+        project: ".",
+        scene: "res://main.tscn",
+        scenes: ["res://main.tscn"],
+        nodes: [{ path: "Main/Enemy_02", type: "CharacterBody3D" }],
+        selected: [],
+      }),
+    );
+    fireEvent.change(prompt(), { target: { value: "@" } });
+    fireEvent.click(await screen.findByRole("option", { name: /^Godot/ }));
+    fireEvent.click(await screen.findByRole("option", { name: /Enemy_02/ }));
+    await screen.findByRole("group", { hidden: true, name: "Godot · Enemy_02" });
+    expect(bridge.invoke).toHaveBeenCalledWith(
+      "context/put",
+      expect.objectContaining({ kind: "json", label: "Godot · Enemy_02" }),
+    );
+    expect((prompt() as HTMLTextAreaElement).value).toBe("@Godot · Enemy_02 ");
   });
 
   it("offers a kind's search when its name is typed, and starts that search empty", async () => {
@@ -2136,6 +2192,108 @@ describe("slash commands", () => {
     });
     expect(bridge.invoke).not.toHaveBeenCalledWith("agent-tab/send", expect.anything());
     expect(prompt()).toHaveProperty("value", "@zzz");
+  });
+
+  // Esc closed the @ menu for the draft it was pressed on, and kept it closed for that
+  // draft even after it had changed and come back: "@", Esc, Backspace, "@" left no menu.
+  describe("after Esc closes the @ menu", () => {
+    const readme = { uri: "veistra://file/README.md", kind: "file", title: "README.md" };
+    const typing = async () => {
+      backend(
+        { status: null, seq: 0, items: [] },
+        { "refs/search": () => Promise.resolve({ items: [readme] }) },
+      );
+      render(<App />);
+      await settingsButton();
+    };
+    // A bare "@" lists the groups; "@rea" lists what its search found.
+    const opens = () => screen.findByRole("listbox");
+    const closes = async () => {
+      await opens();
+      fireEvent.keyDown(prompt(), { key: "Escape" });
+      expect(screen.queryByRole("listbox")).toBeNull();
+    };
+
+    it("stays closed while the draft is the one it closed on, and opens on the next edit", async () => {
+      await typing();
+      fireEvent.change(prompt(), { target: { value: "@rea" } });
+      await screen.findByRole("option", { name: /README\.md/ });
+      await closes();
+      // The search answering again, or a caret move, is not an edit.
+      await act(() => new Promise((done) => setTimeout(done, 200)));
+      fireEvent.select(prompt());
+      expect(screen.queryByRole("listbox")).toBeNull();
+      fireEvent.change(prompt(), { target: { value: "@read" } });
+      expect(await screen.findByRole("option", { name: /README\.md/ })).toBeTruthy();
+    });
+
+    it("opens again on an @ typed back after Backspace took it", async () => {
+      await typing();
+      fireEvent.change(prompt(), { target: { value: "@" } });
+      await closes();
+      fireEvent.change(prompt(), { target: { value: "" } });
+      fireEvent.change(prompt(), { target: { value: "@" } });
+      expect(await screen.findByRole("option", { name: "Design" })).toBeTruthy();
+    });
+
+    it("opens again on an @ after words, once the @ was taken and typed back", async () => {
+      await typing();
+      fireEvent.change(prompt(), { target: { value: "look at @" } });
+      await closes();
+      fireEvent.change(prompt(), { target: { value: "look at " } });
+      fireEvent.change(prompt(), { target: { value: "look at @" } });
+      expect(await screen.findByRole("option", { name: "Design" })).toBeTruthy();
+    });
+
+    it("opens again when the whole @query is deleted and typed again", async () => {
+      await typing();
+      fireEvent.change(prompt(), { target: { value: "@rea" } });
+      await screen.findByRole("option", { name: /README\.md/ });
+      await closes();
+      for (const value of ["@re", "@r", "@", ""]) fireEvent.change(prompt(), { target: { value } });
+      fireEvent.change(prompt(), { target: { value: "@" } });
+      expect(await screen.findByRole("option", { name: "Design" })).toBeTruthy();
+      // And the same "@query" typed back in full, after it was deleted.
+      fireEvent.change(prompt(), { target: { value: "@rea" } });
+      await screen.findByRole("option", { name: /README\.md/ });
+      await closes();
+      fireEvent.change(prompt(), { target: { value: "" } });
+      fireEvent.change(prompt(), { target: { value: "@rea" } });
+      expect(await screen.findByRole("option", { name: /README\.md/ })).toBeTruthy();
+    });
+
+    it("opens again after a sent draft is typed again", async () => {
+      await typing();
+      fireEvent.change(prompt(), { target: { value: "mail @" } });
+      await closes();
+      await act(async () => {
+        fireEvent.keyDown(prompt(), { key: "Enter" });
+      });
+      expect(bridge.invoke).toHaveBeenCalledWith(
+        "agent-tab/send",
+        expect.objectContaining({ text: "mail @" }),
+      );
+      expect(prompt()).toHaveProperty("value", "");
+      fireEvent.change(prompt(), { target: { value: "mail @" } });
+      expect(await screen.findByRole("option", { name: "Design" })).toBeTruthy();
+    });
+  });
+
+  it("opens the @ menu again after the issue-link form is cancelled", async () => {
+    backend(
+      { status: null, seq: 0, items: [] },
+      { "refs/search": () => Promise.resolve({ items: [] }) },
+    );
+    render(<App />);
+    await settingsButton();
+    fireEvent.change(prompt(), { target: { value: "@" } });
+    fireEvent.click(await screen.findByRole("option", { name: "Project management" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Jira" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Add issue link" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(prompt()).toHaveProperty("value", "");
+    fireEvent.change(prompt(), { target: { value: "@" } });
+    expect(await screen.findByRole("option", { name: "Design" })).toBeTruthy();
   });
 
   it("opens saved conversation history with either harness without sending a prompt", async () => {

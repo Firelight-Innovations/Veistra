@@ -115,6 +115,8 @@ export const strings = {
     canvases: "Canvases",
     frames: "Frames",
     all: "All project context",
+    godot: "Godot",
+    blender: "Blender",
   },
   dictate: "Voice dictation",
   dictateLater: "Voice dictation · coming soon",
@@ -192,6 +194,7 @@ export const strings = {
     empty: "No matching project context",
     typeToSearch: "Type to search",
     failed: "Could not search project context. Try typing @ again.",
+    editorGone: "The editor no longer has that open. Try typing @ again.",
   },
   btw: {
     title: "Side chat",
@@ -254,6 +257,7 @@ export const strings = {
         : `The agent refused that change: ${reason}`,
   },
   you: "You",
+  showInEditor: "Show in the editor",
   thinking: "Thinking",
   copy: "Copy",
   viewImage: "View image",
@@ -399,8 +403,9 @@ export const strings = {
   notReady: (name: string) => `${name} is not ready to run.`,
   refusal: {
     developerMode: "The agent tab is in testing. Turn on developer mode in Settings to use it.",
-    notAWorktree: "Agents run in a local worktree. Create a worktree cluster to start one.",
-    mainCheckout: "This is a main checkout. Agents never run on main.",
+    notAWorktree:
+      "Agents run in a local worktree or the main checkout. Open a project to start one.",
+    readOnly: "This environment is read-only, so the agent cannot write here.",
     noInstance: "This tab is no longer in the layout.",
     wrongWorktree: "This session belongs to another worktree. Start a new session to work here.",
     busy: "The agent is still working. Wait for it, or press Esc to stop it.",

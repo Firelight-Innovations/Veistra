@@ -95,3 +95,16 @@ expect_used = "warn"
 # describe something true. Cargo does not allow a member to inherit
 # `[workspace.lints]` and add its own, so the crate-level attribute is the only
 # way to have both.
+
+# Dev builds are what `pnpm app` recompiles on every Rust save, so they are
+# tuned for rebuild speed, not for debugging fidelity. Release is untouched.
+#
+# `line-tables-only` keeps backtraces readable but writes far less debuginfo,
+# which is most of the link time on Windows. Dependencies get opt-level 1: they
+# compile once and are cached, and the app runs noticeably faster for it.
+[profile.dev]
+debug = "line-tables-only"
+incremental = true
+
+[profile.dev.package."*"]
+opt-level = 1

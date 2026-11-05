@@ -2,14 +2,21 @@
  * Send selection (#316, spec §13 test 11): the nodes selected in the Godot
  * editor and its 3D viewport, to the agent as one message. One plugin round
  * trip reads both at the same moment (`godot/editor-selection`); this puts
- * them in the context store as two items and types both references at the
- * prompt in one `context/insert`, without pressing Enter (DECISIONS X8).
+ * them in the context store as two items and leaves one chip, the
+ * selection's, at the prompt of the agent last worked in, without pressing
+ * Enter (DECISIONS X8). Its prompt names the picture's file, so the agent
+ * opens it.
  *
  * Both keys name the scene and never the moment, so sending the same scene's
  * selection again replaces the two items instead of adding two more.
  */
 import { invoke } from "@veistra/bridge";
-import { contextKey, type ContextRef } from "../../../../shared/context";
+import {
+  chipToAgent,
+  contextKey,
+  putWithAttached,
+  type ContextRef,
+} from "../../../../shared/context";
 import type { EditorCamera, EditorSelection, SelectedNode } from "./rpc";
 
 const leaf = (p: string) => p.slice(p.lastIndexOf("/") + 1) || p;
@@ -40,37 +47,38 @@ export function selectionText(sel: Pick<EditorSelection, "scene" | "selected" | 
 }
 
 /**
- * Both items, then both references at the prompt. With no agent prompt to
- * type into the items are still in the Context strip, so that is not a
- * failure; `typed` says which it was. `context/insert` answers
- * `{ inserted: false }` for that case rather than an error, so `typed` is
- * its answer, not whether the call threw.
+ * The picture, then the selection naming it, then one chip. With no agent to
+ * take it the items are still in the Context strip, so that is not a
+ * failure; `typed` says which it was.
  */
 export async function sendSelection(
   sel: EditorSelection,
 ): Promise<{ text: ContextRef; image: ContextRef; typed: boolean }> {
   const scene = sel.scene || "scene";
-  const text = await invoke<ContextRef>("context/put", {
-    key: contextKey("godot", scene, "selection"),
-    kind: "text",
-    title: `Godot editor - selection in ${leaf(scene)}`,
-    label: "Godot - selection",
-    text: selectionText(sel),
-  });
   const image = await invoke<ContextRef>("context/put", {
     key: contextKey("godot", scene, "editor-viewport"),
     kind: "image",
     title: `Godot editor - ${leaf(scene)} viewport`,
     label: "Godot - viewport",
     bytesBase64: sel.pngBase64,
+    prompt: "The Godot editor's 3D viewport as it was when I selected those nodes.",
   });
+  const text = await putWithAttached(
+    {
+      key: contextKey("godot", scene, "selection"),
+      kind: "text",
+      title: `Godot editor - selection in ${leaf(scene)}`,
+      label: "Godot - selection",
+      text: selectionText(sel),
+      prompt: `The nodes I selected in the Godot editor, in ${sel.scene || "the open scene"}. Use them for what I ask.`,
+    },
+    [{ item: image, what: "the editor's 3D viewport at that moment" }],
+  );
   try {
-    const r = await invoke<{ inserted?: boolean } | null>("context/insert", {
-      itemIds: [text.id, image.id],
-    });
-    return { text, image, typed: r?.inserted === true };
+    const said = await chipToAgent({ ...text, chipKind: "godot-selection" });
+    return { text, image, typed: said.delivered };
   } catch (e) {
-    console.error("veistra: could not type the selection references at the prompt", e);
+    console.error("veistra: could not hand the selection to an agent", e);
     return { text, image, typed: false };
   }
 }

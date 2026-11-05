@@ -45,7 +45,6 @@ const IN_USE: &[&str] = &[
     "presets.json",
     "plugins.json",
     "mcp.json",
-    "tutorials.json",
 ];
 
 /// Adopt a superseded config directory, if there is one and this one is unused.

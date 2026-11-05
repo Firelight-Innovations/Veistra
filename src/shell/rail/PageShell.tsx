@@ -1,4 +1,4 @@
-import { forwardRef, type ReactNode } from "react";
+import { forwardRef, useState, type ReactNode } from "react";
 import { motion } from "framer-motion";
 import { ChevronLeft, Maximize2, X } from "lucide-react";
 import { instant } from "../motion";
@@ -38,6 +38,15 @@ const PageShell = forwardRef<HTMLDivElement, PageShellProps>(function PageShell(
   ref,
 ) {
   const base = mode === "docked" ? "k-docked-page" : "k-expanded-page";
+  // The page opens instantly, so the body it opens with is drawn at once; only
+  // a later switch to another page fades. Derived during render rather than in
+  // an effect, so the first switch's body already mounts with its fade.
+  const [shownPage, setShownPage] = useState(pageId);
+  const [switched, setSwitched] = useState(false);
+  if (pageId !== shownPage) {
+    setShownPage(pageId);
+    setSwitched(true);
+  }
   return (
     <div className={base} aria-label={title} data-page-id={pageId} tabIndex={-1} ref={ref}>
       {mode === "docked" ? (
@@ -79,7 +88,7 @@ const PageShell = forwardRef<HTMLDivElement, PageShellProps>(function PageShell(
       <motion.div
         key={pageId}
         className={`${base}__body`}
-        initial={{ opacity: 0 }}
+        initial={switched ? { opacity: 0 } : false}
         animate={{ opacity: 1, transition: instant }}
       >
         {children}

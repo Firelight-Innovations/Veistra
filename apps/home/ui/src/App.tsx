@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from "react";
 import { VeistraRpcError, invoke, on, openIn, reportPainted } from "@veistra/bridge";
 import { PRODUCT_NAME, TAGLINE, WORDMARK } from "./branding.generated";
 import { Book, Close, FolderOpen, FolderPlus, GitBranch, Mark, PackagePlus } from "./icons";
-import AccountPanel from "./AccountPanel";
 import NewProject from "./NewProjectPage";
 import SignInScreen from "./SignInScreen";
 import WorktreeDialog from "./WorktreeDialog";
@@ -97,28 +96,26 @@ const WORKTREE_TRIGGERS = new Set([
 ]);
 
 /**
- * The right-hand column's cards, as `home/tutorials` reports them.
+ * The right-hand column, as `home/docs` reports it.
  *
- * This column used to be three hardcoded titles that navigated nowhere, marked
- * "soon". It is live now: the list comes from the same catalog the Tutorials app
- * draws — `src-tauri/src/apps/tutorial.rs` — so Home cannot drift out of step
- * with what has actually been written, and a card opens the tutorial it names.
- *
- * The backend picks *which* three, so Home makes no decision about ordering: it
- * hands back the first unfinished ones, which is what turns the column into a
- * "next thing to do" rather than a table of contents that never changes.
+ * The pages come from the website's docs index, read by the same code the Docs
+ * app uses (`src-tauri/src/apps/docs.rs`), so the column changes when the site
+ * does and a card opens the page it names. The backend picks which pages
+ * (the first few the index lists), so Home makes no decision about ordering.
  */
-interface TutorialCard {
-  id: string;
+interface DocCard {
+  path: string;
   title: string;
-  blurb: string;
-  minutes: number;
-  done: boolean;
+  description: string;
+  url: string;
 }
 
-interface Tutorials {
-  cards: TutorialCard[];
-  completed: number;
+interface Docs {
+  /** `https://veistra.com/docs`, or wherever `account.webUrl` points. */
+  home: string;
+  status: "live" | "stale" | "offline" | "missing";
+  detail: string | null;
+  cards: DocCard[];
   total: number;
 }
 
@@ -150,12 +147,12 @@ export default function App() {
    */
   const [worktreePrompt, setWorktreePrompt] = useState<{ taken: string[] } | null>(null);
   /**
-   * The tutorial column. `null` until it lands, and left `null` if the call
-   * fails — a Home whose tutorial list could not be read still has a Start
-   * column and a Recent list, which is the whole of what somebody came here
-   * for. The column says so rather than showing an error beside the projects.
+   * The docs column. `null` until it lands; `"failed"` if the call itself
+   * fails. A Home whose docs could not be read still has a Start column and a
+   * Recent list, which is the whole of what somebody came here for, so the
+   * column says so in place rather than showing an error beside the projects.
    */
-  const [tutorials, setTutorials] = useState<Tutorials | null>(null);
+  const [docs, setDocs] = useState<Docs | "failed" | null>(null);
   const account = useAccount();
 
   /**
@@ -245,22 +242,22 @@ export default function App() {
   }, []);
 
   /**
-   * Refetched on focus as well as on mount, because the tutorial the reader
-   * just finished was finished in a *different* app — this pane has no way to
-   * hear about it otherwise, and a column still offering something you have
-   * done reads as broken.
+   * Refetched on focus as well as on mount, so a Home opened offline fills in
+   * once the connection is back. The backend caches for a few minutes, so a
+   * focus is not a request to the site each time.
    */
   useEffect(() => {
     let live = true;
 
     const read = () => {
-      void invoke<Tutorials>("home/tutorials")
+      void invoke<Docs>("home/docs")
         .then((next) => {
-          if (live) setTutorials(next);
+          if (live) setDocs(next);
         })
         .catch(() => {
-          // Silent: the Start and Recent columns are unaffected, and the
-          // tutorial column draws its own empty state.
+          // The Start and Recent columns are unaffected; the docs column
+          // draws its own offline line.
+          if (live) setDocs((previous) => (previous === null ? "failed" : previous));
         });
     };
 
@@ -414,65 +411,12 @@ export default function App() {
             </section>
 
             <section className="home__column">
-              <h2 className="home__heading">Tutorials</h2>
-              {tutorials === null || tutorials.cards.length === 0 ? (
-                <p className="home__empty">
-                  {tutorials === null ? "Reading…" : "Nothing to read here."}
-                </p>
-              ) : (
-                <>
-                  <ul className="home__cards">
-                    {tutorials.cards.map((tutorial) => (
-                      <li key={tutorial.id}>
-                        <button
-                          type="button"
-                          className={`home__card${tutorial.done ? " home__card--done" : ""}`}
-                          // `openIn` rather than a link: this pane cannot address
-                          // another surface, and must not be able to. It names a
-                          // *kind* of app and the shell decides which one answers
-                          // — see `docs/tool-protocol.md` §3.
-                          onClick={() => void openIn("tutorial", { tutorialId: tutorial.id })}
-                        >
-                          <span className="home__card-mark">
-                            <Book size={16} />
-                          </span>
-                          <span className="home__card-text">
-                            <span className="home__card-title">{tutorial.title}</span>
-                            <span className="home__card-blurb">{tutorial.blurb}</span>
-                          </span>
-                          <span className="home__card-min">{tutorial.minutes}m</span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                  {/* The only door to the rest of them. The cards above open one
-                    tutorial each and there are three of them, so without this
-                    the other seven are reachable only by opening one and using
-                    the rail inside it — and Tutorials is deliberately absent
-                    from the Apps menu and the switcher's `+`, being a surface
-                    that covers the cluster rather than taking a pane. */}
-                  <button
-                    type="button"
-                    className="home__all-tutorials"
-                    onClick={() => void openIn("tutorial")}
-                  >
-                    All {tutorials.total} tutorials
-                    {tutorials.completed > 0 && ` · ${tutorials.completed} read`}
-                  </button>
-                </>
-              )}
+              <h2 className="home__heading">Docs</h2>
+              <DocsColumn docs={docs} />
             </section>
           </div>
         </div>
       </div>
-
-      <AccountPanel
-        status={account.status}
-        busy={account.busy}
-        onSignIn={account.signIn}
-        onSignOut={account.signOut}
-        onSignedOutElsewhere={account.reread}
-      />
 
       {worktreePrompt && (
         <WorktreeDialog
@@ -486,13 +430,73 @@ export default function App() {
   );
 }
 
+/** Where the docs live when the backend could not even say. */
+const DOCS_FALLBACK = "https://veistra.com/docs";
+
+/**
+ * The docs column: a few pages from the website's index, and a way to the rest.
+ *
+ * `openIn` rather than a link: this pane cannot address another surface, and
+ * must not be able to. It names a *kind* of app and the shell decides which
+ * one answers (`docs/tool-protocol.md` §3). "All docs" is drawn even offline,
+ * because the Docs pane is where the offline notice and Try again live.
+ */
+function DocsColumn({ docs }: { docs: Docs | "failed" | null }) {
+  if (docs === null) return <p className="home__empty">Reading…</p>;
+  const failed = docs === "failed";
+  const cards = failed ? [] : docs.cards;
+  const home = failed ? DOCS_FALLBACK : docs.home;
+  const offline = failed || docs.status === "offline";
+
+  return (
+    <>
+      {cards.length === 0 && (
+        <p className="home__empty">
+          {offline ? (
+            <>
+              Can’t reach the docs right now. They are at{" "}
+              <span className="home__docs-url">{home.replace(/^https?:\/\//, "")}</span>.
+            </>
+          ) : (
+            "The docs site lists no pages yet."
+          )}
+        </p>
+      )}
+      {cards.length > 0 && (
+        <ul className="home__cards">
+          {cards.map((card) => (
+            <li key={card.path}>
+              <button
+                type="button"
+                className="home__card"
+                onClick={() => void openIn("docs", { page: card.path })}
+              >
+                <span className="home__card-mark">
+                  <Book size={16} />
+                </span>
+                <span className="home__card-text">
+                  <span className="home__card-title">{card.title}</span>
+                  <span className="home__card-blurb">{card.description}</span>
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <button type="button" className="home__all-docs" onClick={() => void openIn("docs")}>
+        {!failed && docs.total > cards.length ? `All ${docs.total} pages` : "Open the docs"}
+      </button>
+    </>
+  );
+}
+
 /**
  * A project's own icon (`.veistra/icon.*`), or its initial when it has none.
  *
  * Asked per project rather than folded into `home/state`: the icon is a data
  * URL, and carrying one for every Recent row on every state read would make the
  * common read the expensive one. Asked again when this pane regains focus, the
- * same way the tutorial column is, since the icon is set from the shell's
+ * same way the docs column is, since the icon is set from the shell's
  * Switch project dialog and nothing tells this pane it changed.
  */
 function ProjectTile({ project, className }: { project: Project; className: string }) {

@@ -64,6 +64,7 @@ describe("putFrame", () => {
       title: "res://main.tscn - rendered view",
       label: "Godot - rendered view",
       bytesBase64: "QUJD",
+      prompt: expect.stringContaining("res://main.tscn renders right now"),
     });
   });
 });
@@ -105,22 +106,23 @@ describe("markupJsonText", () => {
 });
 
 describe("putMarkup", () => {
-  it("sends the picture and the JSON under stable keys and returns the picture's item", async () => {
-    invoke.mockResolvedValueOnce({ id: "ctx-png" }).mockResolvedValueOnce({ id: "ctx-json" });
+  it("sends the JSON and the picture under stable keys and returns the picture's item", async () => {
+    invoke.mockResolvedValueOnce({ id: "ctx-json" }).mockResolvedValueOnce({ id: "ctx-png" });
     const png = new Blob([new Uint8Array([65, 66, 67])]);
     const ref = await putMarkup(png, markup, "res://main.tscn");
-    expect(ref).toEqual({ id: "ctx-png" });
-    expect(invoke).toHaveBeenNthCalledWith(1, "context/put", {
+    expect(ref).toEqual({ id: "ctx-png", attached: [{ id: "ctx-json" }] });
+    const first = invoke.mock.calls[0]![1] as { key: string; kind: string; text: string };
+    expect(first.key).toBe("godot/main.tscn/markup-json");
+    expect(first.kind).toBe("json");
+    expect(JSON.parse(first.text)).toEqual(markup);
+    expect(invoke).toHaveBeenNthCalledWith(2, "context/put", {
       key: "godot/main.tscn/markup",
       kind: "image",
       title: "res://main.tscn - markup",
       label: "Godot - markup",
       bytesBase64: "QUJD",
+      prompt: expect.stringContaining("My markup of res://main.tscn"),
     });
-    const second = invoke.mock.calls[1]![1] as { key: string; kind: string; text: string };
-    expect(second.key).toBe("godot/main.tscn/markup-json");
-    expect(second.kind).toBe("json");
-    expect(JSON.parse(second.text)).toEqual(markup);
   });
 });
 

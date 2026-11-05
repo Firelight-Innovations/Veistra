@@ -6,7 +6,7 @@
  * as `comments:changed`, and the shell relays it into the app frames of the
  * clusters on that environment (`src/shell/toolwindow/commentFrames.ts`). That
  * is how an agent's `resolve_play_note`, made over MCP with no frame involved,
- * turns a card to "Fixed, check it" in a pane that is already open. Each app
+ * turns a card to "Completed" in a pane that is already open. Each app
  * makes one call, {@link useCommentsChanged}, and lists again; a poll, where a
  * pane keeps one, is only the fallback.
  *

@@ -69,7 +69,7 @@ body:
         layer diagram if you want to check.
       options:
         - The shell interface (window, panes, tabs, search, title bar, terminal)
-        - A first-party app (Home, Files, Viewer, Tutorial)
+        - A first-party app (Home, Files, Viewer, Docs)
         - The Rust backend (projects, filesystem, processes, terminals, state)
         - The tool protocol (manifests, RPC, the bridge)
         - Build, lint, format, or tests

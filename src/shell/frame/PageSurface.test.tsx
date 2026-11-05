@@ -1,14 +1,13 @@
 // @vitest-environment jsdom
 /**
- * The rail page's pull-out: what it paints, that it never remounts what is
- * inside it, and that a close still unmounts once the exit has played.
+ * The rail page's surface: that it opens and closes instantly, with nothing
+ * slid or faded, and that it never remounts what is inside it.
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { cleanup, render, waitFor } from "@testing-library/react";
 import { useEffect, type ReactNode } from "react";
 import type { FrameSlots } from "../contract";
 import Frame from "./Frame";
-import { pageFrame } from "./PageSurface";
 
 afterEach(() => {
   cleanup();
@@ -22,18 +21,6 @@ beforeAll(() => {
     disconnect() {}
   };
 });
-
-// framer reads matchMedia once per process and caches the answer, so a test
-// cannot flip the preference through the browser. Frame asks framer's hook;
-// replace the hook and flip the flag.
-const pref = vi.hoisted(() => ({ reduce: false }));
-vi.mock("framer-motion", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("framer-motion")>()),
-  useReducedMotion: () => pref.reduce,
-}));
-function setReducedMotion(reduce: boolean) {
-  pref.reduce = reduce;
-}
 
 const mounts = { count: 0 };
 function Probe() {
@@ -54,66 +41,63 @@ function slots(page: ReactNode): FrameSlots {
   };
 }
 
-describe("pageFrame", () => {
-  it("tucks a docked page fully into the rail at 0 and settles it at 1", () => {
-    expect(pageFrame(0, "docked", false)).toMatchObject({ x: "100%", opacity: 0 });
-    expect(pageFrame(1, "docked", false)).toEqual({ x: "0%", clipPath: "none", opacity: 1 });
-  });
-
-  it("reveals an expanded page from the rail side by clip, not by scaling", () => {
-    expect(pageFrame(0.5, "expanded", false).clipPath).toBe("inset(0% 0% 0% 50%)");
-    expect(pageFrame(0.5, "expanded", false).x).toBe("0%");
-  });
-
-  it("does not move under reduced motion, only fades", () => {
-    for (const mode of ["docked", "expanded"] as const) {
-      expect(pageFrame(0.5, mode, true)).toEqual({ x: "0%", clipPath: "none", opacity: 0.5 });
-    }
-  });
-
-  it("clamps overshoot so a spring cannot produce an invalid clip", () => {
-    expect(pageFrame(1.08, "expanded", false).clipPath).toBe("inset(0% 0% 0% 0%)");
-  });
-});
+/** Nothing on the surface that a slide, a clip reveal or a fade would set. */
+function expectSettled(el: HTMLElement | null) {
+  expect(el).not.toBeNull();
+  expect(el?.style.transform ?? "").toBe("");
+  expect(el?.style.clipPath ?? "").toBe("");
+  expect(el?.style.opacity ?? "").toBe("");
+}
 
 describe("Frame's rail page", () => {
-  it("skips the animation under reduced motion and unmounts on close at once", () => {
-    setReducedMotion(true);
-    const { container, rerender } = render(<Frame kind="main" slots={slots(<Probe />)} />);
-    const page = container.querySelector('[data-region="page"]') as HTMLElement;
-    expect(page.style.transform === "" || !page.style.transform.includes("100%")).toBe(true);
-    rerender(<Frame kind="main" slots={slots(null)} />);
-    expect(container.querySelector('[data-region="page"]')).toBeNull();
+  it("opens docked at its final paint, with nothing sliding in from the rail", () => {
+    const { container } = render(<Frame kind="main" slots={slots(<Probe />)} />);
+    expectSettled(container.querySelector<HTMLElement>('[data-region="page"]'));
   });
 
-  it("keeps the page mounted through the exit, then unmounts it", async () => {
-    setReducedMotion(false);
+  it("opens expanded at its final paint, and hides the panes on the same render", () => {
+    const { container } = render(
+      <Frame kind="main" projectPageExpanded slots={slots(<Probe />)} />,
+    );
+    expectSettled(container.querySelector<HTMLElement>('[data-region="page-expanded"]'));
+    expect(container.querySelector(".frame__workspace-body")?.hasAttribute("data-hidden")).toBe(
+      true,
+    );
+  });
+
+  it("unmounts on close at once, with no exit to wait for", () => {
     const { container, rerender } = render(<Frame kind="main" slots={slots(<Probe />)} />);
     expect(container.querySelector('[data-region="page"]')).not.toBeNull();
     rerender(<Frame kind="main" slots={slots(null)} />);
-    expect(container.querySelector('[data-region="page"]')?.hasAttribute("data-leaving")).toBe(
-      true,
+    expect(container.querySelector('[data-region="page"]')).toBeNull();
+    expect(container.querySelector('[data-region="pagehandle"]')).toBeNull();
+  });
+
+  it("shows the panes again on the render an expanded page closes", () => {
+    const { container, rerender } = render(
+      <Frame kind="main" projectPageExpanded slots={slots(<Probe />)} />,
     );
-    await waitFor(() => expect(container.querySelector('[data-region="page"]')).toBeNull(), {
-      timeout: 2000,
-    });
+    rerender(<Frame kind="main" slots={slots(null)} />);
+    expect(container.querySelector('[data-region="page-expanded"]')).toBeNull();
+    expect(container.querySelector(".frame__workspace-body")?.hasAttribute("data-hidden")).toBe(
+      false,
+    );
   });
 
   it("does not remount the page's content across open, expand and dock", () => {
-    setReducedMotion(true);
     mounts.count = 0;
     const { container, rerender } = render(<Frame kind="main" slots={slots(<Probe />)} />);
     const host = container.querySelector('[data-testid="host"]');
     rerender(<Frame kind="main" projectPageExpanded slots={slots(<Probe />)} />);
-    expect(container.querySelector('[data-region="page-expanded"]')).not.toBeNull();
+    expectSettled(container.querySelector<HTMLElement>('[data-region="page-expanded"]'));
     expect(container.querySelector('[data-testid="host"]')).toBe(host);
     rerender(<Frame kind="main" slots={slots(<Probe />)} />);
+    expectSettled(container.querySelector<HTMLElement>('[data-region="page"]'));
     expect(container.querySelector('[data-testid="host"]')).toBe(host);
     expect(mounts.count).toBe(1);
   });
 
   it("clears the docked inline width once the page is expanded", async () => {
-    setReducedMotion(true);
     const { container, rerender } = render(<Frame kind="main" slots={slots(<Probe />)} />);
     const docked = container.querySelector<HTMLElement>('[data-region="page"]');
     expect(docked?.style.width).not.toBe("auto");

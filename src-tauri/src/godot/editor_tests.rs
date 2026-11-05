@@ -138,7 +138,12 @@ fn the_editor_launches_in_one_window_at_the_pane_with_its_channel() {
         position: Some((110, -20)),
     };
     assert_eq!(
-        launch_args(Path::new("/p"), Some(at), Path::new("/tmp/e")),
+        launch_args(
+            Path::new("/p"),
+            Some(at),
+            Some(0x3213f2),
+            Path::new("/tmp/e")
+        ),
         vec![
             "--editor",
             "--single-window",
@@ -149,12 +154,54 @@ fn the_editor_launches_in_one_window_at_the_pane_with_its_channel() {
             "960x540",
             "--position",
             "110,-20",
+            "--wid",
+            "3281906",
             "--",
             "--veistra-editor-dir=/tmp/e",
         ]
     );
-    let centred = launch_args(Path::new("/p"), None, Path::new("/tmp/e"));
+    let centred = launch_args(Path::new("/p"), None, None, Path::new("/tmp/e"));
     assert_eq!(centred[3..], ["/p", "--", "--veistra-editor-dir=/tmp/e"]);
+}
+
+/// `--wid` makes the window Veistra's from its first frame, with no frame or
+/// taskbar button of its own, so it is only for a window that will be placed.
+#[test]
+fn the_editor_is_started_owned_by_veistra_only_when_it_will_be_placed() {
+    let veistra = Owner {
+        hwnd: 0x3213f2,
+        origin: (285, 135),
+        scale: 1.5,
+    };
+    let over = LaunchRect {
+        width: 1156,
+        height: 1116,
+        position: Some((285, 189)),
+    };
+    let nowhere = LaunchRect {
+        position: None,
+        ..over
+    };
+    let ask = |at, owner, places, version| wid_for(Some(at), owner, places, version);
+    assert_eq!(ask(over, Some(&veistra), true, (4, 7)), Some(0x3213f2));
+    assert_eq!(ask(over, Some(&veistra), true, (5, 0)), Some(0x3213f2));
+    assert_eq!(
+        ask(over, Some(&veistra), true, (4, 3)),
+        None,
+        "4.3 has no --wid"
+    );
+    assert_eq!(
+        ask(over, Some(&veistra), false, (4, 7)),
+        None,
+        "VEISTRA_EMBED=off"
+    );
+    assert_eq!(
+        ask(nowhere, Some(&veistra), true, (4, 7)),
+        None,
+        "no pane on screen"
+    );
+    assert_eq!(ask(over, None, true, (4, 7)), None);
+    assert_eq!(wid_for(None, Some(&veistra), true, (4, 7)), None);
 }
 
 #[test]
@@ -285,6 +332,20 @@ fn send_selection_brings_the_nodes_and_the_viewport_in_one_answer() {
     assert!(err.message.contains("no such node"), "{err:?}");
     let err = call(&c, "godot/editor-open-scene", json!({ "scene": "../x" })).unwrap_err();
     assert_eq!(err.code, INVALID_PARAMS);
+    // A chip clicked in the agent tab: a script opens in its editor.
+    assert_eq!(
+        call(&c, "godot/editor-edit", json!({ "path": "res://enemy.gd" })).unwrap(),
+        json!({ "path": "res://enemy.gd" })
+    );
+    for bad in [
+        "C:/Windows/win.ini",
+        "res://../secret.gd",
+        "res://",
+        "res://levels/",
+    ] {
+        let err = call(&c, "godot/editor-edit", json!({ "path": bad })).unwrap_err();
+        assert_eq!(err.code, INVALID_PARAMS, "{bad}");
+    }
     assert_eq!(
         call(&c, "godot/editor-viewport-only", json!({ "on": false })).unwrap(),
         json!({ "viewportOnly": false })

@@ -198,7 +198,8 @@ export function statusView(status: Status): {
     case "working":
       return { label: "Agent working", tone: "warning" };
     case "fixed":
-      return { label: "Fixed, check it", tone: "accent" };
+      // The agent says it is done; the person checks it and resolves it.
+      return { label: "Completed", tone: "accent" };
     case "resolved":
       return { label: "Resolved", tone: "success" };
   }

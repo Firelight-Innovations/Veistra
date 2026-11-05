@@ -7,13 +7,14 @@
  * the host allows for exactly these two keys.
  *
  * It also holds how a markup reaches the agent, shared by the Godot and Blender
- * viewers: the picture and the JSON as two context items, then `@path`
- * references typed at the prompt. What differs between viewers is only the
- * {@link MarkupTarget}: the key prefix and the label the items carry.
+ * viewers: the picture and the JSON as two context items and one chip on the
+ * agent's prompt, the picture's, whose prompt names the JSON's file. What
+ * differs between viewers is only the {@link MarkupTarget}: the key prefix
+ * and the label the items carry.
  */
 import { invoke } from "@veistra/bridge";
 import type { MarkupJson } from "@veistra/markup";
-import { contextKey, type ContextRef } from "./context";
+import { chipAllToAgent, contextKey, putWithAttached, type ContextRef } from "./context";
 
 /** Which viewer a markup came from: names its context keys and labels. */
 export interface MarkupTarget {
@@ -155,20 +156,25 @@ export async function putMarkupItems(
   subject: string | null,
 ): Promise<{ image: ContextRef; notes: ContextRef }> {
   const name = subject ?? "scene";
-  const image = await invoke<ContextRef>("context/put", {
-    key: contextKey(target.app, name, "markup"),
-    kind: "image",
-    title: `${name} - markup`,
-    label: `${target.label} - markup`,
-    bytesBase64: await blobBase64(png),
-  });
   const notes = await invoke<ContextRef>("context/put", {
     key: contextKey(target.app, name, "markup-json"),
     kind: "json",
     title: `${name} - markup notes (JSON)`,
     label: `${target.label} - markup JSON`,
     text: markupJsonText(json),
+    prompt: `The pins, marks and notes of my ${target.label} markup of ${name}, as JSON. Each pin points at a place in the markup picture.`,
   });
+  const image = await putWithAttached(
+    {
+      key: contextKey(target.app, name, "markup"),
+      kind: "image",
+      title: `${name} - markup`,
+      label: `${target.label} - markup`,
+      bytesBase64: await blobBase64(png),
+      prompt: `My markup of ${name} in ${target.label}: what I drew over the view. The pins and notes I wrote on it are in the markup JSON sent with it. Use them for what I ask.`,
+    },
+    [{ item: notes, what: "the markup JSON" }],
+  );
   return { image, notes };
 }
 
@@ -183,23 +189,33 @@ export async function putMarkup(
 }
 
 /**
- * Attaches a markup as context and types `@path` references to it at the
- * agent's prompt. Never presses Enter: the person reads the line and sends it.
- * Both auto-send and the Send markup button come through here, so they behave
- * the same. Having no agent terminal to type into is not a failure, since the
- * items are attached in the Context strip either way.
+ * A markup as the one item a Send chips on the agent's prompt: the picture,
+ * whose prompt names the JSON's file and which carries it for a terminal.
+ * Both auto-send and the Send markup button come through here, so they
+ * behave the same.
  */
 export async function sendMarkup(
   target: MarkupTarget,
   png: Blob,
   json: MarkupJson,
   subject: string | null,
-): Promise<ContextRef> {
-  const { image, notes } = await putMarkupItems(target, png, json, subject);
-  try {
-    await invoke("context/insert", { itemIds: [image.id, notes.id] });
-  } catch (e) {
-    console.error("veistra: could not type the markup reference at the prompt", e);
-  }
-  return image;
+): Promise<ContextRef[]> {
+  const { image } = await putMarkupItems(target, png, json, subject);
+  return [image];
+}
+
+/**
+ * {@link sendMarkup} and the chips, for a Done that sends without a Send
+ * button's `useSendAction`. Says where the markup went, for the pane's notice.
+ */
+export async function markupToAgent(
+  target: MarkupTarget,
+  png: Blob,
+  json: MarkupJson,
+  subject: string | null,
+): Promise<string> {
+  const said = await chipAllToAgent(await sendMarkup(target, png, json, subject));
+  return said.delivered
+    ? "Markup sent to the agent."
+    : `The markup is in the Context strip, but no agent took it: ${said.reason}.`;
 }

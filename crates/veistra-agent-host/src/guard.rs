@@ -4,8 +4,9 @@
 //! the orchestrator to have:
 //!
 //! - [`Worktree`] is the only way to name a working directory, and it can only
-//!   be built from a linked git worktree — a directory whose `.git` is a file.
-//!   A main checkout's `.git` is a directory, so no session can start there.
+//!   be built from the root of a git checkout: a linked worktree, whose `.git`
+//!   is a file, or a main checkout, whose `.git` is a directory. Agents used to
+//!   be kept off main; they may work there now, as in any worktree.
 //! - [`escapes`] answers a permission request: every path it reaches is
 //!   resolved against the worktree, symlinks followed, and any that lands
 //!   outside, or that names no path at all, is grounds to refuse it without
@@ -15,7 +16,7 @@ use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
 
-/// A linked git worktree's root, canonical.
+/// A git checkout's root, canonical: a linked worktree or a main checkout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Worktree {
     root: PathBuf,
@@ -27,25 +28,19 @@ pub enum NotAWorktree {
     /// There is no such directory.
     #[error("{0} does not exist")]
     Missing(PathBuf),
-    /// Its `.git` is a directory: this is a main checkout.
-    #[error("{0} is a main checkout, and agents never run on main")]
-    MainCheckout(PathBuf),
     /// It has no `.git` at all.
     #[error("{0} is not a git worktree")]
     NotGit(PathBuf),
 }
 
 impl Worktree {
-    /// `path`, if it is the root of a linked worktree.
+    /// `path`, if it is the root of a git checkout. A `.git` file is a linked
+    /// worktree and a `.git` directory a main checkout; either will do.
     pub fn new(path: &Path) -> Result<Self, NotAWorktree> {
         let root = path
             .canonicalize()
             .map_err(|_| NotAWorktree::Missing(path.to_path_buf()))?;
-        let git = root.join(".git");
-        if git.is_dir() {
-            return Err(NotAWorktree::MainCheckout(path.to_path_buf()));
-        }
-        if !git.is_file() {
+        if !root.join(".git").exists() {
             return Err(NotAWorktree::NotGit(path.to_path_buf()));
         }
         Ok(Self { root })
@@ -330,14 +325,17 @@ mod tests {
         (dir, worktree)
     }
 
+    /// A main checkout used to be refused here. Agents may work on main now,
+    /// so it is accepted like a linked worktree; a folder that is not git at
+    /// all, or does not exist, is still refused.
     #[test]
-    fn a_main_checkout_is_not_a_worktree() {
+    fn a_main_checkout_is_accepted_and_a_plain_folder_is_not() {
         let (dir, _) = layout();
         let main = dir.path().join("main");
-        assert_eq!(
-            Worktree::new(&main),
-            Err(NotAWorktree::MainCheckout(main.clone()))
-        );
+        let tree = Worktree::new(&main).expect("a main checkout is accepted");
+        assert_eq!(tree.root(), main.canonicalize().unwrap());
+        assert!(tree.contains("src/new.rs"));
+        assert!(!tree.contains("../tree/src/x.rs"), "still confined to it");
         let plain = dir.path();
         assert!(matches!(Worktree::new(plain), Err(NotAWorktree::NotGit(_))));
         assert!(matches!(

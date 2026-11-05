@@ -1,6 +1,6 @@
 /**
  * Send selection's message (#316, spec §13 test 11): what the agent reads,
- * and the two items with both references typed in one `context/insert`.
+ * and the two items, one chip at the agent's prompt that names the picture.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -28,8 +28,11 @@ beforeEach(() => {
   bridge.invoke.mockReset();
   let n = 0;
   bridge.invoke.mockImplementation((method: string) => {
-    if (method === "context/put") return Promise.resolve({ id: `item${++n}` });
-    if (method === "context/insert") return Promise.resolve({ inserted: true, count: 2 });
+    if (method === "context/put") {
+      n += 1;
+      return Promise.resolve({ id: `item${n}`, path: `C:/env/item${n}.png` });
+    }
+    if (method === "veistra/attach-to-agent") return Promise.resolve({ delivered: 1 });
     return Promise.resolve(null);
   });
 });
@@ -62,28 +65,49 @@ describe("selectionText", () => {
 });
 
 describe("sendSelection", () => {
-  it("puts the text and the viewport, then types both references once, without Enter", async () => {
+  it("puts the viewport and the text, then leaves one chip, the selection's, and types nothing", async () => {
     const sent = await sendSelection(SELECTION);
     const puts = calls("context/put");
     expect(puts).toHaveLength(2);
     expect(puts[0]![1]).toMatchObject({
+      kind: "image",
+      key: "godot/levels/hallway.tscn/editor-viewport",
+      label: "Godot - viewport",
+      bytesBase64: "AAAA",
+    });
+    expect(puts[1]![1]).toMatchObject({
       kind: "text",
       key: "godot/levels/hallway.tscn/selection",
       label: "Godot - selection",
       title: "Godot editor - selection in hallway.tscn",
       text: selectionText(SELECTION),
     });
-    expect(puts[1]![1]).toMatchObject({
-      kind: "image",
-      key: "godot/levels/hallway.tscn/editor-viewport",
-      label: "Godot - viewport",
-      bytesBase64: "AAAA",
-    });
-    expect(calls("context/insert")).toEqual([["context/insert", { itemIds: ["item1", "item2"] }]]);
+    expect(
+      calls("veistra/attach-to-agent").map((c) => (c[1] as { contextId: string }).contextId),
+    ).toEqual(["item2"]);
+    // In Godot's colour in the agent tab.
+    expect(calls("veistra/attach-to-agent")[0][1]).toMatchObject({ kind: "godot-selection" });
+    expect(calls("context/insert")).toEqual([]);
+    // The chip's hidden prompt names the picture's file, so the agent opens it.
+    const prompt = (puts[1]![1] as { prompt: string }).prompt;
+    expect(prompt).toMatch(/nodes I selected/);
+    expect(prompt).toContain(
+      "The editor's 3D viewport at that moment is at C:/env/item1.png; open it.",
+    );
     expect(sent.typed).toBe(true);
   });
 
-  it("says nothing was typed when no agent terminal takes the references", async () => {
+  it("types both references at a terminal when no agent tab takes the chip", async () => {
+    bridge.invoke.mockImplementation((method: string) => {
+      if (method === "context/put") return Promise.resolve({ id: `item${calls(method).length}` });
+      if (method === "veistra/attach-to-agent") return Promise.resolve({ delivered: 0 });
+      return Promise.resolve({ inserted: true });
+    });
+    expect((await sendSelection(SELECTION)).typed).toBe(true);
+    expect(calls("context/insert")).toEqual([["context/insert", { itemIds: ["item2", "item1"] }]]);
+  });
+
+  it("says nothing was taken when no agent takes the chips", async () => {
     // What `context/insert` answers with no agent terminal in the cluster:
     // not an error, because the items are attached in the strip either way.
     bridge.invoke.mockImplementation((method: string) => {

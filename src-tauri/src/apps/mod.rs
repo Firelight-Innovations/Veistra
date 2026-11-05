@@ -26,6 +26,7 @@ pub mod canvas;
 mod costs;
 #[cfg(feature = "design-mode")]
 mod design;
+pub mod docs;
 mod files;
 mod godot_viewer;
 mod home;
@@ -44,7 +45,6 @@ pub(crate) mod projects;
 #[cfg(feature = "schematify")]
 mod schematify;
 mod trash;
-pub mod tutorial;
 
 use crate::plugins;
 use crate::project;
@@ -251,7 +251,9 @@ const REGISTRY: &[Registered] = &[
     },
     Registered {
         id: "blender-viewer",
-        name: "Blender Viewer",
+        // Shown as Blender, as `godot-viewer` is Godot; the id is the one saved
+        // layouts and settings already hold.
+        name: "Blender",
         description: "Work in Blender inside the pane in Editor mode, and look at each export's \
                       preview renders, parts list and .glb in Renders mode.",
         call: blender_viewer::call,
@@ -313,15 +315,9 @@ const REGISTRY: &[Registered] = &[
         call_for: None,
         places_window: false,
     },
-    Registered {
-        id: "usage",
-        name: "Usage",
-        description: "What your Veistra account has used and spent, by day and by run, against its monthly limit.",
-        // Reads the account service as the signed-in person; see `crate::account`.
-        call: crate::account::methods::app_call,
-        call_for: None,
-        places_window: false,
-    },
+    // No `usage` row: the Usage app became Settings → Usage, which reaches
+    // `account/*` through `account::methods::account_call`.
+    // `shell_state::RETIRED_APPS` drops it from saved layouts.
     Registered {
         id: "projects",
         name: "Projects",
@@ -366,14 +362,16 @@ const REGISTRY: &[Registered] = &[
         places_window: false,
     },
     Registered {
-        id: "tutorial",
-        name: "Tutorials",
-        description: "Learn Veistra — short walkthroughs of the window, projects and the stack.",
+        id: "docs",
+        name: "Docs",
+        description: "Veistra's documentation and tutorials, read live from veistra.com/docs.",
         // Registered like any other app and deliberately never *listed*: the
         // frontend filters it and Home out of the Apps menu, both covering the
         // cluster rather than taking a pane. This row is still what makes
-        // `veistra/open` resolve a frontend. See `docs/tutorials.md` §8.
-        call: tutorial::call,
+        // `veistra/open` resolve a frontend. See `docs/docs-app.md`. It took
+        // over from the bundled Tutorials app (`tutorial`), which
+        // `shell_state::RETIRED_APPS` drops from saved layouts.
+        call: docs::call,
         call_for: None,
         places_window: false,
     },
@@ -488,7 +486,7 @@ pub fn openables(app: &AppHandle) -> Vec<Openable> {
         .flat_map(|plugin| plugin.surfaces)
         // **Only what a plugin asked to have listed.** `present = "cover"` is
         // reachable by `veistra/open` and absent from both menus, as Home and
-        // Tutorials already are. A package with *no* surfaces — an MCP server,
+        // Docs already are. A package with *no* surfaces — an MCP server,
         // an indexer — contributes nothing, which is the whole answer to "there
         // should be no button offering to add a backend".
         .filter(|surface| surface.listed)
@@ -676,7 +674,7 @@ fn call_from(
     // The context store, likewise answered by the host so every app (and every
     // plugin surface) reaches one implementation. Deliberately *before* the
     // write refusal: `.veistra/context/` is Veistra's own gitignored state, not the
-    // checkout, so a read-only main may still collect context. See `context.rs`.
+    // checkout, so a read-only environment may still collect context. See `context.rs`.
     if crate::context::is_method(method) {
         let result = crate::context::call(context.project.as_deref(), id, method, params);
         if let (Ok(_), Some(root)) = (&result, context.project.as_deref()) {
@@ -761,8 +759,8 @@ pub fn call_for_instance(
     agent_tab::call_for(app, context, instance_id, method, params)
 }
 
-/// The JSON-RPC code for a write refused because the cluster is on main.
-/// Outside the range `veistra_rpc` reserves; the bridge hands it to the app
+/// The JSON-RPC code for a write refused because the cluster's environment is
+/// read-only (`Environment::is_read_only`; none is today). Outside the range `veistra_rpc` reserves; the bridge hands it to the app
 /// unchanged and the message is what gets shown.
 pub const READ_ONLY: i32 = -32003;
 
@@ -770,10 +768,10 @@ pub const READ_ONLY: i32 = -32003;
 /// checkout. A method missing from here is treated as a read, which is why
 /// `every_write_shaped_method_is_listed` scans the apps' own sources.
 ///
-/// Not listed on purpose: `home/worktree-create` (the way out of a read-only
-/// main), the `home/*-project` openers (they repoint a cluster, they do not
+/// Not listed on purpose: `home/worktree-create` (it makes a new checkout
+/// rather than writing to this one), the `home/*-project` openers (they repoint a cluster, they do not
 /// write to a checkout), and everything that touches user data rather than the
-/// project (`tutorial/*`, `costs/*`, `projects/*`).
+/// project (`docs/*`, `costs/*`, `projects/*`).
 pub const WRITE_METHODS: &[&str] = &[
     "files/write",
     "files/create-file",
@@ -806,8 +804,7 @@ pub const WRITE_METHODS: &[&str] = &[
     "godot/editor-save",
     "godot/plugin-install",
     "godot/plugin-remove",
-    // An editor opened on main could save into it; main shows the read-only
-    // viewer instead (`crate::editor_surface`).
+    // An editor opened on the checkout saves into it.
     "blender-viewer/open",
     // Blender in the pane, which saves the file it has open (#317).
     "blender-viewer/editor-open",
@@ -861,7 +858,7 @@ pub fn write_refusal(
     if !is_write_method(method) {
         return Ok(());
     }
-    crate::environments::refuse_write_on_main(env, method)
+    crate::environments::refuse_read_only_write(env, method)
         .map_err(|e| RpcError::new(READ_ONLY, e.to_string()))
 }
 
@@ -878,6 +875,11 @@ pub const OPEN_SETTINGS_METHOD: &str = "shell/open-settings";
 /// `src/bindings.ts`.
 pub const OPEN_SETTINGS_EVENT: &str = "settings:open";
 
+/// Settings pages the shell draws with no settings group behind them: what the
+/// account service reports, read live (`src/shell/settings/pages.ts`). Named
+/// here so `shell/open-settings` can land on them; Home's sign-in screen does.
+const SETTINGS_PAGES: &[&str] = &["billing", "usage"];
+
 /// The section a `shell/open-settings` call names: one the registry could hold,
 /// or none (open where it was last). A typo is refused here rather than landing
 /// on the first section without a word.
@@ -888,6 +890,7 @@ fn settings_section(params: Option<&Value>) -> Result<Option<String>, RpcError> 
     let known = |id: &str| {
         settings_groups().iter().any(|g| g.id == id)
             || crate::settings::shell_group_ids().any(|shell| shell == id)
+            || SETTINGS_PAGES.contains(&id)
     };
     match section.as_str() {
         Some(id) if known(id) => Ok(Some(id.to_string())),
@@ -931,6 +934,15 @@ mod tests {
             Some("appearance")
         );
         assert_eq!(settings_section(None).unwrap(), None);
+        // The pages with no group behind them, which the old Usage app became.
+        assert_eq!(
+            section(json!({ "section": "usage" })).unwrap().as_deref(),
+            Some("usage")
+        );
+        assert_eq!(
+            section(json!({ "section": "billing" })).unwrap().as_deref(),
+            Some("billing")
+        );
         assert!(section(json!({ "section": "cnavas" })).is_err());
         assert!(section(json!({ "section": 3 })).is_err());
     }
@@ -953,20 +965,24 @@ mod tests {
     }
 
     /// Each app family that writes: Files, Trash, Schematify, viewer comments
-    /// and Home's initialize. Main refuses with the read-only code; a worktree,
-    /// and a cluster with no environment, allow.
+    /// and Home's initialize. Main used to refuse every one with the read-only
+    /// code; it is written like a worktree now, and so is a cluster with no
+    /// environment.
     #[test]
-    fn every_write_method_refuses_main_and_allows_a_worktree() {
+    fn every_write_method_runs_on_main_as_on_a_worktree() {
         for method in WRITE_METHODS {
-            let err = write_refusal(Some(&Environment::Main), method).unwrap_err();
-            assert_eq!(err.code, READ_ONLY, "{method}");
+            assert!(
+                write_refusal(Some(&Environment::Main), method).is_ok(),
+                "{method}"
+            );
             assert!(write_refusal(Some(&worktree()), method).is_ok(), "{method}");
             assert!(write_refusal(None, method).is_ok(), "{method}");
         }
     }
 
-    /// Context is allowed on main by design (it is gitignored, and nothing
-    /// tracked changes), so no context method may sit in the refusal list.
+    /// Context is allowed in a read-only environment by design (it is
+    /// gitignored, and nothing tracked changes), so no context method may sit
+    /// in the refusal list.
     #[test]
     fn context_methods_are_never_write_refused() {
         for method in [

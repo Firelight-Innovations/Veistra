@@ -28,9 +28,16 @@
   pointer-events: none;
   animation: at-surge-sweep 1300ms cubic-bezier(0.4, 0, 0.2, 1) both;
 }
-/* A mention tag, as on the marketing site: the label in the link colour on a
-   tinted ground, no edge and no glyph. */
+/* A mention tag, as on the marketing site: the label in its colour on a
+   tinted ground, no edge and no glyph. The colour is its kind's, the one its
+   row had in the @ menu (`--at-kind`, kinds.css), so a frame and a file read
+   apart in the prompt; a chip of no known kind takes the accent, as all did.
+   The text keeps 70% of the hue and takes the rest from the foreground: the
+   pure hue on its own tint fell to 3.4:1 in the light theme, and this holds
+   every kind at 5.2:1 or more on the prompt and on a sent message, both themes. */
 .at-chip {
+  --at-chip-ink: color-mix(in srgb, var(--at-kind, var(--k-accent)) 70%, var(--k-editor-fg));
+  --at-chip-wash: color-mix(in srgb, var(--at-kind, var(--k-accent)) 14%, transparent);
   display: inline-flex;
   align-items: center;
   gap: var(--k-space-0-5);
@@ -39,8 +46,8 @@
   padding: 0 var(--k-space-1-5);
   border: 0;
   border-radius: var(--k-radius-control);
-  background: var(--k-accent-subtle);
-  color: var(--k-link);
+  background: var(--at-chip-wash);
+  color: var(--at-chip-ink);
   font: var(--k-text-small);
   font-weight: 500;
   vertical-align: baseline;
@@ -50,15 +57,24 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Inline in a sent message: it sits on the text's line, in the link colour. */
+/* Inline in a sent message: it sits on the text's line, in its kind's colour. */
 .at-user__text .at-chip {
   height: auto;
   margin-inline: var(--k-space-0-5);
   padding: 0 var(--k-space-1);
   border: 0;
-  background: var(--k-accent-subtle);
-  color: var(--k-link);
   line-height: inherit;
+}
+/* One an editor can show: a click opens it there. */
+.at-user__text .at-chip[data-opens] {
+  cursor: pointer;
+}
+.at-user__text .at-chip[data-opens]:hover {
+  text-decoration: underline;
+}
+.at-user__text .at-chip[data-opens]:focus-visible {
+  outline: 2px solid var(--at-chip-ink);
+  outline-offset: 1px;
 }
 .at-assistant a[href^="veistra:"] {
   display: inline-block;

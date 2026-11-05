@@ -73,7 +73,7 @@ apps/                 first-party surfaces, see apps/README.md
   home/ui/              Home: the stack at a glance
   files/ui/             Files: browse the checkout
   viewer/ui/            Viewer: read a file, whatever its format
-  tutorial/ui/          Tutorials: the guided tour, drawn from a catalog
+  docs/ui/              Docs: veistra.com/docs, read live from the website
   design/ui/            Design Mode: a running page, and elements picked out of it
 index.html            Vite entry point (main window)
 splash.html           Vite entry point (splash window)
@@ -122,7 +122,7 @@ src-tauri/            Rust backend
       home.rs             home/state, and the folder pickers
       files.rs            files/list, files/read
       trash.rs            deleting, and getting it back
-      tutorial.rs         tutorial progress
+      docs.rs             the website's docs index and pages, fetched live
       design.rs           what Design Mode may embed, and what goes inside it
       design_probe.js     the browser code that goes inside it
     project/            what a project is, and which one is open
@@ -212,7 +212,7 @@ come back when the broker does.
 ## Apps
 
 `apps/` holds the surfaces the orchestrator ships itself: Home, Files, the file
-viewer, Tutorials and Design Mode. They mount in the same tool window a tool
+viewer, Docs and Design Mode. They mount in the same tool window a tool
 would. They speak the same transport to the shell, and they import the same
 `@veistra/bridge`.
 

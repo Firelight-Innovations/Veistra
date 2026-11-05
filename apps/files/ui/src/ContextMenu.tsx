@@ -18,6 +18,7 @@
  */
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { canSendToAgent, putFile, relativePath } from "../../../shared/fileContext";
+import { chipToAgent } from "../../../shared/context";
 import { describe, openExternal, openInBlender, reveal, type EntryKind } from "./rpc";
 import type { DeleteTarget } from "./useDelete";
 import "./contextMenu.css";
@@ -277,7 +278,13 @@ export default function ContextMenu({
                 className="menu__item"
                 role="menuitem"
                 onClick={() =>
-                  run("context/put", () => putFile(path, relativePath(rootPath, path)))
+                  // Stored, then one chip on the prompt of the agent last worked in.
+                  run("context/put", async () => {
+                    const said = await chipToAgent(
+                      await putFile(path, relativePath(rootPath, path)),
+                    );
+                    if (!said.delivered) throw new Error(`no agent took it: ${said.reason}`);
+                  })
                 }
               >
                 Send to agent

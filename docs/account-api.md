@@ -14,7 +14,12 @@ request.
 The app calls Cloud Run's `run.app` address directly, never through Firebase Hosting, which cuts
 requests at 60 s. The address is the `account.apiUrl` setting (Settings, Account), or the
 `VEISTRA_ACCOUNT_API` environment variable, and is everything before `/v1`. Empty means "not
-deployed yet": the app shows no sign-in screen and the account panel says so.
+deployed yet": the app shows no sign-in screen, and Settings → Account says so.
+
+The shell reads these endpoints through the `account/*` methods (`src-tauri/src/account/`): Home
+calls them as an app, and the shell's title-bar avatar and Settings' Account, Billing and Usage
+pages call them through the `account_call` command (`accountCall` in `src/bindings.ts`). Settings →
+Usage, which replaced the Usage app, reads `GET /v1/usage` and `GET /v1/runs`.
 
 ## Conventions
 

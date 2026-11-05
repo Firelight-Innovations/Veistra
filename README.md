@@ -19,8 +19,7 @@
 </p>
 
 <p>
-  <a href="docs/user/tutorials/README.md"><ins>Tutorials</ins></a> &middot;
-  <a href="docs/user/README.md"><ins>User docs</ins></a> &middot;
+  <a href="https://veistra.com/docs"><ins>Docs and tutorials</ins></a> &middot;
   <a href="docs/dev/README.md"><ins>Developer docs</ins></a> &middot;
   <a href="https://github.com/Firelight-Innovations/Veistra/discussions"><ins>Discussions</ins></a>
 </p>
@@ -70,9 +69,9 @@ changing behavior and bugs. It is Windows only. Parts marked **preview** or
 
 A cluster is one workspace: a project, a git worktree, and its own layout of
 panes and terminals. Split panes freely and run Claude Code or Codex in a
-terminal pane. Switch clusters and the panes and terminals swap together. The
-main branch is read-only; work happens in worktrees, so several agents can work
-on one repository without colliding.
+terminal pane. Switch clusters and the panes and terminals swap together. Work
+on the main branch directly, or give each change its own worktree cluster so
+several agents can work on one repository without colliding.
 
 ![A cluster for a Minecraft-clone project: the design canvas, a Godot viewer with a running scene and its log, and the file explorer](assets/ui/godot-cluster.png)
 
@@ -126,12 +125,13 @@ does not bundle it.
 
 Veistra drives headless Blender. You need Blender installed.
 
-- **Blender Viewer** exports a `.blend` to `.glb` and shows the model, with a
-  parts list and renders.
+- **Blender** opens Blender itself in the pane in Editor mode, on the file shown,
+  or on a new scene when the environment has no `.blend` yet.
+- **Renders** exports a `.blend` to `.glb` and shows the model, with a parts
+  list and renders.
 - **Markup and Send to agent** let you mark up a view and send it to an agent.
-- **Open in Blender** opens the file in Blender itself.
 
-![The Blender Viewer in the full window: an exported room model with its parts list, beside the Godot viewer and file explorer](assets/ui/blender-viewer.png)
+![The Blender app in the full window: an exported room model with its parts list, beside the Godot viewer and file explorer](assets/ui/blender-viewer.png)
 
 ### Files, context and sending things to agents
 
@@ -244,13 +244,12 @@ step takes several minutes. Later runs are fast.
 
 ## Learn your way around
 
-[Ten short tutorials](docs/user/tutorials/README.md) cover the window, your
-first project, panes and clusters, terminals, search, settings, files and
-editing, git and worktrees, MCP servers, and the stack. Veistra ships the same
-pages in its own Tutorials tool. Read each tutorial beside the thing it
-describes.
+The docs and tutorials are at [veistra.com/docs](https://veistra.com/docs).
+Veistra reads the same pages from the website in its own Docs pane (Help ▸
+Documentation, or the Docs column on Home), so they stay current without a new
+release.
 
-Start with [The Veistra window](docs/user/tutorials/the-window.md).
+Start with [Install](https://veistra.com/docs/get-started/install).
 
 ## The stack
 
@@ -258,8 +257,8 @@ Veistra's own tools are apps inside this repository, under `apps/`, and ship
 in the same binary as the window. A third-party tool can live in its own
 repository instead, pinned to an exact version in `veistra.toml`. Nothing is
 pinned today, so the switcher bar's health badge stays silent.
-[The stack, end to end](docs/user/tutorials/the-stack.md) explains how to read
-that badge once something is pinned.
+[`docs/tool-protocol.md`](docs/tool-protocol.md) describes how a pinned tool
+is resolved and checked.
 
 ## Contributing
 

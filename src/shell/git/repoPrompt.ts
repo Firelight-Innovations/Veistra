@@ -1,6 +1,6 @@
 /**
  * What to tell someone whose project cannot have worktree clusters yet, as plain words.
- * Pure so the dialog and the read-only notice say the same thing and a test can pin it.
+ * Pure so the dialog and the no-repository notice say the same thing and a test can pin it.
  */
 import type { RepoState } from "../../bindings";
 

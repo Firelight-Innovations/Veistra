@@ -1,6 +1,6 @@
 /**
- * The View and Run menus: every row acts, and the toggles say which state the
- * window is actually in.
+ * The View, Run and Help menus: every row acts, and the toggles say which state
+ * the window is actually in.
  *
  * Two menus in one file because they are one claim — a row that renders live
  * does something — asserted over the two that have been reported for breaking
@@ -92,7 +92,7 @@ function otherHandlers(): Omit<MenuHandlers, "view"> {
       onClear: vi.fn(),
       enabled: true,
     },
-    help: { checkForUpdates: vi.fn() },
+    help: { checkForUpdates: vi.fn(), openDocumentation: vi.fn() },
   };
 }
 
@@ -375,5 +375,32 @@ describe("the Run menu with no terminal", () => {
     const items = runMenu(runHandlers({ last: "pnpm verify", blocked: NO_TERMINAL }));
     expect(items.map((item) => item.disabled)).toEqual([true, true, true]);
     for (const item of items) expect(item.hint).toBe(NO_TERMINAL);
+  });
+});
+
+/**
+ * Help ▸ Documentation was the last inert row in any menu. It now opens Docs,
+ * which reads veistra.com/docs live (`docs/docs-app.md`).
+ */
+describe("the Help menu", () => {
+  const helpMenu = (help: MenuHandlers["help"]): MenuItem[] => {
+    const menu = defaultMenus({ ...otherHandlers(), help, view: viewHandlers() }).find(
+      (one) => one.label === "Help",
+    );
+    if (menu === undefined) throw new Error("defaultMenus() built no Help menu");
+    return menu.items;
+  };
+
+  it("opens Docs from Documentation", () => {
+    const help = { checkForUpdates: vi.fn(), openDocumentation: vi.fn() };
+    row(helpMenu(help), "Documentation").onSelect?.();
+    expect(help.openDocumentation).toHaveBeenCalledOnce();
+    expect(help.checkForUpdates).not.toHaveBeenCalled();
+  });
+
+  it("gives every row something to do", () => {
+    const items = helpMenu({ checkForUpdates: vi.fn(), openDocumentation: vi.fn() });
+    const inert = items.filter((item) => item.onSelect === undefined).map((item) => item.label);
+    expect(inert).toEqual([]);
   });
 });

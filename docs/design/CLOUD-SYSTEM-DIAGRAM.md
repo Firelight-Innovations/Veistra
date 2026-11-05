@@ -18,7 +18,7 @@ flowchart LR
 
     subgraph LAPTOP["Laptop build: Veistra desktop, Windows"]
         direction TB
-        UIshell["Veistra shell (Tauri v2)<br/>build: apps home, files, viewer, tutorial, design, schematify"]
+        UIshell["Veistra shell (Tauri v2)<br/>build: apps home, files, viewer, docs, design, schematify"]
         UIagents["Agents app - apps-agents<br/>build (branch cloud-ui-agents-app, not yet merged to main)<br/>lists agent VMs, sessions, transcripts"]
         UIprojects["apps-projects - plan<br/>project switcher, embedded Plane webview, New project dialog"]
         RustCloud["Rust cloud module - src-tauri-src-cloud<br/>build (same unmerged branch): auth, compute, storage, http"]

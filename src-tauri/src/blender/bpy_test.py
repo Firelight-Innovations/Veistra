@@ -163,7 +163,7 @@ class BootScript(Booted):
     def test_register_says_hello_and_installs_nothing(self):
         self.assertTrue(self.boot["register"]())
         hello = self.read("hello.json")
-        self.assertEqual(hello["version"], 2)
+        self.assertEqual(hello["version"], 3)
         self.assertEqual(hello["pid"], os.getpid())
         self.assertTrue(bpy.app.timers.is_registered(self.boot["tick"]))
         self.assertEqual(sorted(bpy.context.preferences.addons.keys()), self.addons)
@@ -241,7 +241,7 @@ NOTES = {
     "version": 1, "rev": 3, "problem": None, "acks": [],
     "notes": [
         {"kind": "mesh", "part": "Frame", "material": "Oak", "title": "Oak",
-         "id": "0190000000aa-0001", "status": "fixed", "label": "Fixed, check it",
+         "id": "0190000000aa-0001", "status": "fixed", "label": "Completed",
          "body": "The headboard is too tall", "fix": {"by": "agent", "note": "Lowered it"},
          "replies": [{"by": "agent", "body": "Taken 10 cm off"}]},
         {"kind": "mesh", "part": "Pillow", "material": "none", "title": "none",
@@ -314,7 +314,7 @@ class VeistraTab(Booted):
         log = self.draw(["Frame"])
         labels = self.labels(log)
         self.assertEqual(labels[0], "1 note on Frame")
-        self.assertIn("Frame: Oak - Fixed, check it", labels)
+        self.assertIn("Frame: Oak - Completed", labels)
         self.assertIn("The headboard is too tall", labels)
         self.assertIn("agent: Taken 10 cm off", labels)
         self.assertIn("Fix: Lowered it", labels)
@@ -373,6 +373,36 @@ class VeistraTab(Booted):
         # Long lines are wrapped to the sidebar's width.
         self.assertIn("Mark up did not go through: the Editor mode is not open",
                       " ".join(self.labels(self.draw([]))))
+
+    def test_mention_sends_the_selection_else_the_file_in_one_line(self):
+        op = self.boot["VEISTRA_OT_mention"]
+        self.assertEqual(op.bl_label, "Mention to Veistra agent")
+        self.assertEqual(op.__doc__, "Mention this to Veistra agent")
+        self.assertNotIn("UNDO", op.bl_options)
+        self.send({"id": 1, "action": "select", "names": ["Frame"]})
+        self.assertEqual(bpy.ops.veistra.mention(), {"FINISHED"})
+        bpy.ops.object.select_all(action="DESELECT")
+        self.assertEqual(bpy.ops.veistra.mention(), {"FINISHED"})
+        selection, scene = self.events()
+        self.assertEqual((selection["kind"], selection["what"], selection["nodes"]),
+                         ("mention", "selection", ["Frame"]))
+        self.assertTrue(selection["scene"].endswith("bed.blend"))
+        self.assertEqual(scene["what"], "scene")
+        self.assertNotIn("nodes", scene)
+        # Asked for the selection with nothing selected, it says so and sends nothing.
+        self.assertEqual(bpy.ops.veistra.mention(what="SELECTION"), {"CANCELLED"})
+        self.assertEqual(len(self.events()), 2)
+
+    def test_mention_is_on_the_right_click_menus_and_ctrl_alt_m(self):
+        for name in self.boot["MENTION_MENUS"]:
+            menu = getattr(bpy.types, name, None)
+            if menu is not None:
+                self.assertIn(self.boot["_mention_menu"], menu._dyn_ui_initialize())
+        log = []
+        self.boot["_mention_menu"](types.SimpleNamespace(layout=Layout(log)), None)
+        [(_, idname, text, op, _)] = [e for e in log if e[0] == "op"]
+        self.assertEqual((idname, text, op.what),
+                         ("veistra.mention", "Mention to Veistra agent", "SELECTION"))
 
     def test_numbers_rise_even_within_one_millisecond(self):
         bpy.ops.veistra.markup()

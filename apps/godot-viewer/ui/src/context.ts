@@ -41,6 +41,7 @@ export function putTree(state: GodotViewerState) {
     title: `${state.scenePath ?? "Godot"} - scene tree`,
     label: "Godot - scene tree",
     text: treeText(state),
+    prompt: `The node tree of the Godot scene ${state.scenePath ?? "I have open"}, as Veistra reads it. Use it for what I ask about the scene.`,
   });
 }
 
@@ -51,6 +52,7 @@ export function putFrame(base64: string, scenePath: string | null) {
     title: `${scenePath ?? "Godot"} - rendered view`,
     label: "Godot - rendered view",
     bytesBase64: base64,
+    prompt: `How the Godot scene ${scenePath ?? "I have open"} renders right now. Use it for what I ask about how it looks.`,
   });
 }
 

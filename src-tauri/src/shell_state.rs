@@ -618,6 +618,7 @@ impl ShellState {
         // First, so a terminal in a converted page's band is re-homed below
         // rather than left naming a cluster that has gone.
         migrate_legacy_page_clusters(&mut snapshot);
+        drop_retired_apps(&mut snapshot);
         drop_unavailable_pages(&mut snapshot, &|id| {
             crate::pages::find(id).is_some_and(|p| !p.disabled)
         });
@@ -2123,7 +2124,7 @@ fn slot_of_tab(snapshot: &ShellSnapshot, id: &str) -> Option<presets::PresetSlot
 
 // --- A takeover surface's dismissal -------------------------------------------
 //
-// Home and Tutorials **cover** the cluster rather than taking a pane beside it — `WindowRoot.tsx`'s
+// Home and Docs **cover** the cluster rather than taking a pane beside it — `WindowRoot.tsx`'s
 // `TAKEOVER_APPS` and `ToolWindow`'s `soloInstanceId` are the drawing half of that. Neither draws a
 // tab of its own in the switcher row (see that file's `members`), on purpose: they are the screen
 // you are already on, not a fourth thing competing with Files, the viewer and a terminal for a
@@ -2133,11 +2134,47 @@ fn slot_of_tab(snapshot: &ShellSnapshot, id: &str) -> Option<presets::PresetSlot
 /// `src/shell/WindowRoot.tsx`; the two are a pair.
 ///
 /// One takeover surface arriving over another is the exception, and it is why `open_instance`
-/// guards on this rather than on the id `"home"`. Opening Tutorials from a card on Home must not
-/// evict the Home underneath: it is covered, not replaced, and closing the tutorial has to put back
-/// the screen the reader left. Evicting would strand a fresh cluster with nothing in it.
+/// guards on this rather than on the id `"home"`. Opening Docs from a card on Home must not evict
+/// the Home underneath: it is covered, not replaced, and closing the page has to put back the
+/// screen the reader left. Evicting would strand a fresh cluster with nothing in it.
 fn is_takeover_app(app_id: &str) -> bool {
-    matches!(app_id, "home" | "tutorial")
+    matches!(app_id, "home" | "docs")
+}
+
+/// App ids an older build saved into `layout.json` and this one no longer registers.
+///
+/// `tutorial` was the bundled Tutorials app, replaced by Docs (`apps::docs`). It was a takeover
+/// surface, so a layout saved while one was open would restore a cover with nothing to mount and
+/// no tab to close it by. [`drop_retired_apps`] removes it at restore instead.
+///
+/// `usage` was the Usage app, which became the Usage page of Settings. Its tab would restore as a
+/// pane whose frontend is no longer built, so it is dropped the same way.
+const RETIRED_APPS: &[&str] = &["tutorial", "usage"];
+
+/// Take every instance of a [`RETIRED_APPS`] app out of the layout, tab and instance both.
+///
+/// Dropped rather than mapped onto Docs: being open is what makes a takeover cover, and restoring
+/// a cover the reader did not just ask for would hide the layout they came back to.
+///
+/// Reached from `restore` only.
+fn drop_retired_apps(s: &mut ShellSnapshot) {
+    let retired: Vec<String> = s
+        .instances
+        .iter()
+        .filter(|i| RETIRED_APPS.contains(&i.app_id.as_str()))
+        .map(|i| i.id.clone())
+        .collect();
+    if retired.is_empty() {
+        return;
+    }
+    for w in s.windows.iter_mut() {
+        for c in w.clusters.iter_mut() {
+            for id in &retired {
+                c.tree.remove_tab(id);
+            }
+        }
+    }
+    s.instances.retain(|i| !retired.contains(&i.id));
 }
 
 /// Whether `id` names a live takeover surface.
@@ -4617,34 +4654,35 @@ mod tests {
         );
     }
 
-    /// Tutorials covers the cluster the same way Home does, so it is dismissed
-    /// by the same arrival. Without this it would be a pane with no tab in the
+    /// Docs covers the cluster the same way Home does, so it is dismissed by
+    /// the same arrival. Without this it would be a pane with no tab in the
     /// switcher row and no close button — unreachable and unremovable.
     #[test]
-    fn dismiss_takeover_closes_a_tutorial_too() {
+    fn dismiss_takeover_closes_docs_too() {
         let mut tree = PaneNode::leaf("p1");
-        tree.insert_tab("p1", "tutorial-1", None);
+        tree.insert_tab("p1", "docs-1", None);
         tree.insert_tab("p1", "files-1", None);
         let mut instances = vec![
-            app_instance("tutorial-1", "tutorial"),
+            app_instance("docs-1", "docs"),
             app_instance("files-1", "files"),
         ];
 
         assert_eq!(
             dismiss_takeover(&mut tree, "p1", &mut instances).as_deref(),
-            Some("tutorial-1")
+            Some("docs-1")
         );
-        assert!(!instances.iter().any(|i| i.id == "tutorial-1"));
+        assert!(!instances.iter().any(|i| i.id == "docs-1"));
     }
 
-    /// The rule `open_instance` guards on. A tutorial opened from a card on
-    /// Home must *cover* that Home rather than evict it — closing the tutorial
+    /// The rule `open_instance` guards on. A docs page opened from a card on
+    /// Home must *cover* that Home rather than evict it — closing the page
     /// has to put the reader back on the screen they left, and on a cluster
     /// holding nothing else an eviction would strand them on an empty pane.
     #[test]
     fn one_takeover_surface_does_not_evict_another() {
         assert!(is_takeover_app("home"));
-        assert!(is_takeover_app("tutorial"));
+        assert!(is_takeover_app("docs"));
+        assert!(!is_takeover_app("tutorial"), "retired; see RETIRED_APPS");
         assert!(!is_takeover_app("files"));
         assert!(!is_takeover_app("viewer"));
         assert!(
@@ -4818,7 +4856,7 @@ mod tests {
 
     /// A takeover surface arriving does not evict the one already there, and
     /// the caller says so rather than this deciding — `open_instance` passes
-    /// `false` for Home and Tutorials, every other path passes `true`.
+    /// `false` for Home and Docs, every other path passes `true`.
     #[test]
     fn placing_without_eviction_leaves_the_takeover_surface_alone() {
         let mut tree = PaneNode::leaf("p1");
@@ -4828,7 +4866,7 @@ mod tests {
         assert!(place_surface(
             &mut tree,
             &mut instances,
-            "tutorial-1",
+            "docs-1",
             Some("p1"),
             None,
             None,
@@ -4837,8 +4875,8 @@ mod tests {
 
         assert_eq!(
             tree.tabs_in("p1"),
-            Some(&["home-1".to_string(), "tutorial-1".to_string()][..]),
-            "the tutorial covers Home; closing it has to put Home back"
+            Some(&["home-1".to_string(), "docs-1".to_string()][..]),
+            "the docs cover Home; closing them has to put Home back"
         );
         assert!(instances.iter().any(|i| i.id == "home-1"));
     }
@@ -5256,6 +5294,79 @@ mod tests {
         assert!(
             s.instances.iter().any(|i| i.id == "agents-9"),
             "so it is not among the dropped instances either"
+        );
+    }
+
+    /// A layout saved while the old Tutorials app covered a cluster. It comes
+    /// back without it: no instance pointing at an app this build cannot
+    /// mount, and the tabs underneath exactly as they were.
+    #[test]
+    fn restore_drops_a_retired_tutorial_pane_and_keeps_the_rest() {
+        let mut s = state(
+            vec![window(
+                "main",
+                "cluster-1",
+                &["home-1", "files-1", "tutorial-3"],
+            )],
+            Vec::new(),
+        );
+        s.instances.push(home_instance("home-1"));
+        s.instances.push(app_instance("files-1", "files"));
+        s.instances.push(app_instance("tutorial-3", "tutorial"));
+
+        drop_retired_apps(&mut s);
+
+        let tree = &s.windows[0].clusters[0].tree;
+        assert_eq!(
+            tree.tabs_in("pane-1"),
+            Some(&["home-1".to_string(), "files-1".to_string()][..])
+        );
+        let ids: Vec<&str> = s.instances.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["home-1", "files-1"]);
+    }
+
+    /// A layout saved with the old Usage app open in a pane, beside Files in a
+    /// split. The Usage tab goes, Files and the other pane stay, and nothing is
+    /// left pointing at a frontend this build does not have.
+    #[test]
+    fn restore_drops_a_retired_usage_tab_and_keeps_the_rest() {
+        let mut s = state(
+            vec![window("main", "cluster-1", &["files-1", "usage-2"])],
+            Vec::new(),
+        );
+        s.instances.push(app_instance("files-1", "files"));
+        s.instances.push(app_instance("usage-2", "usage"));
+
+        drop_retired_apps(&mut s);
+
+        assert_eq!(
+            s.windows[0].clusters[0].tree.tabs_in("pane-1"),
+            Some(&["files-1".to_string()][..])
+        );
+        let ids: Vec<&str> = s.instances.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["files-1"]);
+        assert!(
+            !crate::apps::is_app("usage"),
+            "registered again; take it out of RETIRED_APPS"
+        );
+    }
+
+    /// The only tab in a one-pane cluster: the pane stays, empty, rather
+    /// than the cluster losing its root.
+    #[test]
+    fn restore_leaves_an_empty_pane_where_a_lone_tutorial_was() {
+        let mut s = state(
+            vec![window("main", "cluster-1", &["tutorial-1"])],
+            Vec::new(),
+        );
+        s.instances.push(app_instance("tutorial-1", "tutorial"));
+
+        drop_retired_apps(&mut s);
+
+        assert!(s.instances.is_empty());
+        assert_eq!(
+            s.windows[0].clusters[0].tree.tabs_in("pane-1"),
+            Some(&[][..])
         );
     }
 

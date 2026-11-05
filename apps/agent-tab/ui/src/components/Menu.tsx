@@ -1,12 +1,16 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import {
   Bookmark,
+  Box,
+  Boxes,
   ChevronLeft,
+  Clapperboard,
   ChevronRight,
   File,
   FileText,
   Folder,
   Frame,
+  Gamepad2,
   GitBranch,
   SquareKanban,
   Link,
@@ -19,9 +23,11 @@ import {
   Sparkles,
   type LucideIcon,
 } from "lucide-react";
+import { fileIconUrl, folderIconUrl } from "@veistra/file-icons";
 import { strings } from "../strings";
 import type { MenuItem, MenuProps } from "./types";
 import "./menu.css";
+import "./kinds.css";
 
 /** The glyph a row leads with, by what it is. Rows without a known kind get none. */
 const ICON: Record<string, LucideIcon> = {
@@ -38,11 +44,31 @@ const ICON: Record<string, LucideIcon> = {
   folder: Folder,
   context: Bookmark,
   selection: MousePointer2,
+  // What a running editor reports: its group, then a node, a scene, an object.
+  godot: Gamepad2,
+  "godot-node": Box,
+  "godot-scene": Clapperboard,
+  blender: Boxes,
+  "blender-object": Box,
   search: Search,
   skill: Sparkles,
   command: Slash,
   other: File,
 };
+
+/**
+ * A file or folder row's type icon, the one the Files explorer shows for the
+ * same name, or `null` for every other row. A list of names to scan is where
+ * `@veistra/file-icons` says its colour belongs, and `main.json` among
+ * `main.json.bak` and a frame reads faster by its icon. Only a row that names
+ * a file has one: "Files", which browses them, keeps the glyph.
+ */
+function typeIconUrl(item: MenuItem): string | null {
+  if (!item.fileName) return null;
+  if (item.kind === "file") return fileIconUrl(item.fileName);
+  if (item.kind === "folder") return folderIconUrl(item.fileName, false);
+  return null;
+}
 
 /**
  * A popup list: slash commands, @ mentions. Presentational only; the caller
@@ -116,28 +142,44 @@ export function Menu({
       )}
       {list.length > 0 && (
         <ul className="at-menu__list" role="listbox" aria-label={heading}>
-          {list.map((item) => {
-            const Icon = item.kind ? ICON[item.kind] : undefined;
+          {list.map((item, index) => {
+            const typeIcon = typeIconUrl(item);
+            const Icon = !typeIcon && item.kind ? ICON[item.kind] : undefined;
             return (
-              <li
-                key={item.id}
-                id={`menu-item-${item.id}`}
-                role="option"
-                aria-selected={item.id === activeId}
-                aria-disabled={item.disabled}
-                tabIndex={-1}
-                className={`at-menu__item${item.id === activeId ? " at-menu__item--active" : ""}`}
-                // Keeps focus in the input, so typing carries on after a pick.
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => choose(item)}
-              >
-                {Icon && <Icon className="at-menu__icon" size={14} aria-hidden="true" />}
-                <span className="at-menu__label">{item.label}</span>
-                {item.detail && <span className="at-menu__detail">{item.detail}</span>}
-                {item.children && (
-                  <ChevronRight className="at-menu__arrow" size={14} aria-hidden="true" />
+              <Fragment key={item.id}>
+                {item.separated && index > 0 && (
+                  <li className="at-menu__sep" role="presentation" aria-hidden="true" />
                 )}
-              </li>
+                <li
+                  id={`menu-item-${item.id}`}
+                  // The glyph takes its kind's colour from `--k-kind-<kind>` in menu.css.
+                  data-kind={item.kind}
+                  role="option"
+                  aria-selected={item.id === activeId}
+                  aria-disabled={item.disabled}
+                  tabIndex={-1}
+                  className={`at-menu__item${item.id === activeId ? " at-menu__item--active" : ""}`}
+                  // Keeps focus in the input, so typing carries on after a pick.
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => choose(item)}
+                >
+                  {typeIcon && (
+                    // The label beside it names the file; announcing the icon too would say it twice.
+                    <img
+                      className="at-menu__icon at-menu__icon--type"
+                      src={typeIcon}
+                      alt=""
+                      draggable={false}
+                    />
+                  )}
+                  {Icon && <Icon className="at-menu__icon" size={16} aria-hidden="true" />}
+                  <span className="at-menu__label">{item.label}</span>
+                  {item.detail && <span className="at-menu__detail">{item.detail}</span>}
+                  {item.children && (
+                    <ChevronRight className="at-menu__arrow" size={14} aria-hidden="true" />
+                  )}
+                </li>
+              </Fragment>
             );
           })}
         </ul>

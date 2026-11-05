@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke, reportPainted, session } from "@veistra/bridge";
+import { reportPainted, session } from "@veistra/bridge";
 import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 import { AlertTriangle, ChevronRight, FilePlus2, Lock, Palette, SquareDashed } from "lucide-react";
 import { SendButton, SendFooter } from "../../../shared/SendFooter";
@@ -11,6 +11,7 @@ import {
   selectedCount,
   selectionElements,
 } from "./sendToAgent";
+import { chipToAgent } from "../../../shared/context";
 import AssetList from "./AssetList";
 import ObjectPanel from "./ObjectPanel";
 import TypesPanel from "./TypesPanel";
@@ -706,18 +707,22 @@ export default function App() {
 
   const sendSelection = useCallback(() => {
     setNotice(null);
-    putSelection().then(
-      (item) => {
-        // The agent tab beside this one gets it as a chip on its next prompt.
-        void invoke("veistra/attach-to-agent", {
-          contextId: item.id,
-          label: "Canvas selection",
-        }).catch(() => {});
-        setSentSelection(true);
-        setTimeout(() => setSentSelection(false), 1800);
-      },
-      (err: unknown) => setNotice(`Couldn't send the selection to the agent: ${messageOf(err)}`),
-    );
+    putSelection()
+      // One chip on the prompt of the agent tab last worked in; no words.
+      .then((item) => chipToAgent(item))
+      .then(
+        (said) => {
+          if (!said.delivered) {
+            setNotice(
+              `The selection is in the Context strip, but no agent took it: ${said.reason}.`,
+            );
+            return;
+          }
+          setSentSelection(true);
+          setTimeout(() => setSentSelection(false), 1800);
+        },
+        (err: unknown) => setNotice(`Couldn't send the selection to the agent: ${messageOf(err)}`),
+      );
   }, [putSelection]);
 
   const putCard = useCallback(

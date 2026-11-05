@@ -70,6 +70,50 @@ describe("Send to agent", () => {
     );
   });
 
+  it("leaves one chip at the last agent tab, and no words", async () => {
+    const onClose = vi.fn();
+    invoke.mockImplementation((method: string) =>
+      Promise.resolve(
+        method === "context/put"
+          ? { id: "ctx-1", source: { label: "File - a.ts" } }
+          : { delivered: 1 },
+      ),
+    );
+    render(
+      <ContextMenu
+        target={target({})}
+        readOnly={false}
+        rootPath={"C:\\game"}
+        onCreate={() => {}}
+        onRename={() => {}}
+        onDelete={() => {}}
+        onClose={onClose}
+      />,
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: "Send to agent" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(invoke).toHaveBeenCalledWith("veistra/attach-to-agent", {
+      contextId: "ctx-1",
+      label: "File - a.ts",
+    });
+    expect(invoke).not.toHaveBeenCalledWith("context/insert", expect.anything());
+  });
+
+  it("stays open and says so when no agent takes it", async () => {
+    invoke.mockImplementation((method: string) =>
+      Promise.resolve(
+        method === "context/put"
+          ? { id: "ctx-1" }
+          : method === "context/insert"
+            ? { inserted: false, reason: "no agent is running here" }
+            : { delivered: 0 },
+      ),
+    );
+    open(target({}));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Send to agent" }));
+    await waitFor(() => expect(screen.getByText(/no agent is running here/)).toBeTruthy());
+  });
+
   it("says why when the store refuses", async () => {
     invoke.mockRejectedValue(new Error("over the 25 MB copy limit"));
     open(target({}));

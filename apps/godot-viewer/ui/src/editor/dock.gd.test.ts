@@ -29,7 +29,7 @@ const code = (text: string) =>
 
 describe("the Veistra dock", () => {
   it("is a tool control without a global class name, versioned on its first line", () => {
-    expect(dock.split("\n")[0]).toBe("# veistra-dock v1");
+    expect(dock.split("\n")[0]).toBe("# veistra-dock v2");
     expect(code(dock)).toMatch(/^@tool\nextends VBoxContainer$/m);
     expect(code(dock)).not.toMatch(/^class_name/m);
   });
@@ -89,8 +89,40 @@ describe("the Veistra dock", () => {
     // The picture is written first, under the one name Veistra accepts.
     expect(ask).toContain('save_png(_dir.path_join("ask-%d.png" % n))');
     expect(ask.indexOf("save_png")).toBeLessThan(ask.indexOf("_send(event"));
-    expect(notesRs).toContain('name == format!("ask-{n}.png")');
+    expect(notesRs).toContain('name == format!("{prefix}-{n}.png")');
+    expect(notesRs).toContain('own_png(&v, "ask", n)');
     expect(fn(dock, "_viewport_image")).toContain("get_editor_viewport_3d(0)");
+  });
+
+  it("mentions the selection, the scene, a file or the viewport, in lines Veistra takes", () => {
+    const body = fn(dock, "mention");
+    expect(body).toContain('"kind": "mention"');
+    for (const what of ['"selection":', '"scene":', '"script":', '"file":', '"viewport":']) {
+      expect(body).toContain(what);
+    }
+    // A script goes as a file, the one kind of path Veistra accepts.
+    expect(body).toContain('event["what"] = "file"');
+    expect(body).toContain('save_png(_dir.path_join("mention-%d.png" % n))');
+    expect(notesRs).toContain('own_png(v, "mention", n)');
+    for (const [variant, what] of [
+      ["Selection", "selection"],
+      ["Scene", "scene"],
+      ["File", "file"],
+      ["Viewport", "viewport"],
+    ]) {
+      expect(notesRs).toContain(`Self::${variant} => "${what}"`);
+    }
+    expect(dock).toContain('_mention_button.text = "Mention to Veistra agent"');
+    expect(dock).toContain('_mention_button.tooltip_text = "Mention this to Veistra agent"');
+  });
+
+  it("puts Mention on the editor's right-click menus and Ctrl+Alt+M, from 4.4 on", () => {
+    expect(fn(plugin, "_add_menus")).toContain('ClassDB.class_exists("EditorContextMenuPlugin")');
+    expect(fn(plugin, "_add_menus")).toContain("menu.mention = _dock.mention");
+    expect(fn(plugin, "_exit_tree")).toContain('call("remove_context_menu_plugin", menu)');
+    const keys = fn(plugin, "_shortcut_input");
+    expect(keys).toContain("_dock.mention_now()");
+    expect(keys).toMatch(/ctrl_pressed.*alt_pressed|alt_pressed.*ctrl_pressed/s);
   });
 
   it("keeps the question within what Veistra takes", () => {

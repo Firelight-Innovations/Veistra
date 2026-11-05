@@ -120,7 +120,7 @@ fn a_fixed_note_carries_its_fix_and_thread() {
     let all = comments::list(&ctx).unwrap();
     let r = &rows(&all, Scope::Blender { file: None })[0];
     assert_eq!(r["status"], "fixed");
-    assert_eq!(r["label"], "Fixed, check it");
+    assert_eq!(r["label"], "Completed");
     assert_eq!(r["fix"]["note"], "a strut");
     assert_eq!(r["fix"]["by"], "agent");
     assert_eq!(r["replies"][0]["body"], "stiffer");
@@ -304,6 +304,91 @@ fn an_ask_with_a_missing_picture_says_so() {
 }
 
 #[test]
+fn a_mention_names_something_that_is_there() {
+    let selection = parse_event(
+        r#"{"t":7,"n":50,"kind":"mention","what":"selection","scene":"res://levels/hallway.tscn","nodes":["Hallway/Enemy_02","Hallway/Door"]}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        selection,
+        EditorEvent::Mention {
+            n: 50,
+            t: 7,
+            what: Mention::Selection,
+            scene: Some("res://levels/hallway.tscn".into()),
+            nodes: vec!["Hallway/Enemy_02".into(), "Hallway/Door".into()],
+            path: None,
+            png: None,
+        }
+    );
+    let file = parse_event(r#"{"n":51,"kind":"mention","what":"file","path":"res://enemy.gd"}"#);
+    assert!(matches!(
+        file,
+        Ok(EditorEvent::Mention { what: Mention::File, path: Some(ref p), .. }) if p == "res://enemy.gd"
+    ));
+    let scene =
+        parse_event(r#"{"n":52,"kind":"mention","what":"scene","scene":"C:/art/bed.blend"}"#);
+    assert!(matches!(
+        scene,
+        Ok(EditorEvent::Mention {
+            what: Mention::Scene,
+            ..
+        })
+    ));
+
+    let refused = |line: &str| parse_event(line).expect_err(line).why;
+    assert!(
+        refused(r#"{"n":53,"kind":"mention","what":"selection","nodes":[]}"#).contains("selected")
+    );
+    assert!(refused(r#"{"n":54,"kind":"mention","what":"scene"}"#).contains("scene"));
+    assert!(
+        refused(r#"{"n":55,"kind":"mention","what":"file","path":"C:/Windows/x"}"#)
+            .contains("not a file in the project")
+    );
+    assert!(refused(r#"{"n":56,"kind":"mention","what":"viewport"}"#).contains("no picture"));
+    assert!(
+        refused(r#"{"n":57,"kind":"mention","what":"viewport","png":"ask-57.png"}"#)
+            .contains("picture")
+    );
+    assert!(refused(r#"{"n":58,"kind":"mention","what":"everything"}"#).contains("names nothing"));
+    let many: Vec<String> = (0..=MAX_NODES).map(|i| format!("N{i}")).collect();
+    let crowd = json!({"n": 59, "kind": "mention", "what": "selection", "nodes": many});
+    assert!(refused(&crowd.to_string()).contains("too many"));
+}
+
+#[test]
+fn a_viewport_mention_brings_its_picture_and_drops_it_once_answered() {
+    let chan = TempDir::new().unwrap();
+    let dir = chan.path();
+    let mut c = Channel::new(dir.to_path_buf());
+    std::fs::write(dir.join("mention-4.png"), b"\x89PNG view").unwrap();
+    append(
+        dir,
+        "{\"n\":4,\"kind\":\"mention\",\"what\":\"viewport\",\"png\":\"mention-4.png\"}\n\
+         {\"n\":5,\"kind\":\"mention\",\"what\":\"file\",\"path\":\"res://a.tres\"}\n",
+    );
+    c.poll();
+    let events = c.since(0);
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0]["kind"], "mention");
+    assert_eq!(events[0]["what"], "viewport");
+    assert_eq!(events[0]["pngBase64"], BASE64.encode(b"\x89PNG view"));
+    assert_eq!(events[1]["what"], "file");
+    assert_eq!(events[1]["path"], "res://a.tres");
+    assert!(events[1]["pngBase64"].is_null());
+    assert!(
+        events[1]["pngProblem"].is_null(),
+        "no picture was asked for"
+    );
+    c.ack(Ack {
+        n: 4,
+        ok: true,
+        message: String::new(),
+    });
+    assert!(!dir.join("mention-4.png").exists());
+}
+
+#[test]
 fn only_the_last_acks_are_kept() {
     let chan = TempDir::new().unwrap();
     let mut c = Channel::new(chan.path().to_path_buf());
@@ -332,7 +417,8 @@ fn both_tabs_keep_to_the_rules_these_files_are_read_with() {
     }
     for script in [boot, dock] {
         assert!(script.contains("\"ask-%d.png\" % n"));
-        for kind in ["ask", "verdict", "markup"] {
+        assert!(script.contains("\"mention-%d.png\" % n"));
+        for kind in ["ask", "verdict", "markup", "mention"] {
             assert!(script.contains(&format!("\"kind\": \"{kind}\"")), "{kind}");
         }
         // The comment store is the pane's: no path into it, in either.

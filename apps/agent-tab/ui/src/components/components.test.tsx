@@ -5,10 +5,13 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { fileIconUrl, folderIconUrl } from "@veistra/file-icons";
 import { ContextMeter } from "./ContextMeter";
 import { Menu } from "./Menu";
 import { Picker } from "./Picker";
 import { SessionList } from "./SessionList";
+import { UserMessage } from "./UserMessage";
+import { ChipOpen } from "../chipOpen";
 
 afterEach(cleanup);
 
@@ -104,6 +107,114 @@ describe("Menu", () => {
     expect(fireEvent.mouseDown(option)).toBe(false);
     fireEvent.click(option);
     expect(onPick).toHaveBeenCalledWith("y");
+  });
+
+  it("leads a file or folder with the icon the Files explorer gives it", () => {
+    render(
+      <Menu
+        label="Project context"
+        items={[
+          {
+            id: "a",
+            label: "main.json",
+            detail: "canvas/main.json",
+            kind: "file",
+            fileName: "main.json",
+          },
+          { id: "b", label: "main.json.bak", kind: "file", fileName: "main.json.bak" },
+          { id: "c", label: "docs", kind: "folder", fileName: "docs" },
+          { id: "d", label: "Level design", kind: "frame" },
+          // Browsing files, with nothing listed: a search row, not a folder named "Files".
+          { id: "e", label: "Files", kind: "folder" },
+        ]}
+        activeId={null}
+        onPick={vi.fn()}
+      />,
+    );
+    const [json, bak, folder, frame, category] = screen.getAllByRole("option");
+    const src = (row: HTMLElement) => row.querySelector("img")?.getAttribute("src");
+    expect(src(json)).toBe(fileIconUrl("main.json"));
+    expect(src(bak)).toBe(fileIconUrl("main.json.bak"));
+    expect(src(folder)).toBe(folderIconUrl("docs", false));
+    // The icon says nothing the name does not, so it is not announced.
+    expect(json.querySelector("img")?.getAttribute("alt")).toBe("");
+    // Rows that are not files keep their glyph, and a category is not a file name.
+    expect(src(frame)).toBeUndefined();
+    expect(frame.querySelector("svg")).not.toBeNull();
+    expect(src(category)).toBeUndefined();
+    expect(category.querySelector("svg")).not.toBeNull();
+  });
+
+  it("tags each row with its kind, which colours its glyph", () => {
+    render(
+      <Menu
+        label="Project context"
+        items={[
+          { id: "a", label: "Design", kind: "design", children: [] },
+          { id: "b", label: "Level design", kind: "frame" },
+          { id: "c", label: "No kind" },
+        ]}
+        activeId="b"
+        onPick={vi.fn()}
+      />,
+    );
+    const rows = screen.getAllByRole("option");
+    expect(rows.map((r) => r.getAttribute("data-kind"))).toEqual(["design", "frame", null]);
+  });
+
+  it("draws a line above a separated row, but never above the first", () => {
+    const { container } = render(
+      <Menu
+        label="Project context"
+        items={[
+          { id: "a", label: "Files", kind: "folder", separated: true },
+          { id: "b", label: "Design", kind: "design", children: [] },
+          { id: "c", label: "Selection", kind: "selection", separated: true },
+        ]}
+        activeId={null}
+        onPick={vi.fn()}
+      />,
+    );
+    const list = container.querySelector(".at-menu__list")!;
+    const order = [...list.children].map((li) =>
+      li.classList.contains("at-menu__sep") ? "line" : li.textContent,
+    );
+    expect(order).toEqual(["Files", "Design", "line", "Selection"]);
+    // The line is not an option: arrow keys and the option count skip it.
+    expect(screen.getAllByRole("option")).toHaveLength(3);
+  });
+});
+
+describe("UserMessage", () => {
+  it("colours each sent chip by what it points at", () => {
+    render(
+      <UserMessage text="Fix [@Room 0](<veistra://canvas/levels#frame=f0>) in [@main.gd](<veistra://file/game/main.gd>) and [@x](<veistra://elsewhere/x>)" />,
+    );
+    const chips = [...document.querySelectorAll(".at-chip")];
+    expect(chips.map((c) => c.getAttribute("data-kind"))).toEqual(["frame", "file", null]);
+  });
+
+  it("makes a chip an editor can show a button that shows it, and leaves the rest as text", () => {
+    const open = vi.fn();
+    const opener = { opens: (uri: string) => uri.endsWith(".blend"), open };
+    render(
+      <ChipOpen.Provider value={opener}>
+        <UserMessage text="Look at [@crate.blend](<veistra://file/art/crate.blend>) and [@a.md](<veistra://file/a.md>)" />
+      </ChipOpen.Provider>,
+    );
+    const button = screen.getByRole("button", { name: "@crate.blend" });
+    fireEvent.click(button);
+    fireEvent.keyDown(button, { key: "Enter" });
+    expect(open.mock.calls).toEqual([
+      ["veistra://file/art/crate.blend"],
+      ["veistra://file/art/crate.blend"],
+    ]);
+    expect(screen.getAllByRole("button")).toHaveLength(1);
+  });
+
+  it("opens nothing without a tab around it", () => {
+    render(<UserMessage text="[@crate.blend](<veistra://file/art/crate.blend>)" />);
+    expect(screen.queryByRole("button")).toBeNull();
   });
 });
 

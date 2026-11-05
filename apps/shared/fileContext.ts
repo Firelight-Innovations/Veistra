@@ -44,6 +44,7 @@ export function putFile(path: string, rel: string | null = null) {
     title: name,
     label: `File - ${fileName(path)}`,
     path,
+    prompt: `The file ${name}, which I want you to look at for what I ask.`,
   });
 }
 
@@ -70,6 +71,7 @@ export function putSelection(rel: string, startLine: number, endLine: number, sn
     title: ref,
     label: `File - ${lineRef(fileName(rel), startLine, endLine)}`,
     text: selectionText(rel, startLine, endLine, snippet),
+    prompt: `Lines ${ref} that I selected, which I want you to look at for what I ask.`,
   });
 }
 

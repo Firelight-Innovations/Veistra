@@ -16,7 +16,6 @@ packages/file-icons/src/manifest.generated.ts
 src/branding.generated.ts
 apps/home/ui/src/branding.generated.ts
 apps/files/ui/src/branding.generated.ts
-apps/tutorial/ui/src/branding.generated.ts
 
 # Generated from the event types in crates/veistra-agent-host by that crate's own
 # tests (`VEISTRA_BLESS=1 cargo test -p veistra-agent-host`), which also fail when

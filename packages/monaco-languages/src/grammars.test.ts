@@ -18,10 +18,12 @@ window.matchMedia ??= (() => ({
 
 let monaco: MonacoApi;
 
+// Transforming all of Monaco takes 10–12 s on a Windows dev machine, past
+// Vitest's 10 s default, so the import gets a minute. The tests are unchanged.
 beforeAll(async () => {
   monaco = await import("monaco-editor/editor/editor.api");
   registerLanguages(monaco);
-});
+}, 60_000);
 
 /** Each non-blank token as `[text, type-without-postfix]`, line by line. */
 function tokens(source: string, language: string): [string, string][][] {

@@ -6,7 +6,6 @@ use veistra_agent_host::{harness, Harness, Worktree};
 use veistra_rpc::{RpcError, INTERNAL_ERROR, INVALID_PARAMS};
 
 use super::CallContext;
-use crate::environments::Environment;
 use crate::pty::PtySessions;
 use crate::quoting::{quote_all, ShellFamily};
 use crate::shell_state::ShellState;
@@ -24,15 +23,16 @@ pub(super) fn open(
         .as_deref()
         .ok_or_else(|| RpcError::new(INVALID_PARAMS, "the command needs a project cluster"))?;
     let shell = app.state::<ShellState>();
-    let Some(Environment::LocalWorktree { path, .. }) = shell.cluster_write_environment(cluster)
-    else {
-        return Err(RpcError::new(
-            INVALID_PARAMS,
-            "native agent commands need a local worktree",
-        ));
-    };
-    Worktree::new(std::path::Path::new(&path))
-        .map_err(|error| RpcError::new(INVALID_PARAMS, error.to_string()))?;
+    let env = shell.cluster_write_environment(cluster);
+    let path = super::agent_tab::worktree_path(env.as_ref(), context.project.as_deref()).map_err(
+        |_| {
+            RpcError::new(
+                INVALID_PARAMS,
+                "native agent commands need a local worktree or the main checkout",
+            )
+        },
+    )?;
+    Worktree::new(&path).map_err(|error| RpcError::new(INVALID_PARAMS, error.to_string()))?;
     let cli = harness::which(
         harness.descriptor().cli,
         super::agent_install::search_path().as_deref(),

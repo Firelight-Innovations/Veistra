@@ -179,7 +179,6 @@ impl HostError {
             HostError::UnknownApproval => "unknownApproval",
             HostError::UnknownOption => "unknownOption",
             HostError::Spawn { .. } => "spawn",
-            HostError::NotAWorktree(NotAWorktree::MainCheckout(_)) => "mainCheckout",
             HostError::NotAWorktree(_) => "notAWorktree",
         }
     }

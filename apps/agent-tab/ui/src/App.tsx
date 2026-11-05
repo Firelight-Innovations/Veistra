@@ -69,10 +69,22 @@ import {
   chipSegments,
   insertChipToken,
   keptChips,
+  referenceKind,
+  rememberKind,
   withChips,
   type ContextChip,
   type MentionHit,
 } from "./mentions";
+import {
+  EDITOR_HIT,
+  editorChip,
+  editorHits,
+  matchingHits,
+  opensInEditor,
+  revealChip,
+  useEditorReports,
+} from "./editorMentions";
+import { ChipOpen, type ChipOpener } from "./chipOpen";
 import { useMentions } from "./useMentions";
 import { useSideChat } from "./useSideChat";
 import { EFFORT_LEVELS } from "./preferences";
@@ -93,12 +105,11 @@ interface ChipHit {
   kind: string;
 }
 
-const chipOf = (hit: ChipHit): ContextChip => ({
-  id: hit.uri,
-  label: hit.title,
-  kind: hit.kind,
-  uri: hit.uri,
-});
+const chipOf = (hit: ChipHit): ContextChip => {
+  // So the sent message's chip keeps the colour its URI alone would not give it.
+  rememberKind(hit.uri, hit.kind);
+  return { id: hit.uri, label: hit.title, kind: hit.kind, uri: hit.uri };
+};
 
 /** A search scope's glyph in the @ menu, where it differs from the scope's own name. */
 const SCOPE_GLYPH: Record<string, string> = { file: "folder", "canvas-comment": "comment" };
@@ -145,6 +156,9 @@ export default function App() {
   const [menuRow, setMenuRow] = useState(0);
   const [menuPath, setMenuPath] = useState<string[]>([]);
   const [menuClosedFor, setMenuClosedFor] = useState<string | null>(null);
+  // Esc closes a menu until the draft changes, not for that text forever: once it
+  // differs, it is forgotten, so "@", Esc, Backspace, "@" opens the @ menu again.
+  if (menuClosedFor !== null && menuClosedFor !== draft) setMenuClosedFor(null);
   // What `/login` last said, shown under the transcript until the next prompt.
   const [loginNote, setLoginNote] = useState<string | null>(null);
   /** Cluster transcripts still being copied into chips; Send waits for them. */
@@ -213,26 +227,18 @@ export default function App() {
   }, []);
   /**
    * Puts a chip that arrives later, after the draft may have moved on, at `at`
-   * (clamped to the draft as it is then), with `before` and `after` typed on
-   * either side of it. Reads only through updaters, so it is safe from a
-   * listener installed once.
+   * (clamped to the draft as it is then). Reads only through updaters, so it
+   * is safe from a listener installed once.
    */
   const latest = useRef({ draft, caret });
   latest.current = { draft, caret };
-  const setChipLater = useCallback((hit: ChipHit, at: number, before = "", after = "") => {
+  const setChipLater = useCallback((hit: ChipHit, at: number) => {
     const chip = chipOf(hit);
     const { draft: now, caret: was } = latest.current;
     setChips((held) => (held.some((c) => c.id === chip.id) ? held : [...held, chip]));
     if (chipSegments(now, [chip]).some((part) => part.chip)) return;
     const where = Math.min(at, now.length);
-    const head = now.slice(0, where);
-    const lead = head + (before && head !== "" && !/\s$/.test(head) ? " " : "") + before;
-    const placed = insertChipToken(
-      lead + after + now.slice(where),
-      lead.length,
-      lead.length,
-      chip.label,
-    );
+    const placed = insertChipToken(now, where, where, chip.label);
     setDraft(placed.text);
     // Text typed after the "@" moves along with the caret in it.
     const moved = was >= where ? was + placed.text.length - now.length : was;
@@ -240,16 +246,15 @@ export default function App() {
     requestAnimationFrame(() => prompt.current?.setSelectionRange(moved, moved));
   }, []);
   // Something sent from another app, such as a canvas selection or a
-  // playtest's feedback packet, joins the end of the next prompt, in the
-  // sentence the app sent around it. Nothing is sent: the person does that.
+  // playtest's feedback packet, joins the end of the next prompt as one chip
+  // and nothing else: what the app asks of the agent is inside the item and
+  // goes with it on send. Nothing is sent here: the person does that.
   useEffect(
     () =>
-      rpc.onAttach(({ contextId, label, before, after }) =>
+      rpc.onAttach(({ contextId, label, kind }) =>
         setChipLater(
-          { uri: `veistra://context/${contextId}`, title: label, kind: "context" },
+          { uri: `veistra://context/${contextId}`, title: label, kind: kind ?? "context" },
           Infinity,
-          before,
-          after,
         ),
       ),
     [setChipLater],
@@ -679,6 +684,14 @@ export default function App() {
     : matching(draft, offered(reportedCommands, running ?? chosen ?? "claude"));
   // The issue-link form covers both menus, so neither takes keys while it is open.
   const mentionOpen = issuePicker === null && mentions.query !== null && menuClosedFor !== draft;
+  // What the Godot and Blender panes report they have open: the @ menu's
+  // rows for them, and where a sent chip of theirs is shown when clicked.
+  const editorReports = useEditorReports();
+  const editorRows = editorHits(editorReports);
+  const chipOpener: ChipOpener = {
+    opens: (uri) => opensInEditor(uri, referenceKind(uri), editorReports),
+    open: (uri) => void revealChip(uri, editorReports),
+  };
   // The frames on every canvas, fetched when the @ menu opens, so a canvas can be opened up.
   const [canvasFrames, setCanvasFrames] = useState<MentionHit[]>([]);
   const framesAsked = useRef(false);
@@ -1029,6 +1042,16 @@ export default function App() {
         .finally(() => setCapturing((n) => n - 1));
       return;
     }
+    if (uri.startsWith(EDITOR_HIT)) {
+      // A node or object is stored first, so it can be selected again from the chip.
+      const at = mentions.query?.start ?? caret;
+      dropMention();
+      void editorChip(uri, editorReports).then(
+        (hit) => (hit ? setChipLater(hit, at) : setLoginNote(strings.mentions.editorGone)),
+        () => setLoginNote(strings.mentions.editorGone),
+      );
+      return;
+    }
     const hit = [...mentions.items, ...canvasFrames, ...sources.issues].find((h) => h.uri === uri);
     if (!hit || !mentions.query) return;
     setLoginNote(null);
@@ -1060,6 +1083,7 @@ export default function App() {
     label: h.title,
     detail: h.detail ?? undefined,
     kind: h.kind,
+    fileName: h.kind === "file" || h.kind === "folder" ? h.title : undefined,
   });
   const empty = (label: string): MenuItem[] => [{ id: `empty:${label}`, label, disabled: true }];
   const byKind = (kinds: string[]) =>
@@ -1120,10 +1144,22 @@ export default function App() {
         )
         .map(([scope, title]) => ({ ...scoped(scope, title), kind: SCOPE_GLYPH[scope] ?? scope }))
     : [];
+  // A line above the first result, under the places to browse, as Cursor's menu draws it.
+  const results = (rows: MenuItem[]): MenuItem[] =>
+    rows.map((row, i) => (i === 0 ? { ...row, separated: true } : row));
+  // A running editor's things: under its own name at the top level, among the hits once typed.
+  const editorGroups = (["godot", "blender"] as const)
+    .map((tool) => ({ tool, rows: editorRows.filter((h) => h.kind.startsWith(`${tool}-`)) }))
+    .filter(({ tool }) => editorReports[tool])
+    .map(({ tool, rows }) => group(tool, strings.contextGroups[tool], tool, rows.map(contextItem)));
+  const editorFound = contextScope
+    ? []
+    : matchingHits(editorRows, mentions.query?.query ?? "").map(contextItem);
   const contextItems: MenuItem[] =
     mentions.query?.query || contextScope
-      ? [...named, ...mentions.items.map(contextItem).map(openable)]
+      ? [...named, ...results([...mentions.items.map(contextItem).map(openable), ...editorFound])]
       : [
+          ...editorGroups,
           group("design", strings.contextGroups.design, "design", [
             browse(
               "canvases",
@@ -1203,7 +1239,7 @@ export default function App() {
             "context",
             strings.searchSaved,
           ),
-          ...byKind(["selection"]),
+          ...results(byKind(["selection"])),
         ];
   const scopeTitle = contextScope ? strings.scopeTitle[contextScope] : undefined;
   const slashItems: MenuItem[] = matches.map((c) => ({
@@ -1231,276 +1267,278 @@ export default function App() {
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <TurnsProvider value={lookup}>
-        <S.Layout
-          header={
-            <S.Header
-              state={status?.state ?? null}
-              onSideChat={() => askSide("")}
-              // The shell's Alt+6, sent the way the bridge forwards any chord a
-              // frame swallows; the shell opens or closes its Agents window.
-              onAgents={() =>
-                void invoke("veistra/key", { key: "6", code: "Digit6", altKey: true }).catch(
-                  () => {},
-                )
-              }
-              onHistory={() => {
-                setHistoryOpen((was) => !was);
-                if (!historyOpen) loadHistory();
-              }}
-              history={
-                historyOpen ? (
-                  <S.HistoryPanel
-                    sessions={savedSessions}
-                    loading={historyLoading}
-                    error={historyError}
-                    onClose={() => {
-                      setHistoryOpen(false);
-                      prompt.current?.focus();
-                    }}
-                    onRetry={loadHistory}
-                    onArchive={(id, archived) => {
-                      void rpc
-                        .archiveHistory(id, archived)
-                        .then(loadHistory, () => setHistoryError(strings.history.failed));
-                    }}
-                    onOpen={(id, harness) => {
-                      setHistoryLoading(true);
-                      setPending(null);
-                      void rpc
-                        .openHistory(id, harness)
-                        .then(
-                          (attachment) => {
-                            dispatch({ type: "attached", attachment });
-                            loadMeta();
-                            setHistoryOpen(false);
-                            setNotice(null);
-                            setDraft("");
-                            setChips([]);
-                            void listHarnesses();
-                          },
-                          () => setHistoryError(strings.history.openFailed),
-                        )
-                        .finally(() => setHistoryLoading(false));
-                    }}
-                  />
-                ) : undefined
-              }
-              onNewSession={() => {
-                setNotice(null);
-                setChatName(null);
-                void rpc.reset().catch(() => {});
-              }}
-            />
-          }
-          transcript={
-            <S.Transcript>
-              {state.items.length === 0 && pendingPrompt === null ? (
-                <S.EmptyState
-                  blocked={blocked}
-                  setupHint={current?.hint ? hintText(current.hint, current) : null}
-                  setup={setup}
-                />
-              ) : (
-                <>
-                  <Turns />
-                  {/* Chosen mid-conversation: the card follows what was said. */}
-                  {setup && <S.SetupCard {...setup} />}
-                </>
-              )}
-              {pendingPrompt !== null && <S.UserMessage text={pendingPrompt} pending />}
-              {hint && <S.Hint text={hintText(hint, session)} />}
-              {loginNote && <S.Note text={loginNote} />}
-              {exited && state.items.length > 0 && (
-                <S.Note text={strings.exited(status.exitCode)} />
-              )}
-            </S.Transcript>
-          }
-          composer={
-            <S.Composer
-              ref={prompt}
-              chips={chips}
-              effortLevel={effortValue}
-              auxiliary={
-                issuePicker ? (
-                  <S.ContextLink
-                    provider={issuePicker}
-                    onCancel={() => {
-                      setIssuePicker(null);
-                      dropMention();
-                    }}
-                    onAdd={(link) => {
-                      const at = mentions.query ?? { start: caret, end: caret };
-                      setIssuePicker(null);
-                      placeChip(
-                        {
-                          uri: link,
-                          title: link.split("/").filter(Boolean).slice(-2).join("/"),
-                          kind: "issue",
-                        },
-                        at.start,
-                        at.end,
-                      );
-                    }}
-                  />
-                ) : undefined
-              }
-              value={draft}
-              placeholder={working ? strings.promptBusy : strings.promptPlaceholder}
-              onChange={(text, at) => {
-                setDraft(text);
-                // A reference whose token was typed over or cut is gone with it.
-                setChips((now) => {
-                  const kept = keptChips(text, now);
-                  return kept.length === now.length ? now : kept;
-                });
-                if (!text.includes("@")) setContextScope(null);
-                setCaret(at ?? text.length);
-                setMenuRow(0);
-                setMenuPath([]);
-              }}
-              onSelect={setCaret}
-              images={images}
-              queued={queue.map((q) => ({ id: q.id, text: q.text }))}
-              onUnqueue={(id) => setQueue((now) => now.filter((q) => q.id !== id))}
-              onRemoveImage={(id) => setImages((now) => now.filter((i) => i.id !== id))}
-              onReplaceImage={(id, image) =>
-                setImages((now) => now.map((i) => (i.id === id ? { ...i, ...image } : i)))
-              }
-              onPasteImages={(files) => void addImages(files)}
-              onAttach={() => {
-                const at = prompt.current?.selectionStart ?? draft.length;
-                const prefix = at > 0 && !/\s/.test(draft[at - 1]) ? " @" : "@";
-                const next = draft.slice(0, at) + prefix + draft.slice(at);
-                setDraft(next);
-                setCaret(at + prefix.length);
-                setMenuRow(0);
-                setMenuPath([]);
-                setContextScope(null);
-                setMenuClosedFor(null);
-                requestAnimationFrame(() => {
-                  prompt.current?.focus();
-                  prompt.current?.setSelectionRange(at + prefix.length, at + prefix.length);
-                });
-              }}
-              onDictate={() => {}}
-              sideChat={side.open ? <S.SideChat {...side.props} /> : undefined}
-              plan={openPlan ? <S.TodoList entries={openPlan} live={working} /> : undefined}
-              onKeyDown={onKeyDown}
-              menu={
-                mentionOpen ? (
-                  <S.MentionMenu
-                    label={strings.mentions.label}
-                    title={scopeTitle}
-                    status={named.length && !mentions.items.length ? null : mentions.note}
-                    onBack={
-                      contextScope
-                        ? () => {
-                            setContextScope(null);
-                            setMenuRow(0);
-                          }
-                        : undefined
-                    }
-                    items={contextItems}
-                    activeId={menuActive}
-                    path={menuPath}
-                    onPathChange={changeMenuPath}
-                    onPick={pickMention}
+        <ChipOpen.Provider value={chipOpener}>
+          <S.Layout
+            header={
+              <S.Header
+                state={status?.state ?? null}
+                onSideChat={() => askSide("")}
+                // The shell's Alt+6, sent the way the bridge forwards any chord a
+                // frame swallows; the shell opens or closes its Agents window.
+                onAgents={() =>
+                  void invoke("veistra/key", { key: "6", code: "Digit6", altKey: true }).catch(
+                    () => {},
+                  )
+                }
+                onHistory={() => {
+                  setHistoryOpen((was) => !was);
+                  if (!historyOpen) loadHistory();
+                }}
+                history={
+                  historyOpen ? (
+                    <S.HistoryPanel
+                      sessions={savedSessions}
+                      loading={historyLoading}
+                      error={historyError}
+                      onClose={() => {
+                        setHistoryOpen(false);
+                        prompt.current?.focus();
+                      }}
+                      onRetry={loadHistory}
+                      onArchive={(id, archived) => {
+                        void rpc
+                          .archiveHistory(id, archived)
+                          .then(loadHistory, () => setHistoryError(strings.history.failed));
+                      }}
+                      onOpen={(id, harness) => {
+                        setHistoryLoading(true);
+                        setPending(null);
+                        void rpc
+                          .openHistory(id, harness)
+                          .then(
+                            (attachment) => {
+                              dispatch({ type: "attached", attachment });
+                              loadMeta();
+                              setHistoryOpen(false);
+                              setNotice(null);
+                              setDraft("");
+                              setChips([]);
+                              void listHarnesses();
+                            },
+                            () => setHistoryError(strings.history.openFailed),
+                          )
+                          .finally(() => setHistoryLoading(false));
+                      }}
+                    />
+                  ) : undefined
+                }
+                onNewSession={() => {
+                  setNotice(null);
+                  setChatName(null);
+                  void rpc.reset().catch(() => {});
+                }}
+              />
+            }
+            transcript={
+              <S.Transcript>
+                {state.items.length === 0 && pendingPrompt === null ? (
+                  <S.EmptyState
+                    blocked={blocked}
+                    setupHint={current?.hint ? hintText(current.hint, current) : null}
+                    setup={setup}
                   />
                 ) : (
-                  menuOpen && (
-                    <S.SlashMenu
-                      label={strings.commands}
-                      title={skillsOpen ? strings.skills.title : undefined}
-                      search={
-                        skillsOpen
-                          ? { query: skillSearch, placeholder: strings.skills.search }
+                  <>
+                    <Turns />
+                    {/* Chosen mid-conversation: the card follows what was said. */}
+                    {setup && <S.SetupCard {...setup} />}
+                  </>
+                )}
+                {pendingPrompt !== null && <S.UserMessage text={pendingPrompt} pending />}
+                {hint && <S.Hint text={hintText(hint, session)} />}
+                {loginNote && <S.Note text={loginNote} />}
+                {exited && state.items.length > 0 && (
+                  <S.Note text={strings.exited(status.exitCode)} />
+                )}
+              </S.Transcript>
+            }
+            composer={
+              <S.Composer
+                ref={prompt}
+                chips={chips}
+                effortLevel={effortValue}
+                auxiliary={
+                  issuePicker ? (
+                    <S.ContextLink
+                      provider={issuePicker}
+                      onCancel={() => {
+                        setIssuePicker(null);
+                        dropMention();
+                      }}
+                      onAdd={(link) => {
+                        const at = mentions.query ?? { start: caret, end: caret };
+                        setIssuePicker(null);
+                        placeChip(
+                          {
+                            uri: link,
+                            title: link.split("/").filter(Boolean).slice(-2).join("/"),
+                            kind: "issue",
+                          },
+                          at.start,
+                          at.end,
+                        );
+                      }}
+                    />
+                  ) : undefined
+                }
+                value={draft}
+                placeholder={working ? strings.promptBusy : strings.promptPlaceholder}
+                onChange={(text, at) => {
+                  setDraft(text);
+                  // A reference whose token was typed over or cut is gone with it.
+                  setChips((now) => {
+                    const kept = keptChips(text, now);
+                    return kept.length === now.length ? now : kept;
+                  });
+                  if (!text.includes("@")) setContextScope(null);
+                  setCaret(at ?? text.length);
+                  setMenuRow(0);
+                  setMenuPath([]);
+                }}
+                onSelect={setCaret}
+                images={images}
+                queued={queue.map((q) => ({ id: q.id, text: q.text }))}
+                onUnqueue={(id) => setQueue((now) => now.filter((q) => q.id !== id))}
+                onRemoveImage={(id) => setImages((now) => now.filter((i) => i.id !== id))}
+                onReplaceImage={(id, image) =>
+                  setImages((now) => now.map((i) => (i.id === id ? { ...i, ...image } : i)))
+                }
+                onPasteImages={(files) => void addImages(files)}
+                onAttach={() => {
+                  const at = prompt.current?.selectionStart ?? draft.length;
+                  const prefix = at > 0 && !/\s/.test(draft[at - 1]) ? " @" : "@";
+                  const next = draft.slice(0, at) + prefix + draft.slice(at);
+                  setDraft(next);
+                  setCaret(at + prefix.length);
+                  setMenuRow(0);
+                  setMenuPath([]);
+                  setContextScope(null);
+                  setMenuClosedFor(null);
+                  requestAnimationFrame(() => {
+                    prompt.current?.focus();
+                    prompt.current?.setSelectionRange(at + prefix.length, at + prefix.length);
+                  });
+                }}
+                onDictate={() => {}}
+                sideChat={side.open ? <S.SideChat {...side.props} /> : undefined}
+                plan={openPlan ? <S.TodoList entries={openPlan} live={working} /> : undefined}
+                onKeyDown={onKeyDown}
+                menu={
+                  mentionOpen ? (
+                    <S.MentionMenu
+                      label={strings.mentions.label}
+                      title={scopeTitle}
+                      status={named.length && !mentions.items.length ? null : mentions.note}
+                      onBack={
+                        contextScope
+                          ? () => {
+                              setContextScope(null);
+                              setMenuRow(0);
+                            }
                           : undefined
                       }
-                      status={
-                        skillsOpen && !matches.length
-                          ? skillList.length
-                            ? strings.skills.noMatch
-                            : strings.skills.empty
-                          : null
-                      }
-                      onBack={skillsOpen ? leaveSkills : undefined}
-                      items={slashItems}
+                      items={contextItems}
                       activeId={menuActive}
                       path={menuPath}
                       onPathChange={changeMenuPath}
-                      onPick={pickCommand}
+                      onPick={pickMention}
+                    />
+                  ) : (
+                    menuOpen && (
+                      <S.SlashMenu
+                        label={strings.commands}
+                        title={skillsOpen ? strings.skills.title : undefined}
+                        search={
+                          skillsOpen
+                            ? { query: skillSearch, placeholder: strings.skills.search }
+                            : undefined
+                        }
+                        status={
+                          skillsOpen && !matches.length
+                            ? skillList.length
+                              ? strings.skills.noMatch
+                              : strings.skills.empty
+                            : null
+                        }
+                        onBack={skillsOpen ? leaveSkills : undefined}
+                        items={slashItems}
+                        activeId={menuActive}
+                        path={menuPath}
+                        onPathChange={changeMenuPath}
+                        onPick={pickCommand}
+                      />
+                    )
+                  )
+                }
+                menuActiveId={mentionOpen || menuOpen ? menuActive : null}
+                notices={
+                  <>
+                    {attachFailed && (
+                      <S.Notice
+                        text={strings.failed.attach}
+                        hint={null}
+                        action={{ label: strings.retry, onClick: () => void attach() }}
+                      />
+                    )}
+                    {harnessesFailed && (
+                      <S.Notice
+                        text={strings.failed.harnesses}
+                        hint={null}
+                        action={{ label: strings.retry, onClick: () => void listHarnesses() }}
+                      />
+                    )}
+                    {trouble && <S.Notice text={troubleText(trouble)} hint={null} action={null} />}
+                    {notice && <S.Notice text={notice.text} hint={notice.hint} action={null} />}
+                  </>
+                }
+                controls={
+                  <S.ModelMenu
+                    label={strings.settings}
+                    openRequest={settingsRequest}
+                    harnessLocked={false}
+                    ultracode={{
+                      enabled: ultraEnabled,
+                      disabled: status?.state === "starting",
+                      onChange: (enabled) => {
+                        if (running) onConfig("ultra_effort", enabled ? "on" : "off");
+                        else setUltracode(enabled);
+                      },
+                    }}
+                    harness={running ?? chosen}
+                    // The model is the running session's own option, so it is
+                    // listed under the harness in use, with the agent's names.
+                    harnesses={harnessChoices(harnesses, running ?? chosen, runningModel)}
+                    // With no agent running, a pick chooses the next session's
+                    // harness. While one runs, its prompts go to that agent until
+                    // a new session starts, so only its model can change.
+                    onChoose={(picked, value) => {
+                      if (picked === running && onModel) onModel(picked, value);
+                      else chooseHarness(picked, value);
+                    }}
+                    sections={sections}
+                  />
+                }
+                meters={
+                  <>
+                    <S.ValidationBadge {...latestValidation(state.items)} />
+                    <S.ContextMeter {...latestUsage(state.items)} />
+                    <S.UsageRing limits={[]} />
+                  </>
+                }
+                action={
+                  working ? (
+                    <S.StopButton onClick={stopTurn} />
+                  ) : (
+                    <S.SendButton
+                      disabled={(draft.trim() === "" && chips.length === 0) || capturing > 0}
+                      onClick={() => submit(draft)}
                     />
                   )
-                )
-              }
-              menuActiveId={mentionOpen || menuOpen ? menuActive : null}
-              notices={
-                <>
-                  {attachFailed && (
-                    <S.Notice
-                      text={strings.failed.attach}
-                      hint={null}
-                      action={{ label: strings.retry, onClick: () => void attach() }}
-                    />
-                  )}
-                  {harnessesFailed && (
-                    <S.Notice
-                      text={strings.failed.harnesses}
-                      hint={null}
-                      action={{ label: strings.retry, onClick: () => void listHarnesses() }}
-                    />
-                  )}
-                  {trouble && <S.Notice text={troubleText(trouble)} hint={null} action={null} />}
-                  {notice && <S.Notice text={notice.text} hint={notice.hint} action={null} />}
-                </>
-              }
-              controls={
-                <S.ModelMenu
-                  label={strings.settings}
-                  openRequest={settingsRequest}
-                  harnessLocked={false}
-                  ultracode={{
-                    enabled: ultraEnabled,
-                    disabled: status?.state === "starting",
-                    onChange: (enabled) => {
-                      if (running) onConfig("ultra_effort", enabled ? "on" : "off");
-                      else setUltracode(enabled);
-                    },
-                  }}
-                  harness={running ?? chosen}
-                  // The model is the running session's own option, so it is
-                  // listed under the harness in use, with the agent's names.
-                  harnesses={harnessChoices(harnesses, running ?? chosen, runningModel)}
-                  // With no agent running, a pick chooses the next session's
-                  // harness. While one runs, its prompts go to that agent until
-                  // a new session starts, so only its model can change.
-                  onChoose={(picked, value) => {
-                    if (picked === running && onModel) onModel(picked, value);
-                    else chooseHarness(picked, value);
-                  }}
-                  sections={sections}
-                />
-              }
-              meters={
-                <>
-                  <S.ValidationBadge {...latestValidation(state.items)} />
-                  <S.ContextMeter {...latestUsage(state.items)} />
-                  <S.UsageRing limits={[]} />
-                </>
-              }
-              action={
-                working ? (
-                  <S.StopButton onClick={stopTurn} />
-                ) : (
-                  <S.SendButton
-                    disabled={(draft.trim() === "" && chips.length === 0) || capturing > 0}
-                    onClick={() => submit(draft)}
-                  />
-                )
-              }
-            />
-          }
-        />
+                }
+              />
+            }
+          />
+        </ChipOpen.Provider>
       </TurnsProvider>
     </AssistantRuntimeProvider>
   );

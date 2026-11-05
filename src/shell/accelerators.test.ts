@@ -56,7 +56,7 @@ function stubHandlers(view: Partial<MenuHandlers["view"]> = {}): MenuHandlers {
     // glyph would arrive unnoticed.
     run: { run: () => Promise.resolve(), interrupt: noop, last: "pnpm verify" },
     terminal: { onNew: noop, onSplit: noop, onKill: noop, onClear: noop, enabled: true },
-    help: { checkForUpdates: noop },
+    help: { checkForUpdates: noop, openDocumentation: noop },
   };
 }
 

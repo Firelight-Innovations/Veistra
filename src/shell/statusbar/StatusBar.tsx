@@ -17,8 +17,8 @@ export interface StatusBarProps {
    *  cluster starts here. */
   project: string | null;
   /** The active cluster's environment, on the same `null`-while-no-cluster
-   *  terms as `project` — drives the branch/environment segment and the
-   *  trailing "main is read-only" label. See `environment.ts`. */
+   *  terms as `project` — drives the branch/environment segment. See
+   *  `environment.ts`. */
   environment: Environment | null;
   /**
    * One status, read for the ahead/behind upgrade to the branch segment and
@@ -49,8 +49,9 @@ export type GitView = "worktree" | "github";
 
 /**
  * Left cluster, then right cluster, per §1.9: project name, branch/
- * environment and the diff-stat readout on the left; the update notice,
- * GitHub status and "main is read-only" on the right. The bar's own
+ * environment and the diff-stat readout on the left; the update notice and
+ * GitHub status on the right. Main used to carry a trailing "main is
+ * read-only" label; it is written like a worktree now. The bar's own
  * height is `.frame__statusbar`'s — this component only lays out its
  * contents and never touches that box.
  *
@@ -106,10 +107,6 @@ export default function StatusBar({
         pressed={gitShowing === "github"}
         onClick={toggle && (() => toggle("github"))}
       />
-
-      {environment?.kind === "main" && (
-        <span className="statusbar__readonly">{branchName(environment, git)} is read-only</span>
-      )}
     </div>
   );
 }
@@ -275,7 +272,7 @@ const TONE_TOKEN: Record<UpdateNotice["tone"], string> = {
  * kind when a worktree or cloud session reports none yet. Ahead/behind is its
  * own segment drawn once `git` has landed; `git` is cluster-scoped
  * (`useGitStatus` in `WindowRoot.tsx`), so its numbers belong to this same
- * branch. A read-only `main` has no upstream to be ahead of.
+ * branch. `main` draws no arrows; it has no worktree base to be ahead of.
  */
 function branchName(environment: Environment, git: GitStatus | null): string {
   // The main checkout is whatever branch the repository's primary tree has out, which is

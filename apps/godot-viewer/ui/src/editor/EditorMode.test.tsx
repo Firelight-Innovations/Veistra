@@ -6,6 +6,11 @@
  * `src-tauri/src/godot/editor.rs` does; what the editor itself does is in
  * `editor_tests.rs` and `plugin.gd.test.ts`. The markup layer needs a canvas
  * jsdom does not have, so it is stood in for by a Done button.
+ *
+ * The editor opens by itself when the mode mounts, after the plugin question
+ * where the project has none; `WITH_PLUGIN` skips the question, and the pop
+ * out surface opens nothing by itself, for the tests about what the pane says
+ * before an editor runs.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -17,6 +22,7 @@ vi.mock("@veistra/bridge", () => ({
   invoke: bridge.invoke,
   reportPainted: vi.fn(),
   on: () => () => undefined,
+  publish: vi.fn(),
 }));
 
 /** A markup with one pin, drawn on a frame shown at 640 x 360. */
@@ -79,6 +85,16 @@ const STATUS: GodotStatus = {
   pluginProblem: null,
 };
 
+/** A project with the plugin in already, so nothing is asked before the editor opens. */
+const WITH_PLUGIN: GodotStatus = { ...STATUS, projects: [{ ...HALL, plugin: "yes" }] };
+
+/** No embedder: the editor opens in its own window, and only on a press. */
+const POP_OUT = {
+  surface: "popOut" as const,
+  code: "noEmbedder" as const,
+  reason: "Godot opens in its own window: Veistra cannot place it on macOS yet.",
+};
+
 const VIEW = {
   scene: "res://main.tscn",
   open: ["res://main.tscn"],
@@ -114,6 +130,10 @@ interface World {
   selection: object;
   /** Presses in the editor's Veistra dock, handed on until answered (#320). */
   events: { seq: number; n: number; [k: string]: unknown }[];
+  /** What `godot/editor-open` fails with, or `null` to start the editor. */
+  openError: string | null;
+  /** Held until it settles, so a test can see the pane while Godot starts. */
+  openGate: Promise<void> | null;
 }
 
 function backend(over: Partial<World> = {}): World {
@@ -123,6 +143,8 @@ function backend(over: Partial<World> = {}): World {
     ended: null,
     selection: { pngBase64: "AAAA", width: 1280, height: 720, camera: CAMERA, ...VIEW },
     events: [],
+    openError: null,
+    openGate: null,
     ...over,
   };
   let item = 0;
@@ -143,10 +165,11 @@ function backend(over: Partial<World> = {}): World {
         world.events = world.events.filter((e) => e.n !== params?.n);
         return Promise.resolve({ acked: params?.n });
       case "godot/editor-open":
-        world.editor = editorInfo({ embed: { kind: "waiting" } });
-        return Promise.resolve({ editor: world.editor, agent: world.agent });
-      case "godot/editor-close":
-        return Promise.resolve({ closing: true, via: "window" });
+        if (world.openError) return Promise.reject(new Error(world.openError));
+        return (world.openGate ?? Promise.resolve()).then(() => {
+          world.editor = editorInfo({ embed: { kind: "waiting" } });
+          return { editor: world.editor, agent: world.agent };
+        });
       case "godot/editor-selection":
         return Promise.resolve(world.selection);
       case "godot/editor-capture":
@@ -172,6 +195,8 @@ function backend(over: Partial<World> = {}): World {
         return Promise.resolve({ scenes: ["res://main.tscn", "res://levels/b.tscn"] });
       case "context/put":
         return Promise.resolve({ id: `item${++item}` });
+      case "veistra/attach-to-agent":
+        return Promise.resolve({ delivered: 1 });
       case "embed/still":
         return Promise.resolve({ png: "AAAA", source: "window" });
       default:
@@ -197,6 +222,9 @@ function props(over: Partial<EditorModeProps> = {}): EditorModeProps {
 }
 
 const calls = (method: string) => bridge.invoke.mock.calls.filter((c) => c[0] === method);
+/** The items left as chips at the agent's prompt, in order. */
+const chipped = () =>
+  calls("veistra/attach-to-agent").map((c) => (c[1] as { contextId: string }).contextId);
 const lastParams = (method: string) =>
   calls(method).slice(-1)[0]?.[1] as Record<string, unknown> | undefined;
 /** Where each method was first called, to check what came before what. */
@@ -204,6 +232,14 @@ const order = (method: string) => bridge.invoke.mock.calls.findIndex((c) => c[0]
 const bar = () => screen.getByRole("toolbar", { name: "Godot" });
 const button = (name: string | RegExp) =>
   within(bar()).getByRole("button", { name }) as HTMLButtonElement;
+const question = () => screen.getByRole("dialog", { name: "Enable the Veistra plugin" });
+/** Waits for `n` more answers to the poll, for "and nothing happened since". */
+async function polls(n = 2) {
+  const at = calls("godot/editor-state").length;
+  await waitFor(() => expect(calls("godot/editor-state").length).toBeGreaterThanOrEqual(at + n), {
+    timeout: 3000,
+  });
+}
 
 const BOX = { left: 10, top: 50, width: 640, height: 360, right: 650, bottom: 410 } as DOMRect;
 const realRect = Element.prototype.getBoundingClientRect;
@@ -211,6 +247,7 @@ const realRect = Element.prototype.getBoundingClientRect;
 beforeEach(() => {
   bridge.invoke.mockReset();
   reloadStatus.mockClear();
+  localStorage.clear();
   globalThis.ResizeObserver = class {
     observe() {}
     unobserve() {}
@@ -230,26 +267,20 @@ afterEach(() => {
 describe("the editor's state chip", () => {
   it("says one word for where the editor is", () => {
     const at = (embed: object) => ({ editor: editorInfo({ embed }), agent: false }) as never;
-    expect(editorChip(null, false).label).toBe("Not open");
-    expect(editorChip(at({ kind: "waiting" }), false).label).toBe("Starting");
-    expect(editorChip(at({ kind: "embedded" }), false)).toMatchObject({
+    expect(editorChip(null).label).toBe("Not open");
+    expect(editorChip(at({ kind: "waiting" })).label).toBe("Starting");
+    expect(editorChip(at({ kind: "embedded" }))).toMatchObject({
       tone: "success",
       label: "Editing",
     });
-    expect(editorChip(at({ kind: "poppedOut" }), false).label).toBe("Popped out");
-    const own = editorChip(
-      at({ kind: "ownWindow", reason: "Placing is off.", cause: "forced" }),
-      false,
-    );
+    expect(editorChip(at({ kind: "poppedOut" })).label).toBe("Popped out");
+    const own = editorChip(at({ kind: "ownWindow", reason: "Placing is off.", cause: "forced" }));
     expect(own).toMatchObject({ label: "Own window", title: "Placing is off." });
-    expect(editorChip(at({ kind: "embedded" }), true)).toMatchObject({
-      label: "Closing",
-      title: expect.stringContaining("save anything unsaved"),
-    });
   });
 });
 
 describe("Editor mode before the editor opens", () => {
+  // The plugin question is up, so nothing has opened behind it yet.
   it("draws the bar's slots in order, with every tool saying why it waits", async () => {
     backend();
     render(<EditorMode {...props()} />);
@@ -269,20 +300,42 @@ describe("Editor mode before the editor opens", () => {
       expect(t.title).toBe("Open the editor first.");
     }
     expect(button("Pop out into its own window").disabled).toBe(true);
-    expect(button("Close the editor").disabled).toBe(true);
+    // Godot is quit from inside Godot; the bar has no Close.
+    expect(within(bar()).queryByRole("button", { name: /Close/ })).toBeNull();
+    expect(calls("godot/editor-open")).toHaveLength(0);
   });
 
-  // Starting an editor behind someone's back would be a surprise.
-  it("opens the editor only when asked, on the project shown", async () => {
-    backend();
-    render(<EditorMode {...props()} />);
-    const open = await screen.findByRole("button", { name: "Open the editor" });
-    await waitFor(() => expect(calls("godot/editor-state").length).toBeGreaterThan(1));
-    expect(calls("godot/editor-open")).toHaveLength(0);
-    fireEvent.click(open);
+  it("opens the editor by itself on the project shown, with no press", async () => {
+    let let_go = () => undefined as void;
+    backend({ openGate: new Promise<void>((r) => (let_go = r)) });
+    render(<EditorMode {...props({ status: WITH_PLUGIN })} />);
     await waitFor(() => expect(calls("godot/editor-open")).toHaveLength(1));
     expect(lastParams("godot/editor-open")).toEqual({ project: "." });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // Opening, not the prompt, while Godot starts.
+    const opening = screen.getByRole("button", { name: "Opening…" }) as HTMLButtonElement;
+    expect(opening.disabled).toBe(true);
+    expect(screen.queryByText(/It opens here, in this pane/)).toBeNull();
+    let_go();
     await waitFor(() => expect(within(bar()).getByRole("status").textContent).toBe("Starting"));
+    await polls();
+    expect(calls("godot/editor-open")).toHaveLength(1);
+  });
+
+  it("says why when the editor would not open, and offers Open the editor again", async () => {
+    const world = backend({ openError: "Godot did not start: the file is not an executable." });
+    render(<EditorMode {...props({ status: WITH_PLUGIN })} />);
+    expect(await screen.findByText(/Godot did not start/)).toBeTruthy();
+    const retry = screen.getByRole("button", { name: "Open the editor" }) as HTMLButtonElement;
+    expect(retry.disabled).toBe(false);
+    // It does not try again by itself.
+    await polls();
+    expect(calls("godot/editor-open")).toHaveLength(1);
+    world.openError = null;
+    fireEvent.click(retry);
+    await waitFor(() => expect(calls("godot/editor-open")).toHaveLength(2));
+    await waitFor(() => expect(within(bar()).getByRole("status").textContent).toBe("Starting"));
+    expect(screen.queryByText(/Godot did not start/)).toBeNull();
   });
 
   // The box reports where it is before the launch, so Godot starts at the
@@ -294,56 +347,111 @@ describe("Editor mode before the editor opens", () => {
     expect(lastParams("embed/rect")).toMatchObject({ kind: "godotEditor", w: 640, h: 360 });
   });
 
-  it("asks before adding the plugin, says what it adds, and adds it", async () => {
+  it("asks about the plugin first, as a modal, says what it adds, adds it, then opens", async () => {
     backend();
     render(<EditorMode {...props()} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Enable the plugin" }));
-    const dialog = screen.getByRole("dialog", { name: "Enable the Veistra plugin" });
+    await waitFor(() => expect(question()).toBeTruthy());
+    const dialog = question();
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(dialog.parentElement?.className).toBe("ge__scrim");
+    expect(dialog.textContent).toContain("Add the Veistra plugin to Hall?");
     expect(dialog.textContent).toContain("addons/veistra/plugin.cfg");
     expect(dialog.textContent).toContain("addons/veistra/veistra_editor.gd");
     expect(dialog.textContent).toContain("addons/veistra/veistra_dock.gd");
     expect(dialog.textContent).toContain("Veistra dock");
     expect(dialog.textContent).toContain("[editor_plugins]");
     expect(dialog.textContent).toContain("the selected nodes, the edited scene");
-    expect(dialog.textContent).toContain("saves or closes the editor when you press");
+    expect(dialog.textContent).toContain("saves the editor when you press Save all");
     expect(dialog.textContent).toContain("No network port");
     expect(dialog.textContent).toContain("does nothing in an exported build");
+    const add = within(dialog).getByRole("button", { name: "Add to this project" });
+    expect(document.activeElement).toBe(add);
+    await polls();
     expect(calls("godot/plugin-install")).toHaveLength(0);
-    fireEvent.click(within(dialog).getByRole("button", { name: "Add to this project" }));
+    expect(calls("godot/editor-open")).toHaveLength(0);
+    fireEvent.click(add);
     await waitFor(() => expect(calls("godot/plugin-install")).toHaveLength(1));
     expect(lastParams("godot/plugin-install")).toEqual({ project: "." });
     await waitFor(() => expect(reloadStatus).toHaveBeenCalledWith(false));
+    await waitFor(() => expect(calls("godot/editor-open")).toHaveLength(1));
+    expect(order("godot/plugin-install")).toBeLessThan(order("godot/editor-open"));
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("opens the editor on Not now too, and does not ask again on this project", async () => {
+    backend();
+    render(<EditorMode {...props()} />);
+    await waitFor(() => expect(question()).toBeTruthy());
+    fireEvent.click(within(question()).getByRole("button", { name: "Not now" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() => expect(calls("godot/editor-open")).toHaveLength(1));
+    expect(calls("godot/plugin-install")).toHaveLength(0);
+    cleanup();
+    bridge.invoke.mockReset();
+    backend();
+    render(<EditorMode {...props()} />);
+    await waitFor(() => expect(calls("godot/editor-open")).toHaveLength(1));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("keeps Tab inside the question, and Escape is Not now", async () => {
+    backend();
+    render(<EditorMode {...props()} />);
+    await waitFor(() => expect(question()).toBeTruthy());
+    const notNow = within(question()).getByRole("button", { name: "Not now" });
+    const add = within(question()).getByRole("button", { name: "Add to this project" });
+    expect(document.activeElement).toBe(add);
+    fireEvent.keyDown(add, { key: "Tab" });
+    expect(document.activeElement).toBe(notNow);
+    fireEvent.keyDown(notNow, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(add);
+    fireEvent.keyDown(add, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() => expect(calls("godot/editor-open")).toHaveLength(1));
+    expect(calls("godot/plugin-install")).toHaveLength(0);
+  });
+
+  it("asks nothing and opens nothing on a read-only checkout", async () => {
+    backend();
+    const status = { ...STATUS, environment: { ...STATUS.environment, readOnly: true } };
+    render(<EditorMode {...props({ status })} />);
+    await polls();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(calls("godot/editor-open")).toHaveLength(0);
   });
 
   it("offers to remove the plugin where it is on, without asking first", async () => {
     backend();
-    const status = { ...STATUS, projects: [{ ...HALL, plugin: "yes" as const }] };
+    const status = { ...WITH_PLUGIN, editor: POP_OUT };
     render(<EditorMode {...props({ status })} />);
     fireEvent.click(await screen.findByRole("button", { name: "Remove the plugin" }));
     await waitFor(() => expect(calls("godot/plugin-remove")).toHaveLength(1));
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("says why this Godot cannot run the plugin, with nothing to press", async () => {
+  it("says why this Godot cannot run the plugin, with nothing to press or answer", async () => {
     backend();
     const problem = "The Veistra plugin needs Godot 4.2 or later; this is 4.1.3.";
-    render(<EditorMode {...props({ status: { ...STATUS, pluginProblem: problem } })} />);
+    render(
+      <EditorMode {...props({ status: { ...STATUS, editor: POP_OUT, pluginProblem: problem } })} />,
+    );
     expect(await screen.findByText(problem)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /the plugin$/ })).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("says where it opens when nothing can place it", async () => {
+  // Only the pane opens by itself: an editor in its own window is a press.
+  it("says where it opens when nothing can place it, and waits for the press", async () => {
     backend();
-    const editor = {
-      surface: "popOut" as const,
-      code: "noEmbedder" as const,
-      reason: "Godot opens in its own window: Veistra cannot place it on macOS yet.",
-    };
-    render(<EditorMode {...props({ status: { ...STATUS, editor } })} />);
+    render(<EditorMode {...props({ status: { ...WITH_PLUGIN, editor: POP_OUT } })} />);
     expect(
       await screen.findByText(/It opens in its own window, for the reason above/),
     ).toBeTruthy();
     expect(screen.getByRole("note").textContent).toContain("macOS");
+    await polls();
+    expect(calls("godot/editor-open")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Open the editor" }));
+    await waitFor(() => expect(calls("godot/editor-open")).toHaveLength(1));
   });
 });
 
@@ -371,7 +479,6 @@ describe("Editor mode with the editor open", () => {
       expect(button(name).disabled).toBe(true);
       expect(button(name).title).toBe(WHY);
     }
-    expect(button("Close the editor").disabled).toBe(false);
     expect(within(bar()).queryByRole("combobox", { name: "Scene" })).toBeNull();
   });
 
@@ -381,11 +488,12 @@ describe("Editor mode with the editor open", () => {
     render(<EditorMode {...props()} />);
     await waitFor(() => expect(button("Send selection").disabled).toBe(false));
     fireEvent.click(button("Send selection"));
-    await waitFor(() => expect(calls("context/insert")).toHaveLength(1));
-    expect(lastParams("context/insert")).toEqual({ itemIds: ["item1", "item2"] });
+    // One chip, the selection's; the picture rides in its hidden prompt.
+    await waitFor(() => expect(chipped()).toEqual(["item2"]));
+    expect(calls("context/insert")).toHaveLength(0);
     const puts = calls("context/put");
-    expect(puts.map((c) => (c[1] as { kind: string }).kind)).toEqual(["text", "image"]);
-    expect((puts[0]![1] as { text: string }).text).toContain("- Main/Enemy (CharacterBody3D)");
+    expect(puts.map((c) => (c[1] as { kind: string }).kind)).toEqual(["image", "text"]);
+    expect((puts[1]![1] as { text: string }).text).toContain("- Main/Enemy (CharacterBody3D)");
     expect(calls("godot/editor-selection")).toHaveLength(1);
     expect(order("godot/editor-selection")).toBeLessThan(order("context/put"));
     expect(await within(bar()).findByRole("button", { name: "Sent" })).toBeTruthy();
@@ -414,11 +522,11 @@ describe("Editor mode with the editor open", () => {
     // The editor's window is out of the way while the pane draws.
     await waitFor(() => expect(lastParams("embed/rect")?.visible).toBe(false));
     fireEvent.click(within(layer).getByRole("button", { name: "Done" }));
-    await waitFor(() => expect(calls("context/insert")).toHaveLength(1));
+    await waitFor(() => expect(chipped()).toHaveLength(1));
     // The pin's centre on the 640 x 360 frame, in the 1280 x 720 capture.
     expect(calls("godot/editor-pick").map((c) => c[1])).toEqual([{ x: 60, y: 80 }]);
     expect(order("godot/editor-pick")).toBeLessThan(order("context/put"));
-    const [image, notes] = calls("context/put").map((c) => c[1] as Record<string, string>);
+    const [notes, image] = calls("context/put").map((c) => c[1] as Record<string, string>);
     expect(image).toMatchObject({ kind: "image", key: "godot/main.tscn/markup" });
     const json = JSON.parse(notes!.text) as Record<string, never>;
     expect(json.source).toMatchObject({
@@ -458,25 +566,45 @@ describe("Editor mode with the editor open", () => {
     );
   });
 
-  // Spec §13 test 10: Close asks Godot, which offers to save first.
-  it("asks the editor to close, says Closing until it has, then says it closed", async () => {
+  // Godot is quit from inside Godot now; the pane says so and leaves it shut.
+  it("says the editor closed when Godot is quit, and does not open it again", async () => {
     const world = backend({ editor: editorInfo() });
-    render(<EditorMode {...props()} />);
-    await waitFor(() => expect(button("Close the editor").disabled).toBe(false));
-    fireEvent.click(button("Close the editor"));
-    await waitFor(() => expect(calls("godot/editor-close")).toHaveLength(1));
-    await waitFor(() => expect(within(bar()).getByRole("status").textContent).toBe("Closing"));
+    render(<EditorMode {...props({ status: WITH_PLUGIN })} />);
+    await waitFor(() => expect(within(bar()).getByRole("status").textContent).toBe("Editing"));
     world.editor = null;
     world.ended = { project: ".", code: 0 };
     expect(await screen.findByText("The editor closed.")).toBeTruthy();
     expect(within(bar()).getByRole("status").textContent).toBe("Not open");
-    expect(screen.getByRole("button", { name: "Open the editor" })).toBeTruthy();
+    const open = screen.getByRole("button", { name: "Open the editor" }) as HTMLButtonElement;
+    expect(open.disabled).toBe(false);
+    await polls();
+    expect(calls("godot/editor-open")).toHaveLength(0);
   });
 
-  it("says the exit code when the editor did not close cleanly", async () => {
+  // The open on mount is once: an editor it opened that then quits, or
+  // crashes, stays shut until Open the editor is pressed.
+  it("does not open again an editor it opened by itself, once that has ended", async () => {
+    const world = backend();
+    render(<EditorMode {...props({ status: WITH_PLUGIN })} />);
+    await waitFor(() => expect(calls("godot/editor-open")).toHaveLength(1));
+    await waitFor(() => expect(within(bar()).getByRole("status").textContent).toBe("Starting"));
+    world.editor = null;
+    world.ended = { project: ".", code: 1 };
+    expect(await screen.findByText("The editor exited with code 1.")).toBeTruthy();
+    await polls();
+    expect(calls("godot/editor-open")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Open the editor" }));
+    await waitFor(() => expect(calls("godot/editor-open")).toHaveLength(2));
+  });
+
+  // An editor that ended just before the pane looked is not started again either.
+  it("says the exit code when the editor did not close cleanly, and leaves it shut", async () => {
     backend({ ended: { project: ".", code: 3 } });
     render(<EditorMode {...props()} />);
     expect(await screen.findByText("The editor exited with code 3.")).toBeTruthy();
+    await polls();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(calls("godot/editor-open")).toHaveLength(0);
   });
 
   it("pops the editor out and docks it back", async () => {
@@ -556,14 +684,42 @@ describe("the editor's Veistra dock (#320)", () => {
       message: "Sent to the agent.",
     });
     const puts = calls("context/put").map((c) => c[1] as Record<string, string>);
-    expect(puts.map((p) => p.kind)).toEqual(["text", "image"]);
-    expect(puts[0]!.text).toContain("Why does it float?");
-    expect(puts[0]!.text).toContain("Main/Enemy_02");
-    expect(puts[1]!.bytesBase64).toBe("BBBB");
-    expect(calls("context/insert")).toEqual([["context/insert", { itemIds: ["item1", "item2"] }]]);
+    expect(puts.map((p) => p.kind)).toEqual(["image", "text"]);
+    expect(puts[1]!.text).toContain("Why does it float?");
+    expect(puts[1]!.text).toContain("Main/Enemy_02");
+    expect(puts[0]!.bytesBase64).toBe("BBBB");
+    expect(chipped()).toEqual(["item2"]);
     // The next poll asks only for what came after it.
     await waitFor(() => expect(lastParams("godot/editor-state")).toEqual({ eventsSince: 1 }));
-    expect(calls("context/insert")).toHaveLength(1);
+    expect(chipped()).toHaveLength(1);
+  });
+
+  // The same path as Blender's Mention in agent, which added no chip there.
+  it("makes one chip of the nodes a dock mention names, and answers the dock", async () => {
+    const mention = {
+      seq: 1,
+      n: 1730000000009,
+      t: 1730000000009,
+      kind: "mention" as const,
+      what: "selection" as const,
+      scene: "res://main.tscn",
+      nodes: ["Main/Enemy"],
+      path: null,
+      pngBase64: null,
+      pngProblem: null,
+    };
+    backend({ editor: editorInfo(), events: [mention] });
+    render(<EditorMode {...props()} />);
+    await waitFor(() => expect(calls("godot/editor-ack")).toHaveLength(1));
+    expect(lastParams("godot/editor-ack")).toEqual({
+      n: mention.n,
+      ok: true,
+      message: "In the agent's prompt.",
+    });
+    const puts = calls("context/put").map((c) => c[1] as Record<string, string>);
+    expect(puts).toHaveLength(1);
+    expect(puts[0]).toMatchObject({ kind: "json", label: "Godot · Enemy" });
+    expect(chipped()).toEqual(["item1"]);
   });
 
   it("opens Mark up for the dock's button, and refuses it while the plugin is not running", async () => {

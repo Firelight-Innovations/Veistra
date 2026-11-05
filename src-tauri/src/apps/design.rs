@@ -558,7 +558,7 @@ fn answer(comment: Comment) -> Result<Value, RpcError> {
 
 /// Route one `invoke` from the Design Mode app.
 ///
-/// The `CallContext` is ignored, as Tutorials' is: what is on screen here is a
+/// The `CallContext` is ignored, as Docs' is: what is on screen here is a
 /// URL somebody typed, not anything about the project a cluster is pointed at.
 pub fn call(
     app: &AppHandle,

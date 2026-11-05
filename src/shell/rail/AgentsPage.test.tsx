@@ -155,6 +155,22 @@ describe("AgentsPage", () => {
     expect(onNew).toHaveBeenCalledWith("c1");
   });
 
+  it("lists Workflows and Customize as actions still to come", () => {
+    draw();
+    const actions = screen.getByRole("navigation", { name: "Agent actions" });
+    const workflows = within(actions).getByRole("button", { name: "Workflows" });
+    expect(workflows.hasAttribute("disabled")).toBe(true);
+    expect(workflows.getAttribute("title")).toBe("Coming soon");
+    expect(within(actions).getByRole("button", { name: "Customize" })).not.toBeNull();
+    expect(screen.queryByText(/Automations/)).toBeNull();
+  });
+
+  it("marks only the current cluster's card as active", () => {
+    draw();
+    expect(screen.getByRole("region", { name: "api" }).hasAttribute("data-active")).toBe(true);
+    expect(screen.getByRole("region", { name: "web" }).hasAttribute("data-active")).toBe(false);
+  });
+
   it("filters sessions by the search box", () => {
     draw();
     fireEvent.change(screen.getByRole("textbox", { name: "Search" }), {

@@ -96,11 +96,11 @@ a plugin surface colliding with a first-party app.
 - **`dist` and `dev-url` are per package; `path` is per surface.** A `dev-url` on
   each surface would mean a dev server per surface — four of them for a package
   with four views. One server with several HTML entry points is what the
-  orchestrator's own `vite.config.ts` does for Home, Files, Viewer and Tutorials,
+  orchestrator's own `vite.config.ts` does for Home, Files, Viewer and Docs,
   so a plugin repo is laid out the way the shell already is.
 - **`present = "cover"`** takes the surface out of both menus. It stays mountable
   and stays reachable when another frame calls `veistra/open` for it — the
-  behaviour Home and Tutorials have inside the orchestrator.
+  behaviour Home and Docs have inside the orchestrator.
 - **A package with no `[[surface]]` and no `[frontend]` has no UI at all**, and
   that is a supported shape rather than a broken one: a package that exists only
   to run a core. It contributes nothing to the Apps menu, which is the point —

@@ -36,6 +36,7 @@ export function putShot(shot: Capture) {
     title: `Play - ${scene} at ${formatPlayTime(shot.time)}`,
     label: `Play - ${leaf(scene)} ${formatPlayTime(shot.time)}`,
     bytesBase64: shot.png,
+    prompt: `A frame I captured while playtesting ${scene} in Godot, at ${formatPlayTime(shot.time)}. It shows the moment I am asking about.`,
   });
 }
 
@@ -46,6 +47,8 @@ export function putLog(lines: LogLine[], scene: string | null) {
     title: `Play - output${scene ? ` of ${leaf(scene)}` : ""}`,
     label: "Play - game output",
     text: logText(lines, scene),
+    prompt:
+      "The latest output of the Godot game I am playtesting. Look for errors and warnings in it and find what in the project causes them.",
   });
 }
 
@@ -81,5 +84,7 @@ export function putStillBroken(comment: Comment, reply: string | undefined, bloc
     title: "Play - still broken after your fix",
     label: "Play - still broken",
     text: stillBrokenText(comment, reply, blocked),
+    prompt:
+      "A playtest note you reported fixed is still broken. Read what was tried and what I saw, fix it again, then report it with resolve_play_note.",
   });
 }

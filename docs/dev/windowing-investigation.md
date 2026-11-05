@@ -13,7 +13,7 @@ not start from the beginning.
 The mechanism is three functions deep and each of them is correct on its own, which is why it
 survived a suite that already had thirty-odd tests over this tree.
 
-1. Home and Tutorials *cover* a cluster rather than taking a pane beside it, so when anything
+1. Home and Docs (then Tutorials) *cover* a cluster rather than taking a pane beside it, so when anything
    else arrives in the pane one of them is sitting in, the shell closes it — otherwise it
    would be a live surface with no way back on screen. That is `dismiss_takeover` in
    `src-tauri/src/shell_state.rs`, and it ran **before** the arrival, deliberately: a pane

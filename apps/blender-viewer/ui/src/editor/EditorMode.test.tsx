@@ -17,6 +17,7 @@ vi.mock("@veistra/bridge", () => ({
   invoke: bridge.invoke,
   reportPainted: vi.fn(),
   on: () => () => undefined,
+  publish: vi.fn(),
 }));
 
 vi.mock("./ViewportMarkup", () => ({
@@ -161,17 +162,22 @@ const CAPTURE = {
 
 let editor: BlenderEditorState = { editor: null };
 let capture: unknown = CAPTURE;
+/** What `blender-viewer/editor-open` fails with, or `null` to start Blender. */
+let openFails: string | null = null;
 
 function backend() {
   let n = 0;
-  bridge.invoke.mockImplementation((method: string) => {
+  bridge.invoke.mockImplementation((method: string, params?: { blend?: string }) => {
     switch (method) {
       case "blender-viewer/editor-state":
         return Promise.resolve(editor);
       case "blender-viewer/editor-open":
+        if (openFails) return Promise.reject(new Error(openFails));
         editor = {
           editor: {
             ...OPEN,
+            // A new scene has no file, and so no lock, until it is saved.
+            ...(params?.blend ? {} : { file: null, opened: "", lock: null }),
             embed: { state: { kind: "waiting" }, still: false },
             booted: false,
             script: null,
@@ -180,8 +186,6 @@ function backend() {
           },
         };
         return Promise.resolve(editor);
-      case "blender-viewer/editor-close":
-        return Promise.resolve({ closing: true, via: "window" });
       case "blender-viewer/editor-viewport-only":
         return Promise.resolve({ viewportOnly: true });
       case "blender-viewer/editor-capture":
@@ -193,8 +197,8 @@ function backend() {
       case "context/put":
         n += 1;
         return Promise.resolve({ id: `ctx${n}`, key: "k" });
-      case "context/insert":
-        return Promise.resolve({ inserted: true, count: 2 });
+      case "veistra/attach-to-agent":
+        return Promise.resolve({ delivered: 1 });
       default:
         return Promise.resolve(null);
     }
@@ -202,6 +206,9 @@ function backend() {
 }
 
 const calls = (method: string) => bridge.invoke.mock.calls.filter((c) => c[0] === method);
+/** The items left as chips at the agent's prompt, in order. */
+const chipped = () =>
+  calls("veistra/attach-to-agent").map((c) => (c[1] as { contextId: string }).contextId);
 
 function show(viewer: Partial<BlenderViewerState> = {}, onPick = vi.fn(), onCompare = vi.fn()) {
   const modeSwitch = { value: "editor" as const, options: modesFor(3), onChange: vi.fn() };
@@ -224,6 +231,7 @@ beforeEach(() => {
   bridge.invoke.mockReset();
   editor = { editor: null };
   capture = CAPTURE;
+  openFails = null;
   backend();
   URL.createObjectURL = vi.fn(() => "blob:capture");
   URL.revokeObjectURL = vi.fn();
@@ -240,30 +248,119 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("Blender's Editor mode, before Blender is open", () => {
-  it("offers Open in Blender on the picked file, and starts nothing by itself", async () => {
+/** A few more polls than it takes to have acted on one, at 500 ms each. */
+async function pollsGoBy(n = 3) {
+  const seen = calls("blender-viewer/editor-state").length;
+  await waitFor(
+    () => expect(calls("blender-viewer/editor-state").length).toBeGreaterThan(seen + n),
+    {
+      timeout: 4000,
+    },
+  );
+}
+
+const POP_OUT = {
+  editor: {
+    surface: "popOut",
+    code: "noEmbedder",
+    reason: "Blender opens in its own window here.",
+  },
+} as Partial<BlenderViewerState>;
+
+describe("Blender's Editor mode opens Blender by itself", () => {
+  it("opens Blender on the picked file with no press, saying Opening while it starts", async () => {
     show();
-    const open = await screen.findByRole("button", { name: "Open in Blender" });
-    expect(screen.getByText("bed.blend in Blender")).toBeTruthy();
-    expect(screen.getByText("Not open")).toBeTruthy();
-    expect(calls("blender-viewer/editor-open")).toHaveLength(0);
-    fireEvent.click(open);
+    // From mount, before the first poll has answered: no press is offered.
+    const button = screen.getByRole("button", { name: "Opening…" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
     await waitFor(() => expect(calls("blender-viewer/editor-open")).toHaveLength(1));
     expect(calls("blender-viewer/editor-open")[0]![1]).toEqual({ blend: "bed.blend" });
     await screen.findByText("Starting");
   });
 
-  it("keeps the boot script's tools off until Blender is open, and says why", async () => {
+  it("opens once per mount, however often the app's state comes again", async () => {
+    const { rerender, onPick, onCompare } = show();
+    await waitFor(() => expect(calls("blender-viewer/editor-open")).toHaveLength(1));
+    const modeSwitch = { value: "editor" as const, options: modesFor(3), onChange: vi.fn() };
+    rerender(
+      <EditorMode
+        modeSwitch={modeSwitch}
+        viewer={{ ...VIEWER, versions: [6, 5, 4, 3] }}
+        onPick={onPick}
+        frameRect={null}
+        overlays={[]}
+        onCompare={onCompare}
+      />,
+    );
+    await pollsGoBy();
+    expect(calls("blender-viewer/editor-open")).toHaveLength(1);
+  });
+
+  it("does not start a second Blender when the first poll finds one open", async () => {
+    editor = { editor: OPEN };
     show();
+    await screen.findByText("Editing");
+    await pollsGoBy(1);
+    expect(calls("blender-viewer/editor-open")).toHaveLength(0);
+  });
+
+  it("does not open it again when Blender exits by itself, and offers the press instead", async () => {
+    show();
+    await waitFor(() => expect(calls("blender-viewer/editor-open")).toHaveLength(1));
+    await screen.findByText("Starting");
+    // The person quits inside Blender, or it crashes.
+    editor = { editor: null, ended: { file: "bed.blend", code: 1 } };
+    await screen.findByText("Blender exited with code 1.");
+    await pollsGoBy();
+    expect(calls("blender-viewer/editor-open")).toHaveLength(1);
+    const open = screen.getByRole("button", { name: "Open in Blender" }) as HTMLButtonElement;
+    expect(open.disabled).toBe(false);
+    fireEvent.click(open);
+    await waitFor(() => expect(calls("blender-viewer/editor-open")).toHaveLength(2));
+  });
+
+  it("says why when it fails, and Open in Blender tries again", async () => {
+    openFails = "could not start Blender: access denied";
+    show();
+    await screen.findByText("could not start Blender: access denied");
+    const open = screen.getByRole("button", { name: "Open in Blender" }) as HTMLButtonElement;
+    expect(open.disabled).toBe(false);
+    expect(calls("blender-viewer/editor-open")).toHaveLength(1);
+    openFails = null;
+    fireEvent.click(open);
+    await waitFor(() => expect(calls("blender-viewer/editor-open")).toHaveLength(2));
+    await screen.findByText("Starting");
+    expect(screen.queryByText("could not start Blender: access denied")).toBeNull();
+  });
+
+  it("says Blender closed when the last one ended before the pane opened, and opens nothing", async () => {
+    editor = { editor: null, ended: { file: "bed.blend", code: 0 } };
+    show();
+    await screen.findByText("Blender closed.");
+    await pollsGoBy(1);
+    expect(calls("blender-viewer/editor-open")).toHaveLength(0);
+  });
+});
+
+describe("Blender's Editor mode where it cannot open by itself", () => {
+  it("keeps the boot script's tools off until Blender is open, and says why", async () => {
+    show(POP_OUT);
     await screen.findByText("Not open");
     for (const name of ["Viewport only", "Mark up", "Send selection"]) {
       const b = within(bar()).getByRole("button", { name }) as HTMLButtonElement;
       expect(b.disabled).toBe(true);
       expect(b.title).toBe("Open Blender first.");
     }
-    expect(
-      (within(bar()).getByRole("button", { name: "Close Blender" }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+  });
+
+  it("waits for a press where Blender would open in its own window", async () => {
+    show(POP_OUT);
+    const open = await screen.findByRole("button", { name: "Open in Blender" });
+    expect(screen.getByText("It opens in its own window, for the reason above.")).toBeTruthy();
+    await pollsGoBy(1);
+    expect(calls("blender-viewer/editor-open")).toHaveLength(0);
+    fireEvent.click(open);
+    await waitFor(() => expect(calls("blender-viewer/editor-open")).toHaveLength(1));
   });
 
   it("refuses to open a file another Blender holds, and names it", async () => {
@@ -273,12 +370,88 @@ describe("Blender's Editor mode, before Blender is open", () => {
     })) as HTMLButtonElement;
     expect(open.disabled).toBe(true);
     expect(screen.getByText(/already open in another Blender \(process 777\)/)).toBeTruthy();
+    await pollsGoBy(1);
+    expect(calls("blender-viewer/editor-open")).toHaveLength(0);
   });
 
-  it("says Blender closed when the last one ended", async () => {
-    editor = { editor: null, ended: { file: "bed.blend", code: 0 } };
-    show();
+  it("opens nothing without a Blender to open, or on a read-only checkout", async () => {
+    show({ blender: { ...VIEWER.blender, found: false, path: null } });
+    expect(
+      ((await screen.findByRole("button", { name: "Open in Blender" })) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    await pollsGoBy(1);
+    cleanup();
+    show({ readOnly: true });
+    expect(
+      ((await screen.findByRole("button", { name: "Open in Blender" })) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    await pollsGoBy(1);
+    expect(calls("blender-viewer/editor-open")).toHaveLength(0);
+  });
+});
+
+describe("Blender's Editor mode with no .blend in the environment", () => {
+  const EMPTY = { blends: [], blend: null, rel: null, versions: [] } as Partial<BlenderViewerState>;
+
+  it("opens Blender on a new scene by itself, naming no file and writing none", async () => {
+    show(EMPTY);
+    await screen.findByText(
+      /No \.blend files in this environment yet, so Blender opens on a new scene/,
+    );
+    await waitFor(() => expect(calls("blender-viewer/editor-open")).toHaveLength(1));
+    // No `blend`: the backend starts Blender on its own untitled startup scene.
+    expect(calls("blender-viewer/editor-open")[0]![1]).toEqual({});
+    await screen.findByText("Starting");
+    expect(within(bar()).getByText("unsaved file")).toBeTruthy();
+    // An unsaved scene holds no lock, so there is no one-writer banner.
+    expect(screen.queryByRole("note", { name: "Who writes this file" })).toBeNull();
+  });
+
+  it("offers Open Blender as a press again once that Blender has closed", async () => {
+    show(EMPTY);
+    await waitFor(() => expect(calls("blender-viewer/editor-open")).toHaveLength(1));
+    editor = { editor: null, ended: { file: null, code: 0 } };
     await screen.findByText("Blender closed.");
+    expect(
+      screen.getByText(
+        "No .blend files in this environment yet. Blender opens on a new scene; save it here and it will appear.",
+      ),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Open Blender" }));
+    await waitFor(() => expect(calls("blender-viewer/editor-open")).toHaveLength(2));
+    expect(calls("blender-viewer/editor-open")[1]![1]).toEqual({});
+  });
+
+  it("follows the scene once it is saved into the environment", async () => {
+    const { rerender, onPick, onCompare } = show(EMPTY);
+    await waitFor(() => expect(calls("blender-viewer/editor-open")).toHaveLength(1));
+    editor = {
+      editor: {
+        ...OPEN,
+        file: "chair.blend",
+        opened: "",
+        lock: { ...OPEN.lock!, file: "chair.blend" },
+      },
+    };
+    // The app's next state lists the file just saved.
+    const modeSwitch = { value: "editor" as const, options: modesFor(0), onChange: vi.fn() };
+    rerender(
+      <EditorMode
+        modeSwitch={modeSwitch}
+        viewer={{
+          ...VIEWER,
+          ...EMPTY,
+          blends: [{ path: "C:/p/chair.blend", rel: "chair.blend", mtime: 2, size: 1 }],
+        }}
+        onPick={onPick}
+        frameRect={null}
+        overlays={[]}
+        onCompare={onCompare}
+      />,
+    );
+    await waitFor(() => expect(onPick).toHaveBeenCalledWith("C:/p/chair.blend"));
   });
 });
 
@@ -342,11 +515,15 @@ describe("Blender's Editor mode, with Blender open in the pane", () => {
     await waitFor(() => expect(onPick).toHaveBeenCalledWith("C:/p/chair.blend"));
   });
 
-  it("asks Blender to close, and says Closing while it asks to save", async () => {
+  it("has no Close button: Blender is quit from inside it; Pop out stays the last button", async () => {
     show();
-    fireEvent.click(await within(bar()).findByRole("button", { name: "Close Blender" }));
-    await waitFor(() => expect(calls("blender-viewer/editor-close")).toHaveLength(1));
-    await screen.findByText("Closing");
+    await screen.findByText("Editing");
+    expect(within(bar()).queryByRole("button", { name: /close/i })).toBeNull();
+    const buttons = within(bar()).getAllByRole("button");
+    expect(buttons[buttons.length - 1]!.getAttribute("aria-label")).toBe(
+      "Pop out into its own window",
+    );
+    expect(calls("blender-viewer/editor-close")).toHaveLength(0);
   });
 
   it("turns Viewport only on through the boot script", async () => {
@@ -357,20 +534,21 @@ describe("Blender's Editor mode, with Blender open in the pane", () => {
     expect(calls("blender-viewer/editor-viewport-only")[0]![1]).toEqual({ on: true });
   });
 
-  it("sends the selection and the 3D view as two items and types both, never Enter", async () => {
+  it("sends the selection and the 3D view as two items and one chip, never Enter", async () => {
     show();
     await screen.findByText("Editing");
     fireEvent.click(within(bar()).getByRole("button", { name: "Send selection" }));
     await within(bar()).findByRole("button", { name: "Sent" });
     const puts = calls("context/put").map((c) => c[1] as Record<string, unknown>);
     expect(puts.map((p) => [p.kind, p.key])).toEqual([
-      ["text", "blender/bed/selection"],
       ["image", "blender/bed/editor-viewport"],
+      ["text", "blender/bed/selection"],
     ]);
-    expect(puts[0]!.text).toContain("- Frame (mesh, active)");
-    expect(puts[0]!.text).toContain("- Lamp (light)");
-    expect(puts[1]!.bytesBase64).toBe("QUJD");
-    expect(calls("context/insert")[0]![1]).toEqual({ itemIds: ["ctx1", "ctx2"] });
+    expect(puts[1]!.text).toContain("- Frame (mesh, active)");
+    expect(puts[1]!.text).toContain("- Lamp (light)");
+    expect(puts[0]!.bytesBase64).toBe("QUJD");
+    expect(chipped()).toEqual(["ctx2"]);
+    expect(calls("context/insert")).toHaveLength(0);
   });
 
   it("says nothing is selected rather than sending an empty selection", async () => {
@@ -392,10 +570,10 @@ describe("Blender's Editor mode, with Blender open in the pane", () => {
     expect(calls("blender-viewer/editor-pick")[0]![1]).toEqual({ x: 200, y: 100 });
     const puts = calls("context/put").map((c) => c[1] as Record<string, unknown>);
     expect(puts.map((p) => p.key)).toEqual([
-      "blender/bed.blend/markup",
       "blender/bed.blend/markup-json",
+      "blender/bed.blend/markup",
     ]);
-    const json = JSON.parse(String(puts[1]!.text)) as {
+    const json = JSON.parse(String(puts[0]!.text)) as {
       pins: { nodePath?: string; worldPoint?: number[] }[];
       source: Record<string, unknown>;
       camera?: { fov: number };
@@ -403,7 +581,8 @@ describe("Blender's Editor mode, with Blender open in the pane", () => {
     expect(json.pins[0]).toMatchObject({ nodePath: "Headboard", worldPoint: [0, 1, 2] });
     expect(json.source).toMatchObject({ engine: "blender", view: "editor", blend: "bed.blend" });
     expect(json.camera?.fov).toBe(39.6);
-    expect(calls("context/insert")).toHaveLength(1);
+    // One chip, the picture's; its prompt names the JSON.
+    expect(chipped()).toEqual(["ctx2"]);
   });
 });
 
@@ -432,16 +611,14 @@ describe("editorChip", () => {
   });
 
   it("names each place Blender can be in one word", () => {
-    expect(editorChip(null, false).label).toBe("Not open");
-    expect(editorChip(with_({ kind: "waiting" }), false).label).toBe("Starting");
-    expect(editorChip(with_({ kind: "embedded" }), false).label).toBe("Editing");
-    expect(editorChip(with_({ kind: "poppedOut" }), false).label).toBe("Popped out");
+    expect(editorChip(null).label).toBe("Not open");
+    expect(editorChip(with_({ kind: "waiting" })).label).toBe("Starting");
+    expect(editorChip(with_({ kind: "embedded" })).label).toBe("Editing");
+    expect(editorChip(with_({ kind: "poppedOut" })).label).toBe("Popped out");
     const own = editorChip(
       with_({ kind: "ownWindow", reason: "Open in its own window: no pane.", cause: "noPane" }),
-      false,
     );
     expect(own).toMatchObject({ label: "Own window", title: "Open in its own window: no pane." });
-    expect(editorChip(with_({ kind: "embedded" }), true).label).toBe("Closing");
   });
 });
 
@@ -479,18 +656,51 @@ describe("Blender's own Veistra tab (#320)", () => {
       message: "Sent to the agent.",
     });
     const puts = params("context/put");
-    expect(puts.map((p) => p.kind)).toEqual(["text", "image"]);
-    expect(puts[0]!.text).toContain("Is the frame too thin?");
-    expect(puts[0]!.text).toContain("Selected objects: Frame");
-    expect(puts[0]!.text).toContain("File: bed.blend");
-    expect(puts[1]!.bytesBase64).toBe("WFla");
-    expect(params("context/insert")).toEqual([{ itemIds: ["ctx1", "ctx2"] }]);
+    expect(puts.map((p) => p.kind)).toEqual(["image", "text"]);
+    expect(puts[1]!.text).toContain("Is the frame too thin?");
+    expect(puts[1]!.text).toContain("Selected objects: Frame");
+    expect(puts[1]!.text).toContain("File: bed.blend");
+    expect(puts[0]!.bytesBase64).toBe("WFla");
+    expect(chipped()).toEqual(["ctx2"]);
     // The poll goes on handing the same press on until the backend drops it;
     // the pane takes it once, and asks only for what came after it.
     await waitFor(() =>
       expect(params("blender-viewer/editor-state").slice(-1)[0]).toEqual({ eventsSince: 4 }),
     );
-    expect(calls("context/insert")).toHaveLength(1);
+    expect(chipped()).toHaveLength(1);
+  });
+
+  // Braden's report: Mention in agent on Crate added no chip, because this
+  // pane refused every mention. It now makes one chip of the object.
+  it("makes one chip of the object a tab mention names, and answers the tab", async () => {
+    const mention = {
+      seq: 5,
+      n: 1730000000005,
+      t: 1730000000005,
+      kind: "mention" as const,
+      what: "selection" as const,
+      scene: "C:/p/bed.blend",
+      nodes: ["Frame"],
+      path: null,
+      pngBase64: null,
+      pngProblem: null,
+    };
+    editor = { editor: { ...OPEN, events: [mention] } };
+    show();
+    await waitFor(() => expect(calls("blender-viewer/editor-ack")).toHaveLength(1));
+    expect(params("blender-viewer/editor-ack")[0]).toEqual({
+      n: mention.n,
+      ok: true,
+      message: "In the agent's prompt.",
+    });
+    const [put] = params("context/put");
+    expect(put).toMatchObject({ kind: "json", label: "Blender · Frame" });
+    expect(JSON.parse(String(put!.text))).toMatchObject({
+      tool: "blender",
+      scene: "bed.blend",
+      nodes: [{ path: "Frame", type: "MESH" }],
+    });
+    expect(chipped()).toEqual(["ctx1"]);
   });
 
   it("refuses the tab's Mark up while the boot script starts, with the reason", async () => {

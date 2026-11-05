@@ -182,6 +182,14 @@ impl Hosts {
         self.supported
     }
 
+    /// Whether a window started now for a pane will be placed in it, so it
+    /// may be started as Veistra's from the first frame: the Godot editor's
+    /// `--wid`, and Blender behind Veistra. A window that will keep its own
+    /// frame is started as an ordinary one.
+    pub fn will_place(&self) -> bool {
+        self.supported && !self.forced_off
+    }
+
     /// An embed for a window of `kind`, placed by this registry's window system.
     pub fn embed(&self, kind: Kind) -> Arc<Embed> {
         Arc::new(Embed::with(self.win.clone(), kind))
@@ -372,8 +380,9 @@ impl Hosts {
         });
     }
 
-    /// Put every placed window back over its pane: the Veistra window moved,
-    /// and an owned window does not move with its owner.
+    /// Put every placed window back over its pane: the Veistra window moved
+    /// or changed size. An owned window does not move with its owner; a child
+    /// does, and [`Embed::reapply`] sends it nothing unless its box changed.
     pub fn reposition_all(&self, owner_of: &OwnerFn) {
         for hosted in self.live() {
             if let Some(owner) = self.owner_for(&hosted, owner_of) {

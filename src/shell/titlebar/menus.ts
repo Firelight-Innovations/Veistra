@@ -157,19 +157,22 @@ export interface TerminalMenuHandlers {
 }
 
 /**
- * The one Help item that needs the window to act.
+ * The two Help items that need the window to act.
  *
- * Wired because it is the only way to check for an update on a machine where
- * `updates.checkAutomatically` is off, and because the answer — including "you
+ * Check for Updates is wired because it is the only way to check on a machine
+ * where `updates.checkAutomatically` is off, and its answer — including "you
  * are up to date" — arrives in the status bar rather than in a dialog. See
- * `UpdateNotice` in `contract.ts`.
+ * `UpdateNotice` in `contract.ts`. Documentation opens the Docs surface over
+ * this window's cluster, which only the window can place.
  *
- * Its neighbours act too now, and are deliberately *not* here: two open a fixed
+ * Their neighbours act too, and are deliberately *not* here: two open a fixed
  * address in the browser and one raises a screen, none of which any window
  * decides. See `HELP_LINKS` and the menu itself.
  */
 export interface HelpMenuHandlers {
   checkForUpdates(): void;
+  /** Open Docs, which reads veistra.com/docs live; see `docs/docs-app.md`. */
+  openDocumentation(): void;
 }
 
 /**
@@ -217,9 +220,8 @@ export interface MenuHandlers {
 }
 
 /**
- * All seven menus. File, Edit, View, Run and Terminal operate the app. Help has
- * one inert item left — Documentation, which has nothing published to point at
- * yet.
+ * All seven menus. File, Edit, View, Run and Terminal operate the app, and every
+ * Help item acts too.
  *
  * ## Accelerators are bound, and that is a change
  *
@@ -464,15 +466,18 @@ export function defaultMenus(handlers: MenuHandlers): Menu[] {
     {
       label: "Help",
       items: [
-        { label: "Documentation" },
+        // Docs in this window, reading the website live, rather than the site in
+        // a browser: the pane keeps you beside what you are working on, and has
+        // its own "Open in browser" for anyone who wants the site instead.
+        { label: "Documentation", onSelect: help.openDocumentation },
         // No accelerator, and that is the "bind it or drop it" rule rather than
         // an oversight: a shortcut for the list of shortcuts is one more chord
         // to find room for, and the person looking for it is by definition
         // reaching for the menu.
         { label: "Keyboard Shortcuts", onSelect: openShortcuts },
-        // The one wired item in this menu. No accelerator, because there is no
-        // keystroke worth spending on something done twice a year — and the
-        // rule above is bind it or drop it, not display it and hope.
+        // No accelerator, because there is no keystroke worth spending on
+        // something done twice a year — and the rule above is bind it or drop
+        // it, not display it and hope.
         //
         // Nothing opens when this is picked. The answer, including "you are
         // already on the newest", appears in the status bar, because the

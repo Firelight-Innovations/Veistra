@@ -141,7 +141,7 @@ pub fn start(ctx: &CallContext, id: &str) -> Result<Value, String> {
     Ok(json!({ "id": c.id, "status": c.status }))
 }
 
-/// Fixed, check it: the agent's summary and commit, for the person to try.
+/// Completed: the agent's summary and commit, for the person to check and resolve.
 pub fn resolve(
     ctx: &CallContext,
     id: &str,

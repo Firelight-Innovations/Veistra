@@ -4,14 +4,14 @@
 //! draws.
 //!
 //! No Tauri here. The orchestrator owns where an agent may run (a cluster's
-//! local worktree, never main) and how events reach a window; this crate owns
+//! local worktree or main checkout) and how events reach a window; this crate owns
 //! the process, the protocol and the normalizing, so `cargo test` can drive a
 //! real child — `src/bin/mock-agent.rs` — without a window.
 //!
 //! See `docs/handoffs/agent-host.md` for the plan this implements, and §0 of it
 //! for the rules: no login token is ever read, stored or logged; the `claude`
 //! binary runs unmodified with the user's own sign-in; prompts travel on stdin,
-//! never on a command line; and no session starts outside a linked worktree
+//! never on a command line; and no session starts outside a git checkout
 //! ([`Worktree`]).
 
 #![warn(missing_docs, unreachable_pub)]

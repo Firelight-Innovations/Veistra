@@ -34,6 +34,8 @@ import {
   Flag,
   Maximize2,
   MessageSquarePlus,
+  PanelLeftClose,
+  PanelLeftOpen,
   Pause,
   PenLine,
   PictureInPicture2,
@@ -56,7 +58,7 @@ import {
 import { handToAgent, listAgents, type Delivery } from "../../../../shared/context";
 import { errorText } from "../../../../shared/godot";
 import type { WindowRect } from "../../../../shared/nativeBox";
-import { blobBase64, sendMarkup } from "../../../../shared/markupFlow";
+import { blobBase64, markupToAgent } from "../../../../shared/markupFlow";
 import { SendButton, SendFooter, useSendAction } from "../../../../shared/SendFooter";
 import {
   ToolbarButton,
@@ -115,7 +117,7 @@ const SAVING_POLL_MS = 250;
 
 /** `openedAt` is when review was asked for, which review measures its opening from. */
 type View = { kind: "live" } | { kind: "review"; take: string; openedAt?: number };
-type Drawer = "closed" | "output" | "errors" | "notes";
+type Drawer = "closed" | "output" | "errors";
 
 const PLAY_TARGET = { app: "play", label: "Play" };
 
@@ -176,6 +178,8 @@ export default function PlayMode(props: PlayModeProps) {
     (LiveMarking & { atWall: number; wasPaused: boolean }) | null
   >(null);
   const [drawer, setDrawer] = useState<Drawer>("closed");
+  // The comments sit in their own column on the left, open until folded away.
+  const [notesOpen, setNotesOpen] = useState(true);
   const [now, setNow] = useState(() => Date.now());
   /** The chosen project's scenes, for slot 2, and the project they are of. */
   const [scenes, setScenes] = useState<{ rel: string; list: string[] } | null>(null);
@@ -198,10 +202,13 @@ export default function PlayMode(props: PlayModeProps) {
     run: number | null;
     review: (at?: number) => void;
     markup: () => void;
+    /** Opens a take the game's own exit saved, if the pane is still on live. */
+    exited: (take: string) => void;
   }>({
     run: null,
     review: () => undefined,
     markup: () => undefined,
+    exited: () => undefined,
   });
 
   const readOnly = status?.environment.readOnly ?? false;
@@ -344,6 +351,11 @@ export default function PlayMode(props: PlayModeProps) {
         if (t?.state === "saved" && t.id !== savedTake.current) {
           savedTake.current = t.id;
           void loadTakes();
+          // The game ended by itself (its window closed, it quit, it crashed),
+          // so the take is the thing to look at, as after Stop. Restart, Record
+          // off and Pop out save a take with the game still running; a take
+          // saved before this pane opened is not news.
+          if (!opening && s.run?.state.kind === "exited") actions.current.exited(t.id);
         }
         // Live mark up belongs to the run it paused; once that has ended or
         // been replaced, a drawing left open would cover the next run.
@@ -475,14 +487,13 @@ export default function PlayMode(props: PlayModeProps) {
           const to = comment.sentTo ?? (await listAgents().catch(() => []))[0] ?? null;
           const item = await putStillBroken(comment, reply, recordBlocked);
           const said: Delivery = to
-            ? await handToAgent(to, item.id, "Play - still broken", {
-                before: `Still broken after your fix: ${noteName(first)}. Read `,
-                after: ".",
-              }).catch((e: unknown) => ({ delivered: false as const, reason: errorText(e) }))
+            ? await handToAgent(to, item.id, `Still broken: ${noteName(first)}`).catch(
+                (e: unknown) => ({ delivered: false as const, reason: errorText(e) }),
+              )
             : { delivered: false, reason: "no agent is running here" };
           setNotice(
             said.delivered
-              ? `No new take: ${recordBlocked} Your words are waiting at ${to?.label ?? "the agent"}'s prompt.`
+              ? `No new take: ${recordBlocked} Your words are a chip at ${to?.label ?? "the agent"}'s prompt.`
               : `No new take: ${recordBlocked} No agent was told: ${said.reason}.`,
           );
           return;
@@ -535,18 +546,6 @@ export default function PlayMode(props: PlayModeProps) {
     [chosenRel, guarded, loadAddon, loadTakes],
   );
 
-  const doStop = useCallback(
-    () =>
-      guarded(async () => {
-        const s = await stop();
-        setInfo(s.run);
-        setLive(s.live ?? null);
-        setMarking(null);
-        void loadTakes();
-      }),
-    [guarded, loadTakes],
-  );
-
   const doPause = useCallback(
     () => guarded(async () => setInfo((await setPaused(!paused)).run)),
     [guarded, paused],
@@ -587,6 +586,25 @@ export default function PlayMode(props: PlayModeProps) {
         else setNotice(notRecorded(recordOn, recordBlocked));
       }),
     [guarded, running, live, openReview, recordOn, recordBlocked],
+  );
+
+  /**
+   * Stop and Shift F5. A run being recorded ends in its take, as F7 does: a
+   * take that only the Takes menu could find read as one that went nowhere.
+   * A run with no take stops and stays on live, with nothing to say.
+   */
+  const doStop = useCallback(
+    () =>
+      take?.state === "recording"
+        ? stopAndReview()
+        : guarded(async () => {
+            const s = await stop();
+            setInfo(s.run);
+            setLive(s.live ?? null);
+            setMarking(null);
+            void loadTakes();
+          }),
+    [take, stopAndReview, guarded, loadTakes],
   );
 
   const doCapture = useCallback(async () => {
@@ -666,8 +684,9 @@ export default function PlayMode(props: PlayModeProps) {
         reportNote("frame", "live");
         setNotice("Kept as a note on this take. It opens with the take in review.");
       } else {
-        await guarded(() => sendMarkup(PLAY_TARGET, result.png, json, info?.scene ?? null));
-        setNotice("Markup sent to the agent.");
+        await guarded(async () =>
+          setNotice(await markupToAgent(PLAY_TARGET, result.png, json, info?.scene ?? null)),
+        );
       }
       await endLiveMarkup(false);
     },
@@ -678,6 +697,9 @@ export default function PlayMode(props: PlayModeProps) {
     run: info?.id ?? null,
     review: (at) => void stopAndReview(at),
     markup: () => void startLiveMarkup(),
+    exited: (id) => {
+      if (view.kind === "live") openReview(id);
+    },
   };
 
   /**
@@ -730,7 +752,7 @@ export default function PlayMode(props: PlayModeProps) {
       setDraft("");
       setShot(null);
       await refreshComments();
-      setDrawer("notes");
+      setNotesOpen(true);
     } catch (e) {
       setProblem(errorText(e));
     } finally {
@@ -1045,6 +1067,21 @@ export default function PlayMode(props: PlayModeProps) {
       >
         Mark up
       </ToolbarButton>
+      {/* The way back to the takes, beside the Record that makes them. It was
+          in the footer, where nobody found it. Always drawn, so the toolbar
+          does not move when the first take lands. */}
+      <ToolbarButton
+        disabled={takes.length === 0}
+        title={
+          takes.length > 0
+            ? "Review the latest take. The take menu there lists every one."
+            : "No takes yet. With Record on, every run is kept as a take."
+        }
+        icon={<Camera size={16} strokeWidth={1.5} aria-hidden="true" />}
+        onClick={() => takes[0] && openReview(takes[0].id)}
+      >
+        {takes.length > 0 ? `Takes · ${takes.length}` : "Takes"}
+      </ToolbarButton>
     </Fragment>
   );
 
@@ -1187,129 +1224,152 @@ export default function PlayMode(props: PlayModeProps) {
           }}
         />
       ) : (
-        <div className="pl__body">
-          <main className="pl__frame">
-            <LiveView
+        <div className="pl__body pl__body--live">
+          {notesOpen ? (
+            <aside className="pl-notes" aria-label="Comments">
+              <button
+                type="button"
+                className="pl-notes__fold"
+                aria-expanded={true}
+                aria-label="Hide comments"
+                title="Hide comments"
+                onClick={() => setNotesOpen(false)}
+              >
+                <PanelLeftClose size={14} strokeWidth={1.5} aria-hidden="true" />
+              </button>
+              <CommentPanel
+                comments={comments}
+                loading={commentsLoading}
+                error={commentsError}
+                onResolve={async (id, note) => {
+                  await resolveComment(id, note);
+                  await refreshComments();
+                }}
+                onVerdict={async (id, verdict, reply) => {
+                  const c = comments.find((x) => x.id === id);
+                  if (verdict === "broken" && c?.anchor.kind === "take") {
+                    await stillBroken(c, reply);
+                    return;
+                  }
+                  await verdictComment(id, verdict, reply);
+                  await refreshComments();
+                }}
+                emptyHint="No notes on this project yet. Record a run, mark it, and send notes from review."
+              />
+            </aside>
+          ) : (
+            <button
+              type="button"
+              className="pl-notes__rail"
+              aria-expanded={false}
+              aria-label={`Show comments${openCount > 0 ? `, ${openCount} open` : ""}`}
+              title="Show comments"
+              onClick={() => setNotesOpen(true)}
+            >
+              <PanelLeftOpen size={14} strokeWidth={1.5} aria-hidden="true" />
+              {openCount > 0 && <span className="pl-count">{openCount}</span>}
+            </button>
+          )}
+          <div className="pl__live">
+            <main className="pl__frame">
+              <LiveView
+                session={session}
+                running={running}
+                lines={lines}
+                frameRect={frameRect}
+                overlays={overlays}
+                coveredHere={pickerOpen || settingsOpen || consentOpen || shot !== null}
+                marking={marking}
+                hint={hint}
+                onMarkupDone={(r, shown) => void doneLiveMarkup(r, shown)}
+                onMarkupCancel={() => void endLiveMarkup(false)}
+                onProblem={(m) => setProblem(m)}
+              />
+              {shot && (
+                <div className="pl__composer">
+                  <div className="pl__composer-target">
+                    <MessageSquarePlus size={13} strokeWidth={1.5} aria-hidden="true" />
+                    Comment at {formatPlayTime(shot.time)} in {shot.scene || "the running scene"}
+                  </div>
+                  <img
+                    className="pl__shot"
+                    alt="Captured frame"
+                    src={`data:image/png;base64,${shot.png}`}
+                    draggable={false}
+                    title="Drag onto a terminal to send to the agent"
+                    onPointerDown={dragContext(() => putShot(shot))}
+                  />
+                  <textarea
+                    className="pl__composer-input"
+                    rows={2}
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                    placeholder="What's wrong with this moment?"
+                    autoFocus
+                  />
+                  <div className="pl__composer-actions">
+                    <button type="button" onClick={() => setShot(null)} disabled={posting}>
+                      Discard
+                    </button>
+                    <button
+                      type="button"
+                      className="pl__composer-submit"
+                      onClick={() => void postComment()}
+                      disabled={posting || !draft.trim()}
+                    >
+                      {posting ? "Posting..." : "Comment"}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </main>
+            <LiveStrip
               session={session}
               running={running}
-              lines={lines}
-              frameRect={frameRect}
-              overlays={overlays}
-              coveredHere={pickerOpen || settingsOpen || consentOpen || shot !== null}
-              marking={marking}
-              hint={hint}
-              onMarkupDone={(r, shown) => void doneLiveMarkup(r, shown)}
-              onMarkupCancel={() => void endLiveMarkup(false)}
-              onProblem={(m) => setProblem(m)}
+              recordOn={recordOn}
+              recordBlocked={recordBlocked}
+              errors={errors}
+              now={now}
+              canCapture={running && (info?.captureReady ?? false) && !capturing}
+              onStopAndReview={() => void stopAndReview()}
+              onCapture={() => void doCapture()}
             />
-            {shot && (
-              <div className="pl__composer">
-                <div className="pl__composer-target">
-                  <MessageSquarePlus size={13} strokeWidth={1.5} aria-hidden="true" />
-                  Comment at {formatPlayTime(shot.time)} in {shot.scene || "the running scene"}
-                </div>
-                <img
-                  className="pl__shot"
-                  alt="Captured frame"
-                  src={`data:image/png;base64,${shot.png}`}
-                  draggable={false}
-                  title="Drag onto a terminal to send to the agent"
-                  onPointerDown={dragContext(() => putShot(shot))}
-                />
-                <textarea
-                  className="pl__composer-input"
-                  rows={2}
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  placeholder="What's wrong with this moment?"
-                  autoFocus
-                />
-                <div className="pl__composer-actions">
-                  <button type="button" onClick={() => setShot(null)} disabled={posting}>
-                    Discard
-                  </button>
+            <div className="pl-drawer">
+              <div className="pl-drawer__bar">
+                {(["output", "errors"] as const).map((d) => (
                   <button
+                    key={d}
                     type="button"
-                    className="pl__composer-submit"
-                    onClick={() => void postComment()}
-                    disabled={posting || !draft.trim()}
+                    className="pl-drawer__tab"
+                    aria-expanded={drawer === d}
+                    onClick={() => setDrawer((now) => (now === d ? "closed" : d))}
                   >
-                    {posting ? "Posting..." : "Comment"}
+                    {d === "output" ? "Output" : "Errors"}
+                    {d === "output" && lines.length > 0 && (
+                      <span className="pl-count">{lines.length}</span>
+                    )}
+                    {d === "errors" && problems.length > 0 && (
+                      <span className={`pl-count${errors.length > 0 ? " pl-count--danger" : ""}`}>
+                        {problems.length}
+                      </span>
+                    )}
                   </button>
-                </div>
+                ))}
+                {drawer === "closed" && lines.length > 0 && (
+                  <span className="pl-drawer__last">{lines[lines.length - 1].text}</span>
+                )}
               </div>
-            )}
-          </main>
-          <LiveStrip
-            session={session}
-            running={running}
-            recordOn={recordOn}
-            recordBlocked={recordBlocked}
-            errors={errors}
-            now={now}
-            canCapture={running && (info?.captureReady ?? false) && !capturing}
-            onStopAndReview={() => void stopAndReview()}
-            onCapture={() => void doCapture()}
-          />
-          <div className="pl-drawer">
-            <div className="pl-drawer__bar">
-              {(["output", "errors", "notes"] as const).map((d) => (
-                <button
-                  key={d}
-                  type="button"
-                  className="pl-drawer__tab"
-                  aria-expanded={drawer === d}
-                  onClick={() => setDrawer((now) => (now === d ? "closed" : d))}
-                >
-                  {d === "output" ? "Output" : d === "errors" ? "Errors" : "Notes"}
-                  {d === "output" && lines.length > 0 && (
-                    <span className="pl-count">{lines.length}</span>
-                  )}
-                  {d === "errors" && problems.length > 0 && (
-                    <span className={`pl-count${errors.length > 0 ? " pl-count--danger" : ""}`}>
-                      {problems.length}
-                    </span>
-                  )}
-                  {d === "notes" && openCount > 0 && <span className="pl-count">{openCount}</span>}
-                </button>
-              ))}
-              {drawer === "closed" && lines.length > 0 && (
-                <span className="pl-drawer__last">{lines[lines.length - 1].text}</span>
+              {drawer === "output" && (
+                <div className="pl-drawer__body">
+                  <LogView lines={lines} hint={hint} />
+                </div>
+              )}
+              {drawer === "errors" && (
+                <div className="pl-drawer__body">
+                  <LogView lines={problems} hint="No errors or warnings." />
+                </div>
               )}
             </div>
-            {drawer === "output" && (
-              <div className="pl-drawer__body">
-                <LogView lines={lines} hint={hint} />
-              </div>
-            )}
-            {drawer === "errors" && (
-              <div className="pl-drawer__body">
-                <LogView lines={problems} hint="No errors or warnings." />
-              </div>
-            )}
-            {drawer === "notes" && (
-              <div className="pl-drawer__body">
-                <CommentPanel
-                  comments={comments}
-                  loading={commentsLoading}
-                  error={commentsError}
-                  onResolve={async (id, note) => {
-                    await resolveComment(id, note);
-                    await refreshComments();
-                  }}
-                  onVerdict={async (id, verdict, reply) => {
-                    const c = comments.find((x) => x.id === id);
-                    if (verdict === "broken" && c?.anchor.kind === "take") {
-                      await stillBroken(c, reply);
-                      return;
-                    }
-                    await verdictComment(id, verdict, reply);
-                    await refreshComments();
-                  }}
-                  emptyHint="No notes on this project yet. Record a run, mark it, and send notes from review."
-                />
-              </div>
-            )}
           </div>
         </div>
       )}
@@ -1380,17 +1440,6 @@ export default function PlayMode(props: PlayModeProps) {
                     ? "Update capture"
                     : "Enable capture"}
                 {addon.needsRestart ? " (restart the game)" : ""}
-              </button>
-            )}
-            {view.kind === "live" && takes.length > 0 && (
-              <button
-                type="button"
-                className="pl__footer-btn"
-                onClick={() => openReview(takes[0].id)}
-                title="Open the latest take for review"
-              >
-                <Camera size={13} strokeWidth={1.5} aria-hidden="true" />
-                Takes · {takes.length}
               </button>
             )}
           </>

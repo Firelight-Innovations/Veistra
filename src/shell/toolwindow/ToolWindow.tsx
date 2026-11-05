@@ -311,6 +311,9 @@ const ToolWindow = forwardRef<
   // `MountedFrame` for what each field is and why it is carried rather than
   // looked up: a second lookup would be a second chance to disagree.
   const frames = useRef<Map<Window, MountedFrame>>(new Map());
+  // The agent tab the person last clicked into, by instance id: where an app's
+  // `veistra/attach-to-agent` goes when the app did not choose one.
+  const lastAgentTab = useRef<string | null>(null);
   const [readyIds, setReadyIds] = useState<Set<string>>(() => new Set());
 
   // A stable mirror of `readyIds` for `sendEventWhenReady` below, which is
@@ -407,6 +410,9 @@ const ToolWindow = forwardRef<
       if (!(active instanceof HTMLIFrameElement)) return;
       const instanceId = active.closest<HTMLElement>("[data-instance]")?.dataset.instance;
       if (!instanceId) return;
+      // The agent an app's Send hands its chip to, when the app chose none.
+      const frame = active.contentWindow && frames.current.get(active.contentWindow);
+      if (frame?.appId === AGENT_TAB_APP) lastAgentTab.current = instanceId;
       const paneId = paneOfTab(tree, instanceId);
       if (paneId) onFocusPane(paneId);
     };
@@ -1149,14 +1155,16 @@ const ToolWindow = forwardRef<
       // business, like the two above: which tab this is, is something only the
       // shell knows, and it knows it from `event.source` rather than from
       // anything the frame could assert about itself.
-      // An app handing something already in the context store to the agent tab
-      // beside it: the tab shows it as a chip on the next prompt, with any
-      // words the app sent around it. Every agent tab, or the one the app
-      // chose; the answer says how many it reached, so a chosen tab that has
-      // closed is reported rather than silently missed.
+      // An app handing something already in the context store to an agent
+      // tab: the tab shows it as a chip on the next prompt, and nothing else.
+      // The one the app chose, else the one last clicked into; the answer says
+      // how many it reached, so a chosen tab that has closed is reported
+      // rather than silently missed.
       if (method === "veistra/attach-to-agent") {
         const attach = attachRequest(params);
-        const to = attach ? attachFrames(frames.current, AGENT_TAB_APP, attach.instanceId) : [];
+        const to = attach
+          ? attachFrames(frames.current, AGENT_TAB_APP, attach.instanceId, lastAgentTab.current)
+          : [];
         respond({ id, result: { delivered: to.length } });
         for (const [win, origin] of to) {
           win.postMessage(

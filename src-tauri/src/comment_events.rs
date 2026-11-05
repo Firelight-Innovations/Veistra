@@ -109,7 +109,7 @@ fn kind(anchor: &Anchor) -> &'static str {
 ///   named one.
 /// - `note_resolved`: the note became resolved. `attempt` counts the agent's
 ///   fixes, the one just checked included; `checked` is whether the person
-///   closed it from Fixed, check it (Looks good) rather than outright.
+///   closed it from Completed (Resolve) rather than outright.
 ///
 /// A new note is `note_created`, which the page reports; Still broken and
 /// Agent working are not launch events (spec §13).

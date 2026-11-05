@@ -50,6 +50,9 @@ pub(crate) struct Fake {
     pub shown_near: Mutex<Vec<Option<ScreenRect>>>,
     pub kinds: Mutex<Vec<Kind>>,
     pub closes: Mutex<Vec<isize>>,
+    /// The mode of every embed and placement, in order.
+    pub modes: Mutex<Vec<Mode>>,
+    pub discarded: AtomicUsize,
 }
 
 impl Fake {
@@ -71,10 +74,11 @@ impl WindowSystem for Fake {
     }
     // `Saved` is a unit struct only off Windows.
     #[allow(clippy::default_constructed_unit_structs)]
-    fn embed(&self, _hwnd: isize, _owner: isize) -> Result<sys::Saved, String> {
+    fn embed(&self, _hwnd: isize, _owner: isize, mode: Mode) -> Result<sys::Saved, String> {
         if self.fail_embed.load(Ordering::SeqCst) {
             return Err("Access is denied.".into());
         }
+        self.modes.lock_or_panic().push(mode);
         Ok(sys::Saved::default())
     }
     fn place(
@@ -83,11 +87,13 @@ impl WindowSystem for Fake {
         at: ScreenRect,
         visible: bool,
         owner: isize,
+        mode: Mode,
     ) -> Result<(), String> {
         let _hung = self.hung.lock_or_panic();
         if self.fail_place.load(Ordering::SeqCst) {
             return Err("SetWindowPos failed".into());
         }
+        self.modes.lock_or_panic().push(mode);
         let p = Placement {
             hwnd,
             at,
@@ -114,6 +120,9 @@ impl WindowSystem for Fake {
     fn request_close(&self, hwnd: isize) -> Result<(), String> {
         self.closes.lock_or_panic().push(hwnd);
         Ok(())
+    }
+    fn discard(&self, _saved: &sys::Saved) {
+        self.discarded.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -462,6 +471,31 @@ fn a_game_that_ended_is_never_moved_again() {
     assert_eq!(embed.still_png(), None, "and no still is kept for it");
 }
 
+/// Blender quit, or crashed: its window went with it, but the clip box it sat
+/// in is Veistra's, and stayed over the pane as an empty dark rectangle on top
+/// of the pane's own "Open Blender".
+#[test]
+fn an_editor_that_ended_lets_go_of_its_clip_box_once() {
+    let fake = Arc::new(Fake::default());
+    let editor = Embed::with(fake.clone(), Kind::Blender);
+    editor.set_rect(shown(rect(10.0, 640.0)), None);
+    let found = editor.attach(None, &|| vec![1], &|| Some(owner(1.0)), &|| true);
+    assert_eq!(found, Some(7));
+    editor.forget();
+    assert_eq!(fake.discarded.load(Ordering::SeqCst), 1);
+    editor.forget();
+    assert_eq!(
+        fake.discarded.load(Ordering::SeqCst),
+        1,
+        "the box is closed once"
+    );
+    assert!(
+        editor.pop_out(Some(&owner(1.0))).is_err(),
+        "nothing to pop out"
+    );
+    assert!(fake.released.lock_or_panic().is_empty());
+}
+
 #[test]
 fn a_refused_embed_leaves_the_window_decorated_on_screen_over_the_pane() {
     let fake = Arc::new(Fake::default());
@@ -725,6 +759,121 @@ fn style_writes_never_carry_visible_minimised_or_maximised() {
     );
     let ex = embedded_ex(WS_EX_APPWINDOW as isize);
     assert_eq!(ex, WS_EX_TOOLWINDOW as isize);
+}
+
+#[test]
+fn an_editor_is_a_child_and_the_game_stays_an_owned_popup() {
+    assert_eq!(
+        Kind::Game.mode(),
+        Mode::Owned,
+        "the recorder captures it alone"
+    );
+    assert_eq!(Kind::GodotEditor.mode(), Mode::Child);
+    assert_eq!(Kind::Blender.mode(), Mode::Child);
+}
+
+/// Braden's report: Veistra at 150 % with its client area at (285, 135) on
+/// the screen, the Godot pane on the left and the agent pane from x 1440.
+/// The pane's box, in CSS pixels, lands on whole physical pixels in Veistra's
+/// client area for the child, ending exactly where the agent pane begins, and
+/// the same box goes on the screen from the client origin for a popup.
+#[test]
+fn a_pane_at_150_percent_is_placed_in_physical_client_pixels() {
+    let veistra = Owner {
+        hwnd: 1,
+        origin: (285, 135),
+        scale: 1.5,
+    };
+    let pane = CssRect {
+        x: 0.0,
+        y: 36.0,
+        w: 770.0,
+        h: 744.0,
+    };
+    let px = |x, y, w, h| ScreenRect { x, y, w, h };
+    let scale = scale_for(Some(1.5), veistra.scale);
+    let child = target(Mode::Child, pane, &veistra, scale);
+    assert_eq!(child, px(0, 54, 1155, 1116));
+    assert_eq!(
+        veistra.origin.0 + child.x + child.w,
+        1440,
+        "the editor stops where the agent pane starts"
+    );
+    assert_eq!(
+        target(Mode::Owned, pane, &veistra, scale),
+        px(285, 189, 1155, 1116)
+    );
+    // A View zoom on the same monitor: the page's ratio carries both.
+    let zoomed = target(Mode::Child, pane, &veistra, scale_for(Some(1.75), 1.5));
+    assert_eq!(zoomed, px(0, 63, 1348, 1302));
+}
+
+#[test]
+fn moving_veistra_sends_an_editor_nothing_and_still_moves_the_game() {
+    let fake = Arc::new(Fake::default());
+    let editor = Embed::with(fake.clone(), Kind::Blender);
+    editor.set_rect(shown(rect(10.0, 640.0)), None);
+    editor.attach(None, &|| vec![1], &|| Some(owner(1.0)), &|| true);
+    assert_eq!(placed(&fake).len(), 1);
+    assert_eq!(placed(&fake)[0].at.x, 10, "in client pixels, not 110");
+    let moved = Owner {
+        origin: (400, 300),
+        ..owner(1.0)
+    };
+    editor.reapply(&moved);
+    editor.reapply(&owner(1.0));
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(
+        placed(&fake).len(),
+        1,
+        "a move of Veistra costs the editor nothing"
+    );
+    editor.set_rect(shown(rect(10.0, 500.0)), Some(&moved));
+    wait_for("the new size", || placed(&fake).len() == 2);
+    assert_eq!((placed(&fake)[1].at.x, placed(&fake)[1].at.w), (10, 500));
+    assert!(fake.modes.lock_or_panic().iter().all(|m| *m == Mode::Child));
+
+    let fake = Arc::new(Fake::default());
+    let game = embedded(&fake);
+    game.reapply(&moved);
+    wait_for("the game's move", || placed(&fake).len() == 2);
+    assert_eq!(
+        placed(&fake)[1].at.x,
+        410,
+        "an owned popup is moved by hand"
+    );
+}
+
+#[test]
+fn an_editor_s_child_style_has_no_frame_and_tells_its_parent_nothing() {
+    use styles::*;
+    let decorated = (WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_VISIBLE | WS_MAXIMIZE) as isize;
+    let c = child(decorated);
+    assert_eq!(c, (WS_CHILD | WS_CLIPSIBLINGS) as isize);
+    // Godot's editor started with `--wid`: WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS.
+    let godot = 0x8600_0000_u32 as isize;
+    assert_eq!(child(godot) & WS_POPUP as isize, 0);
+    assert_ne!(
+        child(godot) & 0x0200_0000,
+        0,
+        "its own clip-children bit is kept"
+    );
+    let ex = child_ex((WS_EX_APPWINDOW | WS_EX_TOOLWINDOW | 0x10) as isize);
+    assert_eq!(ex, (WS_EX_NOPARENTNOTIFY | 0x10) as isize);
+}
+
+#[test]
+fn popping_out_gives_a_frameless_editor_a_frame_and_a_framed_one_its_own() {
+    use styles::*;
+    let framed = (WS_CAPTION | WS_THICKFRAME | WS_VISIBLE) as isize;
+    assert_eq!(popped_out(framed), (WS_CAPTION | WS_THICKFRAME) as isize);
+    let godot = popped_out(0x9600_0000_u32 as isize);
+    assert_eq!(godot & (WS_POPUP | WS_VISIBLE | WS_CHILD) as isize, 0);
+    assert_eq!(
+        godot & (WS_CAPTION | WS_THICKFRAME | WS_SYSMENU) as isize,
+        (WS_CAPTION | WS_THICKFRAME | WS_SYSMENU) as isize,
+        "a caption to move it by"
+    );
 }
 
 #[test]

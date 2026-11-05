@@ -8,17 +8,34 @@
  * the tab shows.
  *
  * - Ask the agent: the question, the selection and the viewport go to the
- *   agent as one message: two context items, both typed at the prompt in one
- *   `context/insert`, never Enter (X8), as Send selection does.
+ *   agent as two context items and one chip, the question's, whose prompt
+ *   names the picture's file, at the prompt of the agent tab last worked in,
+ *   never Enter (X8), as Send selection does.
  * - Looks good / Still broken: `comments/verdict`, expecting the note to be
  *   fixed still, so a press on a card the agent has since reopened is
  *   refused, not applied to the wrong state.
  * - Mark up the viewport: the mode's own Mark up.
+ * - Mention in agent: what it names as one chip, nothing typed
+ *   (`editorMention.ts`). A pane that gives no `place` refuses it.
  */
 import { useCallback, useRef } from "react";
 import { invoke } from "@veistra/bridge";
 import { verdictComment, type Verdict } from "./comments";
-import { contextKey, type ContextRef } from "./context";
+import {
+  chipToAgent,
+  contextKey,
+  putWithAttached,
+  type Attachment,
+  type ContextRef,
+} from "./context";
+import {
+  sendMention,
+  type EditorTool,
+  type MentionEvent,
+  type MentionPlace,
+} from "./editorMention";
+
+export type { MentionEvent } from "./editorMention";
 
 interface Base {
   /** The backend's number for it; the poll asks for those after the last one taken. */
@@ -61,9 +78,9 @@ export interface MarkupEvent extends Base {
   kind: "markup";
 }
 
-export type EditorEvent = AskEvent | VerdictEvent | MarkupEvent;
+export type EditorEvent = AskEvent | VerdictEvent | MarkupEvent | MentionEvent;
 
-export type EditorTool = "godot" | "blender";
+export type { EditorTool };
 
 const WORDS: Record<EditorTool, { tab: string; view: string; picked: string }> = {
   godot: { tab: "the Godot editor's Veistra dock", view: "viewport", picked: "Selected nodes" },
@@ -94,7 +111,7 @@ export function askText(tool: EditorTool, e: AskEvent, where: string | null): st
 }
 
 /**
- * The ask as one message. Each ask is its own pair of items (its number is in
+ * The ask as one chip. Each ask is its own pair of items (its number is in
  * the key), so a second question does not replace the first. `where` names
  * the scene or file as the pane shows it. With no agent prompt to type into
  * the items are still in the Context strip; the answer says which it was.
@@ -106,14 +123,7 @@ export async function sendAsk(
 ): Promise<string> {
   const place = where ?? e.scene ?? "";
   const name = place ? leaf(place) : tool;
-  const text = await invoke<ContextRef>("context/put", {
-    key: contextKey(tool, place, `ask-${e.n}`),
-    kind: "text",
-    title: `${tool === "godot" ? "Godot editor" : "Blender"} - question about ${name}`,
-    label: `${tool === "godot" ? "Godot" : "Blender"} - question`,
-    text: askText(tool, e, where ?? e.scene),
-  });
-  const items = [text.id];
+  const attached: Attachment[] = [];
   if (e.pngBase64) {
     const image = await invoke<ContextRef>("context/put", {
       key: contextKey(tool, place, `ask-${e.n}-view`),
@@ -121,18 +131,28 @@ export async function sendAsk(
       title: `${tool === "godot" ? "Godot editor" : "Blender"} - ${name} ${WORDS[tool].view}`,
       label: `${tool === "godot" ? "Godot" : "Blender"} - ${WORDS[tool].view}`,
       bytesBase64: e.pngBase64,
+      prompt: `The ${WORDS[tool].view} as it was when I asked that question.`,
     });
-    items.push(image.id);
+    attached.push({ item: image, what: `the ${WORDS[tool].view} when I asked` });
   }
-  void invoke("veistra/attach-to-agent", { contextId: text.id, label: "Question" }).catch(
-    () => undefined,
+  const text = await putWithAttached(
+    {
+      key: contextKey(tool, place, `ask-${e.n}`),
+      kind: "text",
+      title: `${tool === "godot" ? "Godot editor" : "Blender"} - question about ${name}`,
+      label: `${tool === "godot" ? "Godot" : "Blender"} - question`,
+      text: askText(tool, e, where ?? e.scene),
+      prompt: `Answer the question I asked from ${WORDS[tool].tab}, about what I had selected there.`,
+    },
+    attached,
   );
   try {
-    await invoke("context/insert", { itemIds: items });
-    return "Sent to the agent.";
+    const said = await chipToAgent(text);
+    if (said.delivered) return "Sent to the agent.";
+    return `The question is in Veistra's Context strip, but no agent took it: ${said.reason}.`;
   } catch (err) {
-    console.error("veistra: could not type the question's references at the prompt", err);
-    return "The question is in Veistra's Context strip; no agent prompt was open to type it into.";
+    console.error("veistra: could not hand the question to an agent", err);
+    return "The question is in Veistra's Context strip; no agent prompt was open to take it.";
   }
 }
 
@@ -142,6 +162,8 @@ export interface EventActions {
   where: () => string | null;
   /** Open the mode's Mark up; what it resolves to is the tab's message. */
   markup: () => Promise<string>;
+  /** Where the editor's things are, for Mention in agent. */
+  place?: () => MentionPlace;
 }
 
 /** Do what one press asks; the message for the tab, or a throw for a refusal. */
@@ -154,6 +176,9 @@ export async function act(e: EditorEvent, actions: EventActions): Promise<string
       return e.verdict === "good" ? "Marked resolved." : "Reopened for the agent.";
     case "markup":
       return actions.markup();
+    case "mention":
+      if (!actions.place) throw new Error("This pane cannot mention things yet.");
+      return sendMention(actions.tool, e, actions.place());
   }
 }
 

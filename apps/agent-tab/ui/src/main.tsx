@@ -2,7 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import { onThemeChanged } from "@veistra/bridge/theme";
-// See apps/tutorial/ui/src/main.tsx for why these are root-relative imports
+// See apps/docs/ui/src/main.tsx for why these are root-relative imports
 // rather than a copy of the palette.
 import "/src/tokens.css";
 import "/apps/shared/app.css";

@@ -412,20 +412,25 @@ fn cluster_of<'a>(
         .find_map(|w| w.clusters.iter().find(|c| c.id == id).map(|c| (w, c)))
 }
 
+/// `readOnly` is `Environment::is_read_only`, false for every kind: main used
+/// to answer true, and is written like a worktree now.
 fn environment_json(cluster: &Cluster) -> Value {
     use crate::environments::Environment;
-    match &cluster.environment {
-        Some(Environment::Main) => json!({ "kind": "main", "readOnly": true }),
-        Some(Environment::LocalWorktree { branch, base, .. }) => {
-            json!({ "kind": "worktree", "branch": branch, "base": base, "readOnly": false })
+    let Some(env) = &cluster.environment else {
+        return Value::Null;
+    };
+    let read_only = env.is_read_only();
+    match env {
+        Environment::Main => json!({ "kind": "main", "readOnly": read_only }),
+        Environment::LocalWorktree { branch, base, .. } => {
+            json!({ "kind": "worktree", "branch": branch, "base": base, "readOnly": read_only })
         }
-        Some(Environment::Design { branch, .. }) => {
-            json!({ "kind": "design", "branch": branch, "readOnly": false })
+        Environment::Design { branch, .. } => {
+            json!({ "kind": "design", "branch": branch, "readOnly": read_only })
         }
-        Some(Environment::Cloud { branch, .. }) => {
-            json!({ "kind": "cloud", "branch": branch, "readOnly": false })
+        Environment::Cloud { branch, .. } => {
+            json!({ "kind": "cloud", "branch": branch, "readOnly": read_only })
         }
-        None => Value::Null,
     }
 }
 
@@ -781,6 +786,20 @@ mod tests {
             assert_eq!(schema["type"], "object");
             assert_eq!(schema["additionalProperties"], false);
         }
+    }
+
+    /// What an agent reads about where it is: main used to say `readOnly:
+    /// true`, which told agents not to write there. It says false now.
+    #[test]
+    fn a_main_cluster_is_reported_writable_to_agents() {
+        let mut c = cluster("c1", Some("C:/p"), leaf("p1", &[], None));
+        c.environment = Some(crate::environments::Environment::Main);
+        assert_eq!(
+            environment_json(&c),
+            json!({ "kind": "main", "readOnly": false })
+        );
+        c.environment = None;
+        assert_eq!(environment_json(&c), Value::Null);
     }
 
     #[test]

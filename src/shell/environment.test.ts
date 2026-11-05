@@ -4,6 +4,7 @@ import {
   DESIGN_WORKTREE_BRANCH,
   environmentKey,
   environmentOf,
+  isReadOnly,
   sameEnvironment,
 } from "./environment";
 
@@ -22,8 +23,14 @@ function cluster(overrides: Partial<Cluster>): Cluster {
 }
 
 describe("environmentOf", () => {
-  it("reads a cluster with no worktree as main, read-only", () => {
-    expect(environmentOf(cluster({ worktree: null }))).toEqual({ kind: "main" });
+  // This used to say "main, read-only". Main is written like a worktree now.
+  it("reads a cluster with no worktree as main, and writable", () => {
+    const env = environmentOf(cluster({ worktree: null }));
+    expect(env).toEqual({ kind: "main" });
+    expect(isReadOnly(env)).toBe(false);
+    const stored = environmentOf(cluster({ environment: { kind: "main" } }));
+    expect(stored).toEqual({ kind: "main" });
+    expect(isReadOnly(stored)).toBe(false);
   });
 
   it("reads a checked-out worktree as a worktree environment", () => {

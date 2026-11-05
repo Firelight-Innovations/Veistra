@@ -97,12 +97,14 @@ describe("NewClusterDialog", () => {
     expect(screen.getByRole("button", { name: "Next" })).toHaveProperty("disabled", true);
   });
 
-  it("lets 'Browse main' proceed with no extra input", () => {
+  // The card was "Browse main (read-only)"; main is written like a worktree now.
+  it("lets 'Work on main' proceed with no extra input, and calls nothing read-only", () => {
     listClusterEnvironments.mockResolvedValue([]);
     renderDialog();
 
-    fireEvent.click(screen.getByRole("radio", { name: /Browse main/ }));
+    fireEvent.click(screen.getByRole("radio", { name: /Work on main/ }));
     expect(screen.getByRole("button", { name: "Next" })).toHaveProperty("disabled", false);
+    expect(screen.queryByText(/read-only/)).toBeNull();
   });
 
   it("never lets 'Cloud session' proceed, since this build has none to offer", () => {
@@ -139,7 +141,7 @@ describe("NewClusterDialog", () => {
     listClusterEnvironments.mockResolvedValue([]);
     renderDialog();
 
-    fireEvent.click(screen.getByRole("radio", { name: /Browse main/ }));
+    fireEvent.click(screen.getByRole("radio", { name: /Work on main/ }));
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
     expect(screen.getByRole("radiogroup", { name: "Starting layout" })).toBeTruthy();
 
@@ -151,7 +153,7 @@ describe("NewClusterDialog", () => {
     listClusterEnvironments.mockResolvedValue([]);
     renderDialog();
 
-    fireEvent.click(screen.getByRole("radio", { name: /Browse main/ }));
+    fireEvent.click(screen.getByRole("radio", { name: /Work on main/ }));
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
 
     const icons = document.querySelectorAll(".new-cluster__layout-icon");
@@ -238,7 +240,7 @@ describe("NewClusterDialog", () => {
         onCreated={vi.fn()}
       />,
     );
-    // "Browse main" needs no name, so Next is live straight away.
+    // "Work on main" needs no name, so Next is live straight away.
     expect(screen.getByRole("button", { name: "Next" })).toHaveProperty("disabled", false);
   });
 

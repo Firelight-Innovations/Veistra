@@ -714,7 +714,7 @@ static ACCOUNT_SETTINGS: &[Setting] = &[
 static ACCOUNT: Group = Group {
     id: "account",
     title: "Account",
-    description: "Your Veistra account. Signing in and out is on Home's account panel.",
+    description: "Where this build reaches the account service and the website. Signing in and out is under Account.",
     order: 48,
     settings: ACCOUNT_SETTINGS,
 };

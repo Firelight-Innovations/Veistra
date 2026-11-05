@@ -42,31 +42,33 @@
   left: 0;
   right: 0;
   z-index: 60;
-  /* Not a token, and should not become one. The named colours are surfaces and
-     ink; this is a scrim whose only job is to darken whatever it is over, so it
-     has to be black at an alpha rather than any palette entry. */
-  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6);
+  /* The shell's scrim, the one behind the palette and modal dialogs. */
+  background: var(--bg-backdrop);
 }
 
-/* The screen itself, filling the backdrop exactly. The inset is zero on
-   purpose — this reads as a place you went to, not a dialog floating over the
-   window, and the backdrop is only ever visible during the animation.
-
-   Absolute inside the backdrop rather than fixed with the two bar heights
-   repeated. It has to be nested anyway (the two motion elements are parent and
-   child), and `inset: 0` on a child of the band *is* the band — so the geometry
-   above is stated once and this cannot drift out of step with it. */
+/* The screen itself: a large modal centred in the band, as Claude's settings
+   window is. It grows to 1450 by 1160 and shrinks with the window, keeping the
+   backdrop's padding as a margin all round. */
 .settings {
-  position: absolute;
-  inset: 0;
+  position: relative;
+  width: min(1450px, 100%);
+  height: min(1160px, 100%);
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
   background: var(--bg-surface-1);
+  box-shadow: var(--shadow-overlay);
   color: var(--txt-primary);
 }
 
 /* Focused only to hold the keyboard while the screen is up (SettingsScreen.tsx).
-   It is not a control, so a ring around the whole band would point at nothing. */
+   It is not a control, so a ring around the whole modal would point at nothing. */
 .settings:focus {
   outline: none;
 }
@@ -78,9 +80,7 @@
 }
 
 /* --- header --------------------------------------------------------------
-   The title on the left; the search and the close button grouped together on
-   the right, so the two controls a person reaches for are not at opposite
-   edges of a wide window. */
+   "Settings" on the left, the close button on the right. */
 
 .settings__header {
   flex: none;
@@ -88,7 +88,7 @@
   align-items: center;
   gap: var(--space-2);
   height: 48px;
-  padding: 0 var(--space-3) 0 var(--space-6);
+  padding: 0 var(--space-3) 0 var(--space-4);
   border-bottom: 1px solid var(--border-subtle);
 }
 
@@ -120,23 +120,130 @@
   display: flex;
 }
 
+/* The sidebar: the account, the search, the pages in bands split by short
+   dividers, and the Docs link pinned to the bottom. */
 .settings__nav {
-  flex: 0 0 240px;
+  flex: 0 0 260px;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-2);
   padding: var(--space-3);
-  overflow-y: auto;
   border-right: 1px solid var(--border-subtle);
+  background: var(--bg-surface-2);
 }
 
-/* Dimmed while a filter is up, because the content pane is no longer showing
-   the selected section and a fully-lit selection would be lying about that.
-   Still lit enough to read and still clickable — clicking one clears the
-   filter, which is the way back. */
-.settings__nav[data-dimmed] {
+.settings__account {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--txt-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings__account:hover {
+  background: var(--bg-layer-1-hover);
+}
+
+.settings__account-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings__account-email,
+.settings__account-plan {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings__account-email {
+  font: var(--type-body-strong);
+}
+
+.settings__account-plan {
+  color: var(--txt-tertiary);
+  font: var(--type-caption);
+}
+
+.settings__search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--control-lg);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-subtle-1);
+  border-radius: var(--radius-md);
+  background: var(--bg-layer-1);
+  color: var(--txt-tertiary);
+}
+
+.settings__search:focus-within {
+  border-color: var(--accent);
+}
+
+.settings__search-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--txt-primary);
+  font: var(--type-body);
+}
+
+.settings__search-input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.settings__search-hint {
+  flex: none;
+  color: var(--txt-placeholder);
+  font: var(--type-caption);
+}
+
+.settings__nav-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+/* A short divider between bands, inset from both edges. */
+.settings__nav-band {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2) 0;
+}
+
+.settings__nav-band + .settings__nav-band::before {
+  content: "";
+  display: block;
+  height: 1px;
+  margin: 0 var(--space-2) var(--space-2);
+  background: var(--border-subtle);
+}
+
+/* Dimmed while a search is up, because the content pane is no longer showing
+   the selected page. Still clickable: clicking one clears the search. */
+.settings__nav-list[data-dimmed] {
   opacity: 0.45;
+}
+
+.settings__nav-foot {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
 }
 
 .settings__nav-item {
@@ -161,6 +268,8 @@
 }
 
 .settings__nav-item:focus-visible,
+.settings__account:focus-visible,
+.settings-section__toggle:focus-visible,
 .settings-segment:focus-visible,
 .settings-swatch:focus-visible,
 .settings-menu__trigger:focus-visible {
@@ -190,64 +299,184 @@
   overflow-y: auto;
 }
 
-/* Left-aligned against the sidebar and capped, rather than centred in the
-   leftover width: a centred column leaves a wide empty gutter beside the nav
-   and makes the page look as though it lost its left half. 760px is a label, a
-   sentence and a control at the settings row rhythm. */
-.settings__column {
-  max-width: 760px;
+/* One page, centred and capped at 1000px: a label, a sentence and a control at
+   the settings row rhythm, with room for Usage's table. */
+.settings__page {
+  max-width: 1000px;
+  margin: 0 auto;
   padding: var(--space-6) var(--space-6) 48px;
 }
 
-/* --- section head --------------------------------------------------------- */
-
-.settings__section-head {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-4);
-  padding-bottom: var(--space-4);
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.settings__section-text {
-  flex: 1;
-  min-width: 0;
-}
-
-.settings__section-title {
-  margin: 0;
+.settings__page-title {
+  margin: 0 0 var(--space-4);
   font: var(--type-h1);
   color: var(--txt-primary);
 }
 
-.settings__section-description {
-  margin: var(--space-1) 0 0;
-  font: var(--type-caption);
-  color: var(--txt-tertiary);
+/* --- a collapsible section --------------------------------------------------
+   A small grey heading with a chevron over flat rows split by hairlines. The
+   chevron turns as the section opens; nothing eases (file header). */
+
+.settings-section {
+  padding-top: var(--space-4);
 }
 
-/* --- filtered results ------------------------------------------------------
-   One flat list across every section, with each section's title as a sticky
-   heading. Sticky against `.settings__content`, which is the scroll container —
-   so the heading tells you which section the row under the pointer is in
-   without the sidebar having to. */
-
-.settings__matches-heading {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  /* Pulled out into the column's own padding and given it back as its own, so
-     the opaque band spans the full width of the column. Left at `margin: 0` the
-     heading is narrower than the rows, and settings scroll up through the gap
-     on either side of it. */
-  margin: 0 calc(var(--space-6) * -1);
-  padding: var(--space-3) var(--space-6) var(--space-2);
+.settings-section__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg-surface-1);
-  color: var(--txt-placeholder);
+}
+
+.settings-section__toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--txt-tertiary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-section__toggle:hover {
+  color: var(--txt-primary);
+}
+
+.settings-section__chevron {
+  flex: none;
+  margin-top: 2px;
+}
+
+.settings-section[data-open] .settings-section__chevron {
+  transform: rotate(90deg);
+}
+
+.settings-section__text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-section__title {
   font: var(--type-label);
   letter-spacing: var(--type-label-tracking);
   text-transform: uppercase;
+}
+
+.settings-section__description {
+  color: var(--txt-placeholder);
+  font: var(--type-caption);
+}
+
+.settings-section__actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+/* A search hit, in the title or description of a row or section. */
+.settings-mark {
+  border-radius: 2px;
+  background: var(--accent-subtle);
+  color: var(--txt-primary);
+}
+
+/* --- search results ---------------------------------------------------------
+   Every page with a match, its title as a sticky heading against
+   `.settings__content`, which is the scroll container. */
+
+.settings__result + .settings__result {
+  margin-top: var(--space-6);
+}
+
+.settings__result-page {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0 calc(var(--space-6) * -1);
+  padding: var(--space-3) var(--space-6) var(--space-2);
+  background: var(--bg-surface-1);
+  color: var(--txt-primary);
+  font: var(--type-h2);
+}
+
+/* --- the account pages ---------------------------------------------------- */
+
+.settings-profile__value {
+  color: var(--txt-primary);
+  font: var(--type-body);
+}
+
+.settings-profile__copy {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.settings-profile__id {
+  color: var(--txt-secondary);
+  font: 12px var(--mono);
+}
+
+.settings-profile__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.settings-profile__error {
+  margin: var(--space-2) 0 0;
+  color: var(--txt-danger);
+  font: var(--type-caption);
+}
+
+/* The plan card: icon, plan and its sentence, and Upgrade. */
+.settings-plan {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin: var(--space-3) 0;
+  padding: var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-layer-1);
+}
+
+.settings-plan__icon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-layer-2);
+  color: var(--txt-secondary);
+}
+
+.settings-plan__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-plan__name {
+  font: var(--type-h2);
+  color: var(--txt-primary);
+}
+
+.settings-plan__description {
+  color: var(--txt-tertiary);
+  font: var(--type-caption);
 }
 
 .settings__empty {

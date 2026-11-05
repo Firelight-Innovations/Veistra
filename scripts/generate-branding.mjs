@@ -21,14 +21,11 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { readBranding, repoRoot } from "./read-branding.mjs";
 
-/** Every bundle that draws a brand string. Tutorial is here because its mocks
- *  draw the title bar caption, which is a depiction of a surface and so has to
- *  agree with it — see `docs/branding.md` §7. */
+/** Every bundle that draws a brand string. */
 const OUTPUTS = [
   "src/branding.generated.ts",
   "apps/home/ui/src/branding.generated.ts",
   "apps/files/ui/src/branding.generated.ts",
-  "apps/tutorial/ui/src/branding.generated.ts",
 ];
 
 const VIEW_BOX = /\bviewBox="([^"]+)"/;

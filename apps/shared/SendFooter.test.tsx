@@ -2,6 +2,10 @@
 /** The shared send footer: what the buttons show, what they call, and how a failure reads. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
+
+vi.mock("@veistra/bridge", () => ({ invoke: vi.fn() }));
+
+import { invoke } from "@veistra/bridge";
 import { SendButton, SendFooter, useSendAction } from "./SendFooter";
 import { CommentPanel } from "./CommentPanel";
 
@@ -91,6 +95,35 @@ describe("useSendAction", () => {
     });
     expect(result.current.sent).toBeNull();
     expect(onError).toHaveBeenLastCalledWith("Couldn't send the scene tree to the agent: boom x");
+  });
+
+  it("puts each item it stored on the agent's prompt as a chip, and nothing else", async () => {
+    const mocked = vi.mocked(invoke).mockReset().mockResolvedValue({ delivered: 1 });
+    const { result } = renderHook(() => useSendAction(vi.fn(), String));
+    const log = { id: "ctx_log", title: "Play - output", source: { label: "Play - game output" } };
+    await act(async () => {
+      await result.current.send("log", "the log", () => Promise.resolve(log));
+    });
+    expect(mocked.mock.calls).toEqual([
+      ["veistra/attach-to-agent", { contextId: "ctx_log", label: "Play - game output" }],
+    ]);
+    expect(result.current.sent).toBe("log");
+  });
+
+  it("says so rather than flashing Sent when no agent took it", async () => {
+    vi.mocked(invoke)
+      .mockReset()
+      .mockResolvedValueOnce({ delivered: 0 })
+      .mockResolvedValueOnce({ inserted: false, reason: "no agent is running here" });
+    const onError = vi.fn();
+    const { result } = renderHook(() => useSendAction(onError, String));
+    await act(async () => {
+      await result.current.send("log", "the log", () => Promise.resolve({ id: "ctx_log" }));
+    });
+    expect(result.current.sent).toBeNull();
+    expect(onError).toHaveBeenLastCalledWith(
+      "The log is in the Context strip, but no agent took it: no agent is running here.",
+    );
   });
 });
 

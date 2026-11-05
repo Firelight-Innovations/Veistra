@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 /**
- * The source-control panel on a main cluster: every write affordance is
- * disabled and says why. Cosmetic only — `git.rs` refuses the same calls — but
- * a button that looks live and then errors is the failure this guards.
+ * The source-control panel in a read-only environment: every write affordance
+ * is disabled and says why. Cosmetic only — `git.rs` refuses the same calls —
+ * but a button that looks live and then errors is the failure this guards.
+ * Main used to be read-only; no environment is now, main included, so the
+ * `readOnly` prop is kept for the guard and `isReadOnly` answers false.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
@@ -65,7 +67,7 @@ function renderPanel(readOnly: boolean) {
   return stage;
 }
 
-describe("SourceControlView on main", () => {
+describe("SourceControlView with readOnly", () => {
   it("disables staging and committing with the read-only hint", () => {
     renderPanel(true);
     for (const box of screen.getAllByRole("checkbox")) {
@@ -87,8 +89,9 @@ describe("SourceControlView on main", () => {
 });
 
 describe("isReadOnly", () => {
-  it("is true only for main", () => {
-    expect(isReadOnly({ kind: "main" })).toBe(true);
+  // This was "is true only for main". Main is written like a worktree now.
+  it("is false for every environment, main included", () => {
+    expect(isReadOnly({ kind: "main" })).toBe(false);
     expect(isReadOnly({ kind: "worktree", branch: "wt/x" })).toBe(false);
     expect(isReadOnly({ kind: "design" })).toBe(false);
     expect(isReadOnly({ kind: "cloud" })).toBe(false);

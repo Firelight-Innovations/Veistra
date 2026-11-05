@@ -1,6 +1,6 @@
 //! Where a Godot or Blender editor shows for a cluster (spec §11.4, DECISIONS
 //! X4): placed in the pane, in its own window beside Veistra, or not at all,
-//! in which case the pane shows the read-only viewer and says why.
+//! in which case the pane shows the viewer and says why.
 //!
 //! One answer, computed here and sent with `godot/status` and
 //! `blender-viewer/state` as `editor`, so the apps never work it out from
@@ -8,9 +8,9 @@
 //! way. The frontend half is `apps/shared/editorSurface.ts`.
 //!
 //! The order is the order of what can be fixed least from inside the pane: a
-//! cloud session has no local files at all, the main checkout has files that
-//! may not be written, and a missing editor is a setting away. Only when all
-//! three pass does the platform matter: with an embedder (Windows today) the
+//! cloud session has no local files at all, and a missing editor is a setting
+//! away. The main checkout is written like a worktree, so it opens the editor
+//! too; it used to get the viewer. Only when both pass does the platform matter: with an embedder (Windows today) the
 //! editor goes in the pane, and anywhere else in its own window. The rule is
 //! "no embedder here", not a list of systems, so Linux X11 pops out as well as
 //! Wayland and macOS; the platform only changes the sentence.
@@ -113,7 +113,6 @@ pub enum Kind {
 #[serde(rename_all = "camelCase")]
 pub enum Code {
     Cloud,
-    Main,
     NoEditor,
     NoEmbedder,
 }
@@ -153,28 +152,15 @@ pub struct Facts<'a> {
 /// The one answer. See the module doc for the order.
 pub fn decide(tool: Tool, facts: Facts) -> Surface {
     let name = tool.name();
-    match facts.environment {
-        Some(Environment::Cloud { .. }) => {
-            return Surface::not_here(
-                Kind::Viewer,
-                Code::Cloud,
-                format!(
-                    "This is a cloud session: its files are on the VM, not on this computer, so \
-                     {name} cannot open them here. Open a local worktree to edit."
-                ),
-            )
-        }
-        Some(Environment::Main) => {
-            return Surface::not_here(
-                Kind::Viewer,
-                Code::Main,
-                format!(
-                    "This is the main checkout, which is read-only here, so {name} does not open \
-                     on it. Open a worktree to edit."
-                ),
-            )
-        }
-        _ => {}
+    if let Some(Environment::Cloud { .. }) = facts.environment {
+        return Surface::not_here(
+            Kind::Viewer,
+            Code::Cloud,
+            format!(
+                "This is a cloud session: its files are on the VM, not on this computer, so \
+                 {name} cannot open them here. Open a local worktree to edit."
+            ),
+        );
     }
     if !facts.editor_found {
         let why = facts
@@ -255,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn cloud_wins_over_main_and_a_missing_editor() {
+    fn cloud_wins_over_a_missing_editor() {
         let env = cloud();
         let f = Facts {
             editor_found: false,
@@ -267,17 +253,24 @@ mod tests {
         assert!(s.reason.unwrap().contains("cloud session"));
     }
 
+    /// Main used to get the viewer and a "read-only" reason. It is written
+    /// like a worktree now, so it answers exactly as a worktree does.
     #[test]
-    fn main_wins_over_a_missing_editor_and_names_the_tool() {
-        let f = Facts {
-            editor_found: false,
-            ..facts(Some(&Environment::Main))
-        };
-        let s = decide(Tool::Blender, f);
-        assert_eq!((s.surface, s.code), (Kind::Viewer, Some(Code::Main)));
-        let reason = s.reason.unwrap();
-        assert!(reason.starts_with("This is the main checkout"), "{reason}");
-        assert!(reason.contains("Blender"), "{reason}");
+    fn main_is_treated_like_a_worktree() {
+        let main = Environment::Main;
+        let wt = worktree();
+        for tool in [Tool::Godot, Tool::Blender] {
+            assert_eq!(
+                decide(tool, facts(Some(&main))),
+                decide(tool, facts(Some(&wt)))
+            );
+            assert_eq!(decide(tool, facts(Some(&main))).surface, Kind::Embedded);
+            let missing = Facts {
+                editor_found: false,
+                ..facts(Some(&main))
+            };
+            assert_eq!(code(tool, missing), (Kind::Viewer, Some(Code::NoEditor)));
+        }
     }
 
     #[test]
@@ -357,10 +350,11 @@ mod tests {
 
     #[test]
     fn the_wire_shape_is_surface_reason_code() {
-        let main = decide(Tool::Godot, facts(Some(&Environment::Main)));
-        let v = serde_json::to_value(&main).unwrap();
+        let env = cloud();
+        let viewer = decide(Tool::Godot, facts(Some(&env)));
+        let v = serde_json::to_value(&viewer).unwrap();
         assert_eq!(v["surface"], "viewer");
-        assert_eq!(v["code"], "main");
+        assert_eq!(v["code"], "cloud");
         assert!(v["reason"].is_string());
         let embedded = serde_json::to_value(decide(Tool::Godot, facts(None))).unwrap();
         assert_eq!(

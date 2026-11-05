@@ -13,7 +13,7 @@
 //!       export.json       written last; a folder without it is not a version
 //! ```
 //!
-//! The last [`KEEP`] are kept. On the read-only main checkout the same tree
+//! The last [`KEEP`] are kept. In a read-only environment the same tree
 //! lives under the app's data, keyed by a hash of the checkout's path, as
 //! Play's takes do. Renders shows the newest; Compare (#319) reads them all
 //! through `blender-viewer/export-versions`.
@@ -174,7 +174,7 @@ pub fn keep(asset: &Path, n: u32) -> Result<(), String> {
 }
 
 /// `<project>/.veistra/exports`, or a folder under `outside` keyed by the
-/// project's path ([`super::cache_root_in`]'s rule) for the read-only main.
+/// project's path ([`super::cache_root_in`]'s rule) for a read-only one.
 pub fn exports_root(project: &Path, outside: Option<&Path>) -> PathBuf {
     match outside {
         None => project.join(".veistra").join("exports"),

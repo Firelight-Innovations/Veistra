@@ -106,6 +106,25 @@
   --k-context-4: var(--chart-4);
   --k-context-5: var(--chart-5);
   --k-context-6: var(--chart-6);
+  /* Menu rows by kind: one hue each, in the order the @ menu lists them, so
+     a canvas, a frame and a comment are told apart before they are read.
+     Fixed hues, not the accent, so a kind keeps its colour whatever accent is
+     picked. Searches, commands and anything unknown stay muted. */
+  --k-kind-design: var(--accent-coral);
+  --k-kind-canvas: var(--accent-amber);
+  --k-kind-frame: var(--hue-yellow);
+  --k-kind-comment: var(--hue-lime);
+  --k-kind-pm: var(--accent-green);
+  --k-kind-issue: var(--chart-3);
+  --k-kind-cluster: var(--hue-sky);
+  --k-kind-folder: var(--chart-2);
+  --k-kind-context: var(--accent-violet);
+  --k-kind-selection: var(--chart-5);
+  /* What a running editor reports: each in its own program's colour. */
+  --k-kind-godot: var(--accent-blue);
+  --k-kind-blender: var(--accent-amber);
+  /* Only in the slash menu, which never shows beside the @ menu. */
+  --k-kind-skill: var(--hue-yellow);
 
   /* Type */
   --k-font: var(--sans);

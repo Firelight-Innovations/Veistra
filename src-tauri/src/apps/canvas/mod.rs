@@ -16,8 +16,8 @@
 //!
 //! Writes are atomic (a sibling temp file, then rename) and conflict-checked
 //! against the `mtime` the caller last read, the same contract as `files/write`.
-//! The methods that write are in `apps::WRITE_METHODS`, so a read-only main
-//! checkout is refused centrally before any handler here runs.
+//! The methods that write are in `apps::WRITE_METHODS`, so a read-only
+//! environment is refused centrally before any handler here runs.
 
 pub(crate) mod comments;
 pub(crate) mod diagrams;
@@ -143,7 +143,7 @@ const MAX_DEPTH: usize = 4;
 const SCHEMA: u64 = 1;
 
 /// The registry's entry point: works out whether the cluster's environment is
-/// the read-only main checkout, then hands off to [`call`].
+/// read-only (none is, main included), then hands off to [`call`].
 pub fn call_live(
     app: &tauri::AppHandle,
     context: &CallContext,
@@ -154,7 +154,7 @@ pub fn call_live(
     let read_only = context.cluster_id.as_deref().is_some_and(|cluster| {
         app.state::<crate::shell_state::ShellState>()
             .cluster_write_environment(cluster)
-            .is_some_and(|env| env.is_main())
+            .is_some_and(|env| env.is_read_only())
     });
     call_with(context, read_only, &webview::Live { app }, method, params)
 }

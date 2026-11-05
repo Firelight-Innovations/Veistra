@@ -13,6 +13,8 @@ const builtinSkills = vi.fn<() => Promise<BuiltinSkill[]>>();
 vi.mock("../../bindings", () => ({
   builtinSkills: () => builtinSkills(),
   onSettingsChanged: () => Promise.resolve(() => undefined),
+  // The screen's sidebar reads the account; it never answers here.
+  accountCall: () => new Promise(() => {}),
 }));
 
 const { default: BuiltInSkillsPanel } = await import("./BuiltInSkillsPanel");

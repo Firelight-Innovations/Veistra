@@ -1,0 +1,4 @@
+# rust-lld ships with the toolchain (no install) and links much faster than
+# MSVC's link.exe, which is the bulk of an incremental rebuild.
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"

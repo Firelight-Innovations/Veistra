@@ -203,7 +203,7 @@
   height: auto;
   padding: 0;
   font: inherit;
-  box-shadow: 0 0 0 2px var(--k-accent-subtle);
+  box-shadow: 0 0 0 2px var(--at-chip-wash);
   box-decoration-break: clone;
 }
 

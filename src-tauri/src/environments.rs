@@ -1,5 +1,5 @@
 //! What a cluster's work runs against: a local worktree, a cloud session, the
-//! read-only main checkout, or the one standing Design worktree.
+//! main checkout, or the one standing Design worktree.
 //!
 //! Before this module, a cluster's only notion of "where" was
 //! [`crate::shell_state::WorktreeRef`] — a worktree, or nothing, with
@@ -65,12 +65,12 @@ pub enum Environment {
         vm: String,
         branch: Option<String>,
     },
-    /// The project's own primary checkout, browsed rather than worked in.
+    /// The project's own primary checkout, worked in directly.
     ///
     /// The one variant with no payload: "main" names a place — the project
     /// root every cluster already knows how to find — not a resource this
-    /// module created and has to remember. See [`refuse_write_on_main`] for
-    /// what "browsed rather than worked in" means in practice.
+    /// module created and has to remember. It used to be read-only; it is
+    /// writable now like every other variant (see [`Environment::is_read_only`]).
     Main,
     /// The standing worktree that hosts the pinned Design canvas cluster —
     /// see `ShellState::add_design_cluster`.
@@ -114,6 +114,19 @@ impl Environment {
 
     pub fn is_main(&self) -> bool {
         matches!(self, Environment::Main)
+    }
+
+    /// Whether writes are refused here: the one switch every write guard
+    /// ([`refuse_read_only_write`], `apps::write_refusal`), the shell marker
+    /// ([`read_only_env`]) and each app's `readOnly` (Files, Canvas, Godot,
+    /// Blender) reads.
+    ///
+    /// No environment is read-only. Main was, until the owner lifted that so
+    /// the main checkout is worked in like a worktree. The guards are kept,
+    /// keyed on this, so an environment that cannot be written (a remote one,
+    /// say) has one place to say so; `is_main` is no longer that question.
+    pub fn is_read_only(&self) -> bool {
+        false
     }
 
     /// The wire tag alone (`"localWorktree"`, `"cloud"`, `"main"`, `"design"`),
@@ -169,11 +182,9 @@ impl Environment {
 ///
 /// A cluster with **no** worktree is left `None`, deliberately not inferred
 /// as `Main`: it is a project worked in directly, with no worktree concept at
-/// all, in a build old enough to predate this field — and reading that as
-/// "read-only" would retroactively lock every such cluster out of the write
-/// paths it already had, the moment this build opens the file. `None` here
-/// defers to the legacy fields exactly as before; see `Cluster::environment`'s
-/// own doc for the fuller version of this reasoning.
+/// all, in a build old enough to predate this field. `None` here defers to the
+/// legacy fields exactly as before; see `Cluster::environment`'s own doc for
+/// the fuller version of this reasoning.
 pub fn migrate_environment(
     worktree: Option<&crate::shell_state::WorktreeRef>,
 ) -> Option<Environment> {
@@ -195,27 +206,24 @@ pub fn migrate_environment(
     })
 }
 
-/// Refuse a write aimed at a `Main` cluster.
+/// Refuse a write aimed at a read-only environment.
 ///
-/// Main is the project's real checkout, browsed rather than worked in — see
-/// [`Environment::Main`] — so anything that would change a file, the index or
-/// `HEAD` on it is refused here, once, rather than trusted to every
-/// command that could reach it. Every write path funnels through this
-/// function or through `apps::write_refusal`, which wraps it for app
-/// methods.
+/// Anything that would change a file, the index or `HEAD` is judged here,
+/// once, rather than by every command that could reach it. Every write path
+/// funnels through this function or through `apps::write_refusal`, which
+/// wraps it for app methods. Since no environment is read-only (see
+/// [`Environment::is_read_only`]), nothing is refused today, main included.
 ///
-/// `env` is the *effective* environment. A cluster whose stored environment is
-/// `None` (a legacy layout, or a creation path that forgot to assign one) must
-/// not be passed straight in as `None`: that is how a write reached a main
-/// checkout. Callers with a cluster go through [`effective_environment`] or
-/// [`guard_cluster_write`], which fail closed.
+/// `env` is the *effective* environment. Callers with a cluster go through
+/// [`effective_environment`] or [`guard_cluster_write`], so a cluster whose
+/// stored environment is `None` is judged by what its folder is.
 ///
 /// `op` names the action for the error message (`"commit"`, `"stage"`) —
 /// see `git::run_git`'s own `op` parameter for the same reasoning about why
 /// this is a separate argument rather than folded into a single string.
-pub fn refuse_write_on_main(env: Option<&Environment>, op: &str) -> Result<()> {
-    if env.is_some_and(Environment::is_main) {
-        return Err(AppError::ReadOnlyMain { op: op.to_string() });
+pub fn refuse_read_only_write(env: Option<&Environment>, op: &str) -> Result<()> {
+    if env.is_some_and(Environment::is_read_only) {
+        return Err(AppError::ReadOnly { op: op.to_string() });
     }
     Ok(())
 }
@@ -259,9 +267,8 @@ pub fn detect_environment(path: &Path) -> Option<Environment> {
 /// The environment a write guard should judge a cluster by: the stored one, or
 /// — when none is stored — the one its project folder implies.
 ///
-/// This is the fail-closed half of the main guard. A null environment pointing
-/// at the repository's main checkout is `Main`, so it is read-only; a null
-/// environment on a plain folder stays `None` and writable.
+/// A null environment pointing at the repository's main checkout is `Main`; a
+/// null environment on a plain folder stays `None`. Both are writable.
 pub fn effective_environment(
     stored: Option<Environment>,
     project: Option<&Path>,
@@ -285,7 +292,7 @@ fn same_path(a: &Path, b: &Path) -> bool {
     norm(a) == norm(b)
 }
 
-/// [`refuse_write_on_main`] for a caller that has a cluster id and an app
+/// [`refuse_read_only_write`] for a caller that has a cluster id and an app
 /// handle rather than an environment in hand — the shape of every command.
 ///
 /// An id naming no cluster reads as "no environment", so is allowed: the
@@ -296,7 +303,7 @@ pub fn guard_cluster_write(app: &tauri::AppHandle, cluster_id: &str, op: &str) -
     let env = app
         .state::<crate::shell_state::ShellState>()
         .cluster_write_environment(cluster_id);
-    refuse_write_on_main(env.as_ref(), op)
+    refuse_read_only_write(env.as_ref(), op)
 }
 
 /// The environment variables a shell opened in this environment is given so a
@@ -304,15 +311,18 @@ pub fn guard_cluster_write(app: &tauri::AppHandle, cluster_id: &str, op: &str) -
 ///
 /// Advisory only: a shell cannot be sandboxed from here, so this is a marker
 /// an agent harness or a hook can honour, not a wall. Empty for every
-/// environment but `Main`.
+/// environment that is not [`Environment::is_read_only`], which today is all
+/// of them: a shell on main is an ordinary, writable shell.
 pub fn read_only_env(env: Option<&Environment>) -> Vec<(String, String)> {
-    if env.is_some_and(Environment::is_main) {
-        vec![
+    match env.filter(|e| e.is_read_only()) {
+        Some(read_only) => vec![
             ("VEISTRA_READ_ONLY".to_string(), "1".to_string()),
-            ("VEISTRA_ENVIRONMENT".to_string(), "main".to_string()),
-        ]
-    } else {
-        Vec::new()
+            (
+                "VEISTRA_ENVIRONMENT".to_string(),
+                read_only.kind().to_string(),
+            ),
+        ],
+        None => Vec::new(),
     }
 }
 
@@ -349,7 +359,7 @@ pub fn create_local_worktree(main_repo: &Path, name: &str, base: &str) -> Result
 ///
 /// The primary checkout and the standing Design worktree are both left out
 /// — not because they are not worktrees, but because the dialog already
-/// offers each through its own entry ("browse main, read-only" and the
+/// offers each through its own entry ("work on main" and the
 /// pinned Design cluster), and listing them again here would be the same
 /// choice twice under two different names.
 pub fn list_local_worktrees(main_repo: &Path) -> Result<Vec<Environment>> {
@@ -579,53 +589,64 @@ mod tests {
         );
     }
 
-    // --- the main-write guard -----------------------------------------------
+    // --- the read-only guard -----------------------------------------------
 
-    #[test]
-    fn refuse_write_on_main_refuses_main() {
-        let err = refuse_write_on_main(Some(&Environment::Main), "commit").unwrap_err();
-        match err {
-            AppError::ReadOnlyMain { op } => assert_eq!(op, "commit"),
-            other => panic!("expected AppError::ReadOnlyMain, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn read_only_env_marks_main_shells_only() {
-        let main = read_only_env(Some(&Environment::Main));
-        assert!(main.contains(&("VEISTRA_READ_ONLY".to_string(), "1".to_string())));
-        assert!(read_only_env(None).is_empty());
-        let wt = Environment::LocalWorktree {
-            name: "x".to_string(),
-            path: "C:/wt/x".to_string(),
-            branch: "wt/x".to_string(),
-            base: "main".to_string(),
-        };
-        assert!(read_only_env(Some(&wt)).is_empty());
-    }
-
-    #[test]
-    fn refuse_write_on_main_allows_everything_else() {
-        assert!(refuse_write_on_main(None, "commit").is_ok());
-        assert!(refuse_write_on_main(
-            Some(&Environment::LocalWorktree {
+    /// One of each variant, main among them.
+    fn every_kind() -> [Environment; 4] {
+        [
+            Environment::LocalWorktree {
                 name: "x".to_string(),
                 path: "C:/wt/x".to_string(),
                 branch: "wt/x".to_string(),
                 base: "main".to_string(),
-            }),
-            "commit"
-        )
-        .is_ok());
-        assert!(refuse_write_on_main(
-            Some(&Environment::Cloud {
+            },
+            Environment::Cloud {
                 session_id: "s".to_string(),
                 vm: "v".to_string(),
                 branch: None,
-            }),
-            "commit"
-        )
-        .is_ok());
+            },
+            Environment::Main,
+            Environment::Design {
+                path: "C:/wt/design".to_string(),
+                branch: "wt/design".to_string(),
+            },
+        ]
+    }
+
+    /// Main is worked in like a worktree: it is not read-only, and neither is
+    /// anything else, so being main no longer decides whether a write runs.
+    #[test]
+    fn no_environment_is_read_only_main_included() {
+        assert!(Environment::Main.is_main());
+        assert!(!Environment::Main.is_read_only());
+        for env in every_kind() {
+            assert!(!env.is_read_only(), "{env:?}");
+        }
+    }
+
+    /// The bug this guards against is the restriction coming back: a commit,
+    /// a canvas save or a file write on main refused as read-only.
+    #[test]
+    fn refuse_read_only_write_allows_main_and_everything_else() {
+        assert!(refuse_read_only_write(None, "commit").is_ok());
+        for env in every_kind() {
+            for op in ["commit", "canvas/save", "files/write"] {
+                assert!(
+                    refuse_read_only_write(Some(&env), op).is_ok(),
+                    "{env:?} {op}"
+                );
+            }
+        }
+    }
+
+    /// No read-only marker on any shell, main's included: an agent or hook
+    /// that reads `VEISTRA_READ_ONLY` sees an ordinary, writable shell.
+    #[test]
+    fn read_only_env_marks_no_shell_main_included() {
+        assert!(read_only_env(None).is_empty());
+        for env in every_kind() {
+            assert!(read_only_env(Some(&env)).is_empty(), "{env:?}");
+        }
     }
 
     // --- worktree naming / branch validation ---------------------------------
@@ -713,21 +734,28 @@ mod tests {
         assert_eq!(detect_environment(dir.path()), None);
     }
 
-    /// The fail-closed half: no stored environment, a project that is a main
-    /// checkout, and the guard still refuses.
+    /// No stored environment and a project that is a real main checkout: it
+    /// is still detected as `Main`, and the write goes through. This used to
+    /// assert the refusal; main is writable now.
     #[test]
-    fn a_null_environment_on_a_main_checkout_is_refused() {
+    fn a_null_environment_on_a_main_checkout_is_main_and_writable() {
         let dir = tempfile::tempdir().unwrap();
         fixture_git(dir.path(), &["init", "-q", "-b", "trunk"]);
+        fixture_git(
+            dir.path(),
+            &["commit", "-q", "--allow-empty", "-m", "first"],
+        );
         let effective = effective_environment(None, Some(dir.path()));
-        assert!(refuse_write_on_main(effective.as_ref(), "canvas/save").is_err());
+        assert_eq!(effective, Some(Environment::Main));
+        assert!(refuse_read_only_write(effective.as_ref(), "canvas/save").is_ok());
+        assert!(read_only_env(effective.as_ref()).is_empty());
     }
 
     #[test]
     fn a_null_environment_on_a_plain_folder_stays_writable() {
         let dir = tempfile::tempdir().unwrap();
         let effective = effective_environment(None, Some(dir.path()));
-        assert!(refuse_write_on_main(effective.as_ref(), "canvas/save").is_ok());
+        assert!(refuse_read_only_write(effective.as_ref(), "canvas/save").is_ok());
     }
 
     #[test]

@@ -65,8 +65,8 @@ const PATH_SEPARATOR = " › ";
  * A branch row contributes its children and not itself — Apps ▸ Presets opens
  * rather than acts, so a palette entry for it would be a row that runs nothing.
  * A leaf with neither an action nor a `disabled` of its own is dropped for the
- * same reason: that is scaffolding, not a command, and Help ▸ Documentation is
- * the one row in the tree it currently describes.
+ * same reason: that is scaffolding, not a command. No row in today's tree has
+ * that shape; Help ▸ Documentation, the last one that did, now opens Docs.
  */
 export function commandsFromMenus(menus: Menu[]): Command[] {
   return menus.flatMap((menu) => itemsToCommands(menu.items, menu.label));
