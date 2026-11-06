@@ -11,7 +11,7 @@ before it is built.
 1. **There is no Veistra harness yet.** Agents run inside whatever harness the
    terminal or agent tab launches; Veistra has no agent harness of its own.
 2. **Login and usage: wired, not yet checked on Windows.** The app now defaults
-   to the live account service and to `veistra-prod.web.app`, and the service
+   to the live account service and to `veistra.com`, and the service
    answers usage and runs (`docs/account-api.md`). Still open: one sign-in in a
    real Veistra from a clean profile, sign-out, and a restart that stays signed
    in; and recording runs (`POST /v1/runs`), without which the usage page's
