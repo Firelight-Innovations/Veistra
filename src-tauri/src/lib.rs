@@ -196,6 +196,7 @@ pub fn run() {
         .manage(cloud::Cloud::default())
         // The Veistra account's sign-in and tokens; see `account`.
         .manage(account::Account::default())
+        .manage(account::runs::Runs::default())
         // The IAP tunnel to `plane-vm`, for the Projects app. Not started here —
         // only `projects/plane-*` and `projects/wake-start` call `Tunnel::start`,
         // and only against a `Source::Live` — so nothing opens a tunnel before a

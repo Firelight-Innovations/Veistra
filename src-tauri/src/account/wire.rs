@@ -111,6 +111,20 @@ pub fn post_form(url: &str, form: &[(&str, &str)]) -> Result<Value, Failure> {
     read(response)
 }
 
+/// One JSON write (`POST`, `PATCH`) with a bearer token.
+pub fn send_json(method: &str, url: &str, bearer: &str, body: &Value) -> Result<Value, Failure> {
+    let agent = crate::cloud::http::agent();
+    let request = match method {
+        "PATCH" => agent.patch(url),
+        _ => agent.post(url),
+    };
+    let response = request
+        .header("Accept", "application/json")
+        .header("Authorization", &format!("Bearer {bearer}"))
+        .send_json(body);
+    read(response)
+}
+
 /// One GET with a bearer token.
 pub fn get(url: &str, bearer: &str) -> Result<Value, Failure> {
     let response = crate::cloud::http::agent()

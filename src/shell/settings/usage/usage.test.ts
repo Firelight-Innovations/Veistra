@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   type Limit,
+  type Plan,
   type Run,
   type Usage,
   alertTitle,
   chartTop,
   compact,
   costCell,
+  credits,
+  creditsUsedLabel,
   dayBars,
   daysBetween,
   quantityLabel,
@@ -138,5 +141,58 @@ describe("the limit", () => {
   it("reads an alert the dashboard turned off as none, not as null%", () => {
     expect(alertTitle(limit)).toBe("Alert at 80%");
     expect(alertTitle({ ...limit, alert_pct: null })).toBe("No spend alert");
+  });
+});
+
+describe("a plan's included credits", () => {
+  const pro: Plan = {
+    id: "pro",
+    name: "Pro",
+    price_micros: 10_000_000,
+    included_micros: 10_000_000,
+    used_micros: 3_200_000,
+    remaining_micros: 6_800_000,
+    resets: "2026-12-01",
+  };
+  const limit: Limit = {
+    monthly_limit_micros: 50_000_000,
+    spent_this_period_micros: 0,
+    alert_pct: 80,
+    pause_at_limit: true,
+    projected_date: null,
+  };
+
+  it("draws none for a plan without them, or a service older than plans", () => {
+    expect(credits(usage)).toBeNull();
+    const beta = { ...pro, id: "beta", name: "Beta", included_micros: 0, used_micros: 0 };
+    expect(credits({ ...usage, plan: { ...beta, remaining_micros: 0 } })).toBeNull();
+    expect(credits({ ...usage, plan: pro })).toBe(pro);
+    expect(creditsUsedLabel(pro)).toBe("32% used");
+  });
+
+  it("speaks of the credits while they last, and of the limit past them", () => {
+    expect(statusSentence({ ...usage, plan: pro, limit })).toBe(
+      "You've used $3.20 of the $10.00 included with Pro, $6.80 left.",
+    );
+    const gone = { ...pro, used_micros: 10_000_000, remaining_micros: 0 };
+    expect(
+      statusSentence({
+        ...usage,
+        plan: gone,
+        limit: { ...limit, spent_this_period_micros: 8_400_000 },
+      }),
+    ).toBe(
+      "Your Pro credits are used, and you've spent $8.40 of your $50.00 monthly limit, $41.60 left.",
+    );
+    expect(
+      statusSentence({
+        ...usage,
+        plan: gone,
+        limit: { ...limit, spent_this_period_micros: 50_000_000 },
+      }),
+    ).toBe("Your Pro credits are used, and you've reached your $50.00 monthly limit.");
+    expect(statusSentence({ ...usage, plan: gone, limit: null })).toBe(
+      "Your Pro credits are used. No monthly limit is set.",
+    );
   });
 });

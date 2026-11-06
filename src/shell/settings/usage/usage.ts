@@ -32,6 +32,20 @@ export interface Limit {
   projected_date: string | null;
 }
 
+/**
+ * The workspace's plan and this month's included credits, which pay for
+ * billed usage first and reset with the month. The beta plan answers zeros.
+ */
+export interface Plan {
+  id: string;
+  name: string;
+  price_micros: number;
+  included_micros: number;
+  used_micros: number;
+  remaining_micros: number;
+  resets: string;
+}
+
 export interface Usage {
   range: { from: string; to: string };
   period: { from: string; to: string; resets: string };
@@ -42,6 +56,9 @@ export interface Usage {
   };
   daily: { day: string; source: string; cost_micros: number }[];
   projects?: string[];
+  /** Absent from a service older than plans, which reads as no credits. */
+  plan?: Plan;
+  /** Caps only spend past the plan's credits. */
   limit: Limit | null;
   synced_at: string;
 }
@@ -202,9 +219,28 @@ export function spentPercent(limit: Limit): number {
 
 /** `37% used`, whole percent; anything spent at all reads as at least 1%. */
 export function usedLabel(limit: Limit): string {
-  const pct = spentPercent(limit);
+  return percentUsed(spentPercent(limit));
+}
+
+function percentUsed(pct: number): string {
   const shown = pct > 0 && pct < 1 ? 1 : Math.round(pct);
   return `${shown}% used`;
+}
+
+/** The plan when it includes credits. The beta plan's zeros draw nothing. */
+export function credits(usage: Usage): Plan | null {
+  const plan = usage.plan;
+  return plan && plan.included_micros > 0 ? plan : null;
+}
+
+/** Share of the included credits used, 0–100. */
+export function creditsPercent(plan: Plan): number {
+  return Math.min(100, (plan.used_micros / plan.included_micros) * 100);
+}
+
+/** `32% used` of the included credits. */
+export function creditsUsedLabel(plan: Plan): string {
+  return percentUsed(creditsPercent(plan));
 }
 
 /** `Alert at 80%`, or that there is none. */
@@ -219,6 +255,12 @@ export function alertTitle(limit: Limit): string {
  */
 export function statusSentence(usage: Usage): string {
   const limit = usage.limit;
+  const plan = credits(usage);
+  if (plan && plan.remaining_micros > 0) {
+    return `You've used ${money(plan.used_micros)} of the ${money(plan.included_micros)} included with ${plan.name}, ${money(plan.remaining_micros)} left.`;
+  }
+  const gone = plan ? `Your ${plan.name} credits are used` : null;
+  if (gone && limit === null) return `${gone}. No monthly limit is set.`;
   if (limit === null) {
     const spent = money(usage.totals.cost_micros);
     const when =
@@ -228,9 +270,13 @@ export function statusSentence(usage: Usage): string {
     return `You've spent ${spent} ${when}. No monthly limit is set.`;
   }
   const spent = money(limit.spent_this_period_micros);
-  if (spentPercent(limit) >= 100) {
-    return `You've reached your ${money(limit.monthly_limit_micros)} monthly limit.`;
-  }
+  const reached =
+    spentPercent(limit) >= 100
+      ? `you've reached your ${money(limit.monthly_limit_micros)} monthly limit.`
+      : null;
   const left = money(Math.max(0, limit.monthly_limit_micros - limit.spent_this_period_micros));
-  return `You've spent ${spent} of your ${money(limit.monthly_limit_micros)} monthly limit, ${left} left.`;
+  const sentence =
+    reached ??
+    `you've spent ${spent} of your ${money(limit.monthly_limit_micros)} monthly limit, ${left} left.`;
+  return gone ? `${gone}, and ${sentence}` : sentence.charAt(0).toUpperCase() + sentence.slice(1);
 }
