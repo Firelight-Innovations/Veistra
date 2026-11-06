@@ -218,7 +218,12 @@ const claudeSkills = new Set([
 /** An older adapter can still offer legacy builtins without misclassifying them as skills. */
 const legacy = new Set(["pr-comments", "ultraplan", "vim"]);
 
+/**
+ * A harness's own CLI commands, offered even when its adapter does not list them. Veistra's
+ * agent has no CLI session to open them in, so it offers only what the agent itself lists.
+ */
 export function builtins(harness: Harness): readonly AgentCommand[] {
+  if (harness === "veistra") return [];
   return harness === "codex" ? codex : claude;
 }
 

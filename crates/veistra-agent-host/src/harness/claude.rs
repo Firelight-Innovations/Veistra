@@ -13,7 +13,7 @@ pub static CLAUDE: Descriptor = Descriptor {
     harness: Harness::Claude,
     name: "Claude",
     cli: "claude",
-    cli_env: "CLAUDE_CODE_EXECUTABLE",
+    cli_env: Some("CLAUDE_CODE_EXECUTABLE"),
     adapter: AcpAdapter {
         program: "claude-agent-acp",
         package: "@agentclientprotocol/claude-agent-acp",

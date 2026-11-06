@@ -1,0 +1,35 @@
+{
+  "name": "@veistra/agent",
+  "version": "0.1.0",
+  "description": "Veistra's own coding agent: Pi, run through its SDK, with Veistra's modules around it, speaking the Agent Client Protocol on stdio.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Firelight-Innovations/Veistra.git",
+    "directory": "packages/veistra-agent"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "bin": {
+    "veistra-agent": "./dist/cli.js",
+    "veistra-agent-acp": "./dist/acp.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.json && vitest run"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "1.5.0",
+    "@earendil-works/pi-coding-agent": "1.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "typescript": "~5.8.3",
+    "vitest": "^4.1.10"
+  }
+}

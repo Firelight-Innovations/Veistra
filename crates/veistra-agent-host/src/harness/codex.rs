@@ -20,7 +20,7 @@ pub static CODEX: Descriptor = Descriptor {
     harness: Harness::Codex,
     name: "Codex",
     cli: "codex",
-    cli_env: "CODEX_PATH",
+    cli_env: Some("CODEX_PATH"),
     adapter: AcpAdapter {
         program: "codex-acp",
         package: "@agentclientprotocol/codex-acp",

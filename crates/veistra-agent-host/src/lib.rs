@@ -1,4 +1,4 @@
-//! The Veistra agent host: runs a coding agent (Claude today; Codex and Pi next)
+//! The Veistra agent host: runs a coding agent (Veistra's own, Claude or Codex)
 //! as a child process that speaks the Agent Client Protocol on its standard
 //! streams, and turns everything it says into one event model the agent tab
 //! draws.

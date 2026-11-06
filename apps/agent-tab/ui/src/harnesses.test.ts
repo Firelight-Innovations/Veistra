@@ -37,6 +37,22 @@ describe("harnessChoices", () => {
     ]);
   });
 
+  it("lists Veistra as a choice once the host reports it, signed out or not", () => {
+    const veistra: HarnessInfo = {
+      ...CLAUDE,
+      harness: "veistra",
+      name: "Veistra",
+      hint: "signedOut",
+      setup: { ...CLAUDE.setup, cli: "veistra-agent", signIn: "veistra-agent login" },
+    };
+    const listed = harnessChoices([veistra, CLAUDE], "veistra", null);
+    expect(listed.map((h) => [h.id, h.unavailable])).toEqual([
+      ["veistra", null],
+      ["claude", null],
+      ["codex", "Coming soon"],
+    ]);
+  });
+
   it("takes the models the host scanned", () => {
     const scanned = { ...CLAUDE, models: [OPUS, SONNET], model: "opus" };
     expect(of(harnessChoices([scanned], null, null), "claude")).toMatchObject({

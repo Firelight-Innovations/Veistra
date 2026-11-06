@@ -1,18 +1,21 @@
 /**
  * The harnesses the settings menu lists, each with the models it offers.
  * The menu shows Veistra, Claude and Codex in that order: Veistra, our own
- * harness, first. One the host does not report reads "Coming soon", as
- * Veistra does until its descriptor lands in the registry. One the host
- * reports but cannot start, such as one not installed, can still be chosen:
- * the tab then offers to install it. The harness in use is never locked, even
- * before the host's answer arrives.
+ * harness, first, as the host's registry has it. One the host does not report
+ * reads "Coming soon". One the host reports but cannot start, such as one not
+ * installed or signed out, can still be chosen: the tab then offers to install
+ * it or sign in. The harness in use is never locked, even before the host's
+ * answer arrives.
  */
-import type { HarnessInfo } from "./protocol.generated";
+import type { Harness, HarnessInfo } from "./protocol.generated";
 import type { HarnessChoice, PickerChoice } from "./components/types";
 import { strings } from "./strings";
 
 /** The menu's order. A harness the host reports beyond these follows them. */
 export const HARNESSES = ["veistra", "claude", "codex"];
+
+/** The harness a tab runs before it chooses one, as the host's registry puts it first. */
+export const FIRST_HARNESS: Harness = "veistra";
 
 /** The running session's model setting: what it offers and what it runs. */
 export interface RunningModel {

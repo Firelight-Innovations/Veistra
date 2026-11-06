@@ -6,7 +6,8 @@
 //! press runs; the app runs it. Each step is the vendor's own installer:
 //!
 //! - the program, by its descriptor's [`CliInstall`]: Anthropic's installer
-//!   script for Claude, OpenAI's npm package for Codex;
+//!   script for Claude, OpenAI's npm package for Codex, and for Veistra's own
+//!   nothing apart, since it ships in the adapter's package;
 //! - the adapter, by the same pinned `npm i -g --omit=optional` the hint
 //!   sentences name ([`super::AcpAdapter::install`]).
 //!
@@ -20,7 +21,7 @@
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
-use super::{managed, which, CliInstall, Descriptor};
+use super::{managed, which, AcpAdapter, CliInstall, Descriptor};
 
 /// Which part of a harness a step installs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,28 +70,42 @@ pub fn plan(
     path: Option<&OsStr>,
     pathext: Option<&OsStr>,
 ) -> Result<Vec<Step>, Blocked> {
-    plan_for(descriptor, path, pathext, cfg!(windows))
+    plan_in(
+        descriptor,
+        path,
+        pathext,
+        cfg!(windows),
+        &managed::checkout(),
+    )
 }
 
-fn plan_for(
+/// [`plan`] for a platform and a checkout a test names.
+fn plan_in(
     descriptor: &Descriptor,
     path: Option<&OsStr>,
     pathext: Option<&OsStr>,
     windows: bool,
+    checkout: &Path,
 ) -> Result<Vec<Step>, Blocked> {
     let npm = || which("npm", path, pathext).ok_or(Blocked::NodeMissing);
     let mut steps = Vec::new();
-    if which(descriptor.cli, path, pathext).is_none() {
-        steps.push(match descriptor.install {
-            CliInstall::Script { windows: ps, unix } => script(ps, unix, path, pathext, windows)?,
-            CliInstall::Npm { package } => Step {
+    let cli_missing = managed::cli_in(descriptor, path, pathext, checkout).is_none();
+    if cli_missing {
+        match descriptor.install {
+            CliInstall::Script { windows: ps, unix } => {
+                steps.push(script(ps, unix, path, pathext, windows)?);
+            }
+            CliInstall::Npm { package } => steps.push(Step {
                 part: Part::Cli,
                 program: npm()?,
                 args: vec!["i".into(), "-g".into(), package.into()],
-            },
-        });
+            }),
+            // The adapter's step below brings it.
+            CliInstall::WithAdapter => {}
+        }
     }
-    if managed::adapter(descriptor, path, pathext).is_none() {
+    let with_adapter = cli_missing && descriptor.install == CliInstall::WithAdapter;
+    if with_adapter || managed::adapter_in(descriptor, path, pathext, checkout).is_none() {
         let adapter = &descriptor.adapter;
         steps.push(Step {
             part: Part::Adapter,
@@ -135,7 +150,7 @@ fn script(
 
 /// The command a person would type to install the program themselves, for
 /// the tab's hint sentence.
-pub fn cli_command(install: CliInstall) -> String {
+pub fn cli_command(install: CliInstall, adapter: &AcpAdapter) -> String {
     match install {
         CliInstall::Script { windows, unix } => {
             if cfg!(windows) {
@@ -145,6 +160,7 @@ pub fn cli_command(install: CliInstall) -> String {
             }
         }
         CliInstall::Npm { package } => format!("npm i -g {package}"),
+        CliInstall::WithAdapter => adapter.install(),
     }
 }
 
@@ -185,7 +201,7 @@ pub fn widen(path: Option<&OsStr>, dirs: &[PathBuf]) -> Option<OsString> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::{CLAUDE, CODEX};
+    use crate::harness::{CLAUDE, CODEX, VEISTRA};
 
     fn touch(dir: &Path, name: &str) -> PathBuf {
         let file = dir.join(if cfg!(windows) {
@@ -199,6 +215,44 @@ mod tests {
 
     fn ext() -> Option<&'static OsStr> {
         Some(OsStr::new(".EXE;.CMD"))
+    }
+
+    /// The plan with no checkout build to fall back to.
+    fn plan_for(
+        descriptor: &Descriptor,
+        path: Option<&OsStr>,
+        pathext: Option<&OsStr>,
+        windows: bool,
+    ) -> Result<Vec<Step>, Blocked> {
+        let checkout = tempfile::tempdir().unwrap();
+        plan_in(descriptor, path, pathext, windows, checkout.path())
+    }
+
+    #[test]
+    fn veistra_installs_its_one_package_pinned_in_one_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let npm = touch(dir.path(), "npm");
+        let path = Some(dir.path().as_os_str());
+        let pinned = Step {
+            part: Part::Adapter,
+            program: npm,
+            args: vec![
+                "i".into(),
+                "-g".into(),
+                "--omit=optional".into(),
+                "@veistra/agent@0.1.0".into(),
+            ],
+        };
+        assert_eq!(
+            plan_for(&VEISTRA, path, ext(), false),
+            Ok(vec![pinned.clone()])
+        );
+        // An adapter without its sign-in program is a broken install: the
+        // same one step repairs it.
+        touch(dir.path(), "veistra-agent-acp");
+        assert_eq!(plan_for(&VEISTRA, path, ext(), false), Ok(vec![pinned]));
+        touch(dir.path(), "veistra-agent");
+        assert_eq!(plan_for(&VEISTRA, path, ext(), false), Ok(vec![]));
     }
 
     #[test]
@@ -333,8 +387,15 @@ mod tests {
 
     #[test]
     fn the_typed_command_is_the_vendors() {
-        let typed = cli_command(CLAUDE.install);
+        let typed = cli_command(CLAUDE.install, &CLAUDE.adapter);
         assert!(typed.contains("https://claude.ai/install."), "{typed}");
-        assert_eq!(cli_command(CODEX.install), "npm i -g @openai/codex");
+        assert_eq!(
+            cli_command(CODEX.install, &CODEX.adapter),
+            "npm i -g @openai/codex"
+        );
+        assert_eq!(
+            cli_command(VEISTRA.install, &VEISTRA.adapter),
+            "npm i -g --omit=optional @veistra/agent@0.1.0"
+        );
     }
 }

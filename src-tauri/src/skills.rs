@@ -315,6 +315,20 @@ pub fn claude_plugin(root: &Path, skills: &[&Bundled]) -> io::Result<PathBuf> {
     Ok(dir)
 }
 
+/// A folder of `skills`, each as `<name>/SKILL.md`, for a
+/// [`SkillDelivery::SessionFolder`] harness: one folder per set of skills under
+/// `root`, named like [`claude_plugin`]'s, so sessions given the same skills
+/// share one. Answers the folder.
+pub fn session_folder(root: &Path, skills: &[&Bundled]) -> io::Result<PathBuf> {
+    let mut names: Vec<&str> = skills.iter().map(|s| s.name).collect();
+    names.sort_unstable();
+    let dir = root.join(names.join("+"));
+    for skill in skills {
+        write_skill(&dir.join(skill.name), skill)?;
+    }
+    Ok(dir)
+}
+
 /// The folder a [`SkillDelivery::UserSkills`] harness reads skills from:
 /// `$<home_env>/skills` when that is set, else `<home>/<home_default>/skills`.
 pub fn user_skills_dir(
@@ -390,6 +404,15 @@ pub fn equip(launch: &mut LaunchSpec, skills: &[&Bundled], places: &Places) -> V
             Ok(dir) => launch.plugins.push(dir),
             Err(e) => problems.push(format!("the Claude plugin folder: {e}")),
         },
+        SkillDelivery::SessionFolder => {
+            match session_folder(&places.data.join("veistra"), skills) {
+                Ok(dir) => launch.plugins.push(dir),
+                Err(e) => {
+                    problems.push(format!("the session's skills folder: {e}"));
+                    hinted.extend(skills);
+                }
+            }
+        }
         SkillDelivery::UserSkills { .. } => {
             let Some(parent) = places.user_skills(delivery) else {
                 problems.push("no profile folder to install skills into".into());
@@ -506,6 +529,8 @@ fn sync_one(skill: &Bundled, mode: Mode, places: &Places) -> Vec<String> {
 pub enum How {
     /// A plugin folder passed per session.
     Plugin,
+    /// A folder of skills passed per session.
+    Folder,
     /// A copy in the harness's user skills folder.
     UserSkills,
     /// A hint in the first prompt.
@@ -557,6 +582,16 @@ pub fn list(modes: impl Fn(&Bundled) -> Mode, places: &Places) -> Vec<SkillInfo>
                                     .join("claude")
                                     .join(skill.name)
                                     .join("skills")
+                                    .join(skill.name),
+                            ),
+                        ),
+                        SkillDelivery::SessionFolder => (
+                            How::Folder,
+                            Some(
+                                places
+                                    .data
+                                    .join("veistra")
+                                    .join(skill.name)
                                     .join(skill.name),
                             ),
                         ),
@@ -812,6 +847,46 @@ mod tests {
         assert!(
             !root.path().join("home").exists(),
             "the profile is untouched"
+        );
+    }
+
+    #[test]
+    fn veistra_gets_a_folder_of_skills_for_the_session_and_nothing_is_installed() {
+        let root = tempfile::tempdir().unwrap();
+        let places = places(root.path(), false);
+        let mut spec = launch(Harness::Veistra);
+        assert!(equip(&mut spec, &[&AGENT_READY_CANVAS], &places).is_empty());
+        assert_eq!(spec.plugins.len(), 1);
+        let folder = &spec.plugins[0];
+        assert_eq!(
+            folder,
+            &places.data.join("veistra").join("agent-ready-canvas")
+        );
+        assert!(folder.join("agent-ready-canvas/SKILL.md").is_file());
+        assert!(
+            !folder.join(".claude-plugin").exists(),
+            "not a Claude plugin"
+        );
+        assert_eq!(spec.preamble, None);
+        assert!(
+            !root.path().join("home").exists(),
+            "the profile is untouched"
+        );
+        let listed = list(|_| Mode::Auto, &places);
+        let install = listed[0]
+            .installs
+            .iter()
+            .find(|i| i.harness == Harness::Veistra)
+            .unwrap();
+        assert_eq!(install.how, How::Folder);
+        assert_eq!(
+            install.path.as_deref(),
+            Some(folder.join("agent-ready-canvas").to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            install.owner,
+            Owner::Veistra,
+            "written by the session above"
         );
     }
 

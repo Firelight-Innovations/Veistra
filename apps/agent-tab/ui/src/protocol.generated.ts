@@ -1,7 +1,7 @@
 // Generated from crates/veistra-agent-host/src/event.rs by ts-rs. Do not edit.
 // Regenerate: VEISTRA_BLESS=1 cargo test -p veistra-agent-host generated_types
 
-export type Harness = "claude" | "codex";
+export type Harness = "veistra" | "claude" | "codex";
 
 export type Capabilities = { 
 /**

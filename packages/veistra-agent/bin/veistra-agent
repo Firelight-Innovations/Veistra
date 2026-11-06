@@ -1,0 +1,3 @@
+#!/bin/sh
+# Runs this checkout's build of the agent; see packages/veistra-agent/README.md.
+exec node "$(dirname "$0")/../dist/cli.js" "$@"

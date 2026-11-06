@@ -24,15 +24,19 @@ mod claude;
 mod codex;
 pub mod install;
 mod managed;
+mod veistra;
 
 pub use claude::CLAUDE;
 pub use codex::CODEX;
+pub use veistra::VEISTRA;
 
 /// An agent the tab can run. Each has one [`Descriptor`] in [`REGISTRY`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub enum Harness {
+    /// Veistra's own, through `veistra-agent-acp`: Pi with Veistra's modules.
+    Veistra,
     /// Claude, through `claude-agent-acp`.
     Claude,
     /// Codex, through `codex-acp`.
@@ -43,6 +47,7 @@ impl Harness {
     /// Its descriptor.
     pub fn descriptor(self) -> &'static Descriptor {
         match self {
+            Harness::Veistra => &VEISTRA,
             Harness::Claude => &CLAUDE,
             Harness::Codex => &CODEX,
         }
@@ -54,14 +59,8 @@ impl Harness {
 pub const NO_CWD_SEARCH: &str = "NoDefaultCurrentDirectoryInExePath";
 
 /// Every harness, in the order the tab lists them. The first is the one a tab
-/// runs until it chooses another.
-///
-/// TODO(veistra-harness): Veistra's own harness, a modified Pi, goes first
-/// here once it speaks ACP. Until then the tab lists it first as "Coming soon"
-/// (`apps/agent-tab/ui/src/harnesses.ts`). Its descriptor must keep `env` free
-/// of credentials: the Veistra backend's token comes from the harness's own
-/// sign-in, as Claude's and Codex's do. See `docs/agent-harnesses.md`.
-pub static REGISTRY: &[&Descriptor] = &[&CLAUDE, &CODEX];
+/// runs until it chooses another: Veistra's own (`docs/design/VEISTRA-HARNESS.md`).
+pub static REGISTRY: &[&Descriptor] = &[&VEISTRA, &CLAUDE, &CODEX];
 
 /// The harness a tab runs until it chooses another.
 pub fn first() -> Harness {
@@ -74,13 +73,13 @@ pub fn first() -> Harness {
 pub struct Descriptor {
     /// Which harness this describes.
     pub harness: Harness,
-    /// Its name in the UI: "Claude", "Codex", "Pi" (handoff §0).
+    /// Its name in the UI: "Veistra", "Claude", "Codex" (handoff §0).
     pub name: &'static str,
     /// The program the user installs and signs in to, as found on PATH.
     pub cli: &'static str,
     /// The variable that tells the adapter where `cli` is, so it never runs
-    /// a copy of its own.
-    pub cli_env: &'static str,
+    /// a copy of its own. `None` for an adapter that runs no separate program.
+    pub cli_env: Option<&'static str>,
     /// The ACP adapter Veistra spawns.
     pub adapter: AcpAdapter,
     /// What the user runs in a terminal to sign in. Veistra never runs it.
@@ -125,6 +124,9 @@ pub enum CliInstall {
         /// as the vendor ships it.
         package: &'static str,
     },
+    /// The program ships in the adapter's own package, so the adapter's
+    /// pinned install brings both, as one step.
+    WithAdapter,
 }
 
 /// How a harness is given Veistra's built-in skills (`src-tauri/src/skills.rs`).
@@ -152,6 +154,11 @@ pub enum SkillDelivery {
         /// The home's folder under the user's profile when that is unset.
         home_default: &'static str,
     },
+    /// A folder holding `<name>/SKILL.md` for each skill, written for this
+    /// session under Veistra's own data and named in `session/new`'s
+    /// `_meta.veistra.skills`. The agent reads it as an extra skill path.
+    /// Nothing is written into the user's profile or the project.
+    SessionFolder,
     /// Neither: the first prompt names each skill and the absolute path of its
     /// `SKILL.md`, as context the transcript does not show.
     Hint,
@@ -168,7 +175,7 @@ impl Descriptor {
             setup: Setup {
                 cli: self.cli.to_string(),
                 sign_in: self.sign_in.to_string(),
-                cli_install: install::cli_command(self.install),
+                cli_install: install::cli_command(self.install, &self.adapter),
                 adapter_install: self.adapter.install(),
                 adapter_version: self.adapter.version.to_string(),
             },
@@ -293,8 +300,10 @@ pub struct LaunchSpec {
     /// pick before the session existed. Only a mode the agent offers is sent,
     /// never one held back (`config::NOT_OFFERED`); `None` stays ask-first.
     pub mode: Option<String>,
-    /// Claude Code plugin directories for this session only
-    /// ([`SkillDelivery::ClaudePlugin`]). Ignored by every other harness.
+    /// This session's skill folders, in the shape its harness's
+    /// [`SkillDelivery`] takes: Claude Code plugin directories
+    /// ([`SkillDelivery::ClaudePlugin`]) or folders of skills
+    /// ([`SkillDelivery::SessionFolder`]). Ignored by every other harness.
     pub plugins: Vec<PathBuf>,
     /// Context sent ahead of the first prompt of a new process, which the
     /// agent reads and the transcript does not show ([`SkillDelivery::Hint`]).
@@ -329,7 +338,12 @@ fn resolve_spec(
     local: bool,
 ) -> Result<LaunchSpec, Hint> {
     let descriptor = harness.descriptor();
-    let cli = which(descriptor.cli, path, pathext).ok_or(Hint::HarnessMissing)?;
+    let cli = if local {
+        managed::cli(descriptor, path, pathext)
+    } else {
+        which(descriptor.cli, path, pathext)
+    }
+    .ok_or(Hint::HarnessMissing)?;
     let adapter = if local {
         managed::adapter(descriptor, path, pathext)
     } else {
@@ -360,15 +374,17 @@ fn resolve_spec(
 }
 
 /// The variables added to the adapter's environment: the descriptor's own
-/// `env` first, then `cli_env` naming `cli`, then [`NO_CWD_SEARCH`].
-/// `Command::envs` lets a later entry win, so no registry row can undo the
-/// two that come last.
-fn launch_env(env: &[(&str, &str)], cli_env: &str, cli: &Path) -> Vec<(String, String)> {
+/// `env` first, then `cli_env` naming `cli` when it has one, then
+/// [`NO_CWD_SEARCH`]. `Command::envs` lets a later entry win, so no registry
+/// row can undo the two that come last.
+fn launch_env(env: &[(&str, &str)], cli_env: Option<&str>, cli: &Path) -> Vec<(String, String)> {
     let mut all: Vec<(String, String)> = env
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
-    all.push((cli_env.to_string(), cli.to_string_lossy().into_owned()));
+    if let Some(cli_env) = cli_env {
+        all.push((cli_env.to_string(), cli.to_string_lossy().into_owned()));
+    }
     // The adapter runs in the user's worktree, which is untrusted repository
     // content. An npm shim ends in a bare `node`, and `cmd.exe` looks in the
     // current directory before PATH for a bare name unless this is set, so a
@@ -377,6 +393,17 @@ fn launch_env(env: &[(&str, &str)], cli_env: &str, cli: &Path) -> Vec<(String, S
     // adapter is an npm shim.
     all.push((NO_CWD_SEARCH.to_string(), "1".to_string()));
     all
+}
+
+/// Where `harness`'s own program is: on `path`, else, for a harness this
+/// checkout builds, the checkout's own build ([`installed_spec`]'s rule). For
+/// the sign-in, which runs that program.
+pub fn installed_cli(
+    harness: Harness,
+    path: Option<&OsStr>,
+    pathext: Option<&OsStr>,
+) -> Option<PathBuf> {
+    managed::cli(harness.descriptor(), path, pathext)
 }
 
 /// The first file named `name` on `path`, trying each `pathext` extension on
@@ -471,7 +498,7 @@ mod tests {
                 ("CLAUDE_CODE_EXECUTABLE", "C:/elsewhere/claude.cmd"),
                 ("OTHER", "kept"),
             ],
-            "CLAUDE_CODE_EXECUTABLE",
+            Some("CLAUDE_CODE_EXECUTABLE"),
             Path::new("C:/bin/claude.cmd"),
         );
         // The child sees the last entry for each name.
@@ -494,7 +521,10 @@ mod tests {
         for descriptor in REGISTRY {
             let keys = descriptor.env.iter().map(|(k, _)| k);
             for key in keys.chain(descriptor.env_remove) {
-                for reserved in [NO_CWD_SEARCH, descriptor.cli_env] {
+                for reserved in [Some(NO_CWD_SEARCH), descriptor.cli_env]
+                    .into_iter()
+                    .flatten()
+                {
                     assert!(
                         !key.eq_ignore_ascii_case(reserved),
                         "{:?} sets or removes {key}, which spec sets itself",
@@ -563,7 +593,7 @@ mod tests {
 
     #[test]
     fn every_harness_has_one_descriptor_that_names_it() {
-        assert_eq!(first(), Harness::Claude);
+        assert_eq!(first(), Harness::Veistra, "a new tab runs Veistra's own");
         for descriptor in REGISTRY {
             assert_eq!(descriptor.harness.descriptor(), *descriptor);
             let same = REGISTRY.iter().filter(|d| d.harness == descriptor.harness);

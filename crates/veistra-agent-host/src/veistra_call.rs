@@ -12,6 +12,8 @@
 //!   `mcp__veistra-context__show_component`.
 //! - Codex: `_meta.is_mcp_tool_call` is true, `rawInput.server` is
 //!   `veistra-context`, and `rawInput.tool` is `show` or `show_component`.
+//! - Veistra's own agent: `_meta.veistra.server` and `.tool`, which it writes
+//!   from the server names the host gave it (Pi spells them `veistra_context`).
 //!
 //! A marker printed by any other tool stays text. The check here is of shape
 //! only: the server has held the props to its catalogue, and the tab checks
@@ -40,6 +42,13 @@ pub const MARKER_LIMIT: usize = 256 * 1024;
 /// `server` and `tool` argument pass for a show call.
 pub fn is_show(update: &Value) -> bool {
     let meta = update.get("_meta");
+    if let Some(veistra) = meta.and_then(|m| m.get("veistra")) {
+        return veistra.get("server").and_then(Value::as_str) == Some(SERVER)
+            && veistra
+                .get("tool")
+                .and_then(Value::as_str)
+                .is_some_and(|tool| TOOLS.contains(&tool));
+    }
     if let Some(claude) = meta.and_then(|m| m.get("claudeCode")) {
         return claude
             .get("toolName")
@@ -189,6 +198,18 @@ mod tests {
         let mut spoof = codex(true, "veistra-context", "show");
         spoof["_meta"]["claudeCode"] = json!({"toolName": "mcp__other__echo"});
         assert!(!is_show(&spoof));
+
+        // Veistra's own agent names the server as the host gave it.
+        let veistra = |server: &str, tool: &str| {
+            json!({"_meta": {"veistra": {"toolName": "mcp__veistra_context__show",
+                "server": server, "tool": tool}}})
+        };
+        assert!(is_show(&veistra("veistra-context", "show")));
+        assert!(is_show(&veistra("veistra-context", "show_component")));
+        assert!(!is_show(&veistra("veistra-context", "read")));
+        assert!(!is_show(&veistra("other", "show")));
+        let built_in = json!({"_meta": {"veistra": {"toolName": "read"}}});
+        assert!(!is_show(&built_in), "a built-in tool names no server");
     }
 
     #[test]

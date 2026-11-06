@@ -121,7 +121,7 @@ struct Shared {
     /// Veistra's MCP servers, for `session/new`. Their bearers are also
     /// scrubbed from the stderr tail.
     mcp_servers: Vec<McpServer>,
-    /// Claude Code plugin directories for this session (`LaunchSpec::plugins`).
+    /// This session's skill folders, in its harness's shape (`LaunchSpec::plugins`).
     plugins: Vec<PathBuf>,
     /// The model the tab chose, which the handshake switches to.
     model: Option<String>,
@@ -1851,6 +1851,9 @@ fn refusal_reason(message: &str) -> String {
 /// into the SDK's options, whose `plugins` start `claude` with one
 /// `--plugin-dir` each. `skipMcpDiscovery` because a built-in skill's plugin
 /// brings no servers; Veistra's own arrive in `mcpServers`.
+///
+/// Veistra's own agent takes its skill folders as `_meta.veistra.skills`
+/// (`SkillDelivery::SessionFolder`).
 fn session_options(
     harness: Harness,
     cwd: &str,
@@ -1877,6 +1880,13 @@ fn session_options(
                 .collect();
             params["_meta"]["claudeCode"]["options"]["plugins"] = json!(list);
         }
+    }
+    if harness == Harness::Veistra && !plugins.is_empty() {
+        let list: Vec<Value> = plugins
+            .iter()
+            .map(|dir| json!(dir.to_string_lossy()))
+            .collect();
+        params["_meta"] = json!({ "veistra": { "skills": list } });
     }
     params
 }
@@ -2017,6 +2027,21 @@ mod tests {
         );
         let codex = session_options(Harness::Codex, "C:/tree", json!([]), false, &plugins);
         assert!(codex.get("_meta").is_none(), "Codex has no plugin option");
+    }
+
+    #[test]
+    fn veistras_skill_folders_reach_it_as_its_own_meta() {
+        let folders = [PathBuf::from(
+            "C:/veistra/skills/veistra/agent-ready-canvas",
+        )];
+        let veistra = session_options(Harness::Veistra, "C:/tree", json!([]), true, &folders);
+        assert_eq!(
+            veistra["_meta"],
+            json!({ "veistra": { "skills": ["C:/veistra/skills/veistra/agent-ready-canvas"] } }),
+            "only its skills: Ultra is Claude's alone"
+        );
+        let none = session_options(Harness::Veistra, "C:/tree", json!([]), false, &[]);
+        assert!(none.get("_meta").is_none());
     }
 
     #[test]
