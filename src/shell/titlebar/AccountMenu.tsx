@@ -20,14 +20,22 @@ import { popover } from "../motion";
 import MenuItemList from "../MenuItemList";
 import Avatar from "../ui/Avatar";
 import { accountCall } from "../../bindings";
-import { accountState, displayName, initials, type AccountStatus } from "../account/account";
-import { useAccount } from "../account/useAccount";
+import {
+  accountState,
+  displayName,
+  formatUserCode,
+  initials,
+  type AccountStatus,
+} from "../account/account";
+import { showSignInCode, useAccount } from "../account/useAccount";
 import { useMenuDismiss } from "./useMenuDismiss";
 
 export interface AccountMenuActions {
   /** Open Settings on a page or section, or on its first page for `null`. */
   openSettings: (section: string | null) => void;
   signIn: () => void;
+  /** Bring back the sign-in code dialog (`SignInCodeDialog`). */
+  showCode: () => void;
   cancelSignIn: () => void;
   signOut: () => void;
   openWeb: (page: "dashboard" | "usage") => void;
@@ -56,7 +64,7 @@ export function accountMenuItems(status: AccountStatus | null, a: AccountMenuAct
     });
   } else if (state === "waiting") {
     head.push(
-      { label: "Waiting for the browser to approve…", disabled: true },
+      { label: "Show sign-in code…", onSelect: a.showCode },
       { label: "Cancel sign-in", onSelect: a.cancelSignIn },
     );
   } else if (state === "signed-out") {
@@ -127,6 +135,7 @@ export default function AccountMenu({
   };
 
   const user = account.status?.user ?? null;
+  const waiting = accountState(account.status) === "waiting" ? account.status?.waiting : null;
   const label = accountLabel(account.status);
   const items = accountMenuItems(account.status, {
     openSettings: onOpenSettings,
@@ -136,6 +145,7 @@ export default function AccountMenu({
       void account.signIn().then((ok) => {
         if (!ok) onOpenSettings("account");
       }),
+    showCode: () => showSignInCode(true),
     cancelSignIn: () => void account.cancelSignIn(),
     signOut: () => void account.signOut(),
     openWeb: (page) => void accountCall("account/open-web", { page }).catch(() => {}),
@@ -143,6 +153,20 @@ export default function AccountMenu({
 
   return (
     <div className="overflowmenu accountmenu" ref={rootRef}>
+      {/* The code stays in the bar for as long as the sign-in waits, and
+          brings its dialog back once that has been hidden. */}
+      {waiting && (
+        <button
+          type="button"
+          className="accountmenu__pending"
+          aria-label={`Sign-in code ${formatUserCode(waiting.userCode).split("").join(" ")}`}
+          title="Show the sign-in code"
+          onClick={() => showSignInCode(true)}
+        >
+          <span className="accountmenu__pendingcap">Code</span>
+          {formatUserCode(waiting.userCode)}
+        </button>
+      )}
       <button
         ref={buttonRef}
         type="button"

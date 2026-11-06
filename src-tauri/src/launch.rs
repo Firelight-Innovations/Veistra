@@ -86,7 +86,9 @@ where
     args.into_iter()
         .skip(1)
         .map(|a| a.as_ref().to_string())
-        .find(|a| !a.is_empty() && !a.starts_with('-'))
+        // A `veistra://` URL asks only for the window, which the caller
+        // raises anyway; it is not a path to look for.
+        .find(|a| !a.is_empty() && !a.starts_with('-') && !crate::url_scheme::is_url(a))
         .map(PathBuf::from)
 }
 
@@ -212,6 +214,13 @@ mod tests {
             "C:\\code\\game",
         ];
         assert_eq!(first_path_arg(args), Some(PathBuf::from("C:\\code\\game")));
+    }
+
+    /// veistra.com's "Open the Veistra app" launches with `veistra://open`.
+    #[test]
+    fn a_veistra_url_is_not_a_path() {
+        let args = ["veistra-orchestrator.exe", "veistra://open"];
+        assert_eq!(first_path_arg(args), None);
     }
 
     #[test]

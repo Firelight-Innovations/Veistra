@@ -32,6 +32,7 @@ import NewClusterDialog, {
   type EnvironmentKind as ClusterEnvironmentKind,
 } from "./dialogs/NewClusterDialog";
 import SwitchProjectDialog from "./dialogs/SwitchProjectDialog";
+import SignInCodeHost from "./account/SignInCodeDialog";
 import CloseUnsavedDialog from "./dialogs/CloseUnsavedDialog";
 import { getSubject } from "./viewerSubjects";
 import { nextAddClusterStep } from "./addClusterFlow";
@@ -2176,6 +2177,9 @@ export default function WindowRoot({
           onNewProject={onSwitchProjectNewProject}
         />
       )}
+      {/* The sign-in code, while a sign-in this window started waits for the
+          browser. It reads the account store itself, so it takes no props. */}
+      <SignInCodeHost />
       {/* Mounted only while open, so a window nobody has searched in never pays
           for the dialog, and closing it genuinely discards its results —
           reopening is a fresh search rather than a stale one. `AnimatePresence`

@@ -1,0 +1,55 @@
+/* The sign-in code dialog (`SignInCodeDialog.tsx`). The frame is the shared
+   `.k-dialog`; this is the width and the code cells, drawn like Home's. */
+
+.signincode {
+  width: min(460px, calc(100vw - 32px));
+}
+
+.signincode__body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-4);
+  text-align: center;
+}
+
+.signincode__lead {
+  margin: 0;
+  font: var(--type-body);
+  color: var(--txt-primary);
+}
+
+.signincode__code {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.signincode__cell {
+  width: 40px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: var(--bg-layer-1);
+  border: 1px solid var(--border-subtle-1);
+  font: 500 22px var(--mono);
+  color: var(--txt-primary);
+}
+
+.signincode__dash {
+  width: 10px;
+  height: 2px;
+  background: var(--border-strong);
+}
+
+.signincode__cap {
+  margin: 0;
+  font: var(--type-caption);
+  color: var(--txt-secondary);
+}
+
+.signincode__spacer {
+  flex: 1;
+}

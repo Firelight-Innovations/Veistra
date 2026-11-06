@@ -15,6 +15,7 @@ import { accountCall } from "../../../bindings";
 import {
   accountState,
   displayName,
+  formatUserCode,
   initials,
   planLabel,
   type Outcome,
@@ -166,7 +167,9 @@ function SignInRow(p: {
         <Row
           title="Waiting for the browser"
           description={
-            p.code ? `Approve code ${p.code} on veistra.com to finish.` : "Approve on veistra.com."
+            p.code
+              ? `Check that veistra.com shows code ${formatUserCode(p.code)}, then choose Approve.`
+              : "Approve on veistra.com."
           }
         >
           <button

@@ -41,6 +41,16 @@
   WriteRegStr HKCU "Software\Classes\*\shell\OpenWithVeistra" "Icon" "$INSTDIR\${MAINBINARYNAME}.exe,0"
   WriteRegStr HKCU "Software\Classes\*\shell\OpenWithVeistra\command" "" '"$INSTDIR\${MAINBINARYNAME}.exe" "%1"'
 
+  ; --- veistra:// ----------------------------------------------------------
+  ; veistra.com's "Open the Veistra app" links here. Windows runs the command
+  ; with the URL as `%1`; `launch.rs` skips it as a path and raises the window,
+  ; through single-instance when one is already open. `url_scheme.rs` writes the
+  ; same keys for a build that was never installed.
+  WriteRegStr HKCU "Software\Classes\veistra" "" "URL:Veistra"
+  WriteRegStr HKCU "Software\Classes\veistra" "URL Protocol" ""
+  WriteRegStr HKCU "Software\Classes\veistra\DefaultIcon" "" "$INSTDIR\${MAINBINARYNAME}.exe,0"
+  WriteRegStr HKCU "Software\Classes\veistra\shell\open\command" "" '"$INSTDIR\${MAINBINARYNAME}.exe" "%1"'
+
   ; Explorer caches the verbs it has already read. Without this the entries do
   ; not appear until the next sign-in, which reads exactly like a broken
   ; installer to the person who just ran it.
@@ -67,6 +77,9 @@
   DeleteRegKey HKCU "Software\Classes\*\shell\OpenWithVeistra"
   DeleteRegKey HKCU "Software\Classes\*\shell\OpenWithOpenKaava"
   DeleteRegKey HKCU "Software\Classes\*\shell\OpenWithHELVE"
+
+  ; The URL scheme, named for the website rather than the product, so one key.
+  DeleteRegKey HKCU "Software\Classes\veistra"
 
   System::Call 'shell32::SHChangeNotify(i 0x8000000, i 0, i 0, i 0)'
 !macroend
