@@ -1,5 +1,11 @@
 # Handoff: the app against the live account service (sign-in now, usage and spend next)
 
+> **Superseded in part, 2026-11-05.** §1.1's `https://veistra.com/api` would not work: veistra.com
+> is still Render's static site, which has no `/api`. The app now defaults to the `run.app`
+> address and to `https://veistra-prod.web.app`. `GET /v1/usage`, `GET /v1/runs`,
+> `POST`/`PATCH /v1/runs` and `PUT /v1/limits` are built (Firelight-Innovations/Veistra-Website#18),
+> and §3.1's runs shape is not the one the service takes. `docs/account-api.md` is current.
+
 From the website session, 2026-11-04. For whoever updates the Veistra app next.
 
 The account service exists now. It lives in the **website** repository, `services/account/`

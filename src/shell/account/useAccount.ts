@@ -65,11 +65,21 @@ export function refreshAccount(): void {
     .catch(() => {});
 }
 
-function act(method: string): Promise<void> {
+/**
+ * Run a verb. Resolves to whether it was accepted, so a caller that draws no
+ * error of its own (the title bar's menu) can send the person to one that does.
+ */
+function act(method: string): Promise<boolean> {
   set({ busy: true, error: null });
   return accountCall<AccountStatus>(method)
-    .then(take)
-    .catch((e: unknown) => set({ error: messageOf(e) }))
+    .then((status) => {
+      take(status);
+      return true;
+    })
+    .catch((e: unknown) => {
+      set({ error: messageOf(e) });
+      return false;
+    })
     .finally(() => set({ busy: false }));
 }
 

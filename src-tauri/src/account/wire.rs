@@ -66,9 +66,10 @@ impl Failure {
     /// A sentence for a person. Names the service, never the request.
     pub fn describe(&self) -> String {
         match self {
-            Failure::Unreachable(detail) => {
-                format!("The Veistra account service did not answer ({detail}).")
-            }
+            Failure::Unreachable(detail) => format!(
+                "Could not reach the Veistra account service. Check the internet connection \
+                 and try again. ({detail})"
+            ),
             Failure::OAuth(code) => format!("The Veistra account service refused this ({code})."),
             Failure::Unauthorized => "This computer is no longer signed in to Veistra.".into(),
             Failure::Status { message, .. } => message.clone(),

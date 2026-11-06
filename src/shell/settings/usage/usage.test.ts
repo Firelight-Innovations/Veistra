@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  type Limit,
   type Run,
   type Usage,
+  alertTitle,
   chartTop,
   compact,
   costCell,
@@ -102,7 +104,7 @@ describe("cells", () => {
 });
 
 describe("the limit", () => {
-  const limit = {
+  const limit: Limit = {
     monthly_limit_micros: 50_000_000,
     spent_this_period_micros: 18_400_000,
     alert_pct: 80,
@@ -124,5 +126,17 @@ describe("the limit", () => {
       statusSentence({ ...usage, limit: { ...limit, spent_this_period_micros: 60_000_000 } }),
     ).toBe("You've reached your $50.00 monthly limit.");
     expect(statusSentence(usage)).toBe("You've spent $0.00 this month. No monthly limit is set.");
+  });
+
+  it("names the range, not the month, when there is no limit and the range is not the month", () => {
+    const week = { ...usage, range: { from: "2026-10-29", to: "2026-11-04" } };
+    expect(statusSentence(week)).toBe(
+      "You've spent $0.00 from Oct 29 to Nov 4. No monthly limit is set.",
+    );
+  });
+
+  it("reads an alert the dashboard turned off as none, not as null%", () => {
+    expect(alertTitle(limit)).toBe("Alert at 80%");
+    expect(alertTitle({ ...limit, alert_pct: null })).toBe("No spend alert");
   });
 });
