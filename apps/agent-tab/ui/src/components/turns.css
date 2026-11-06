@@ -98,8 +98,50 @@
   }
 }
 
+/* Reading the prompt: the square turns as its dots light in sequence, the
+   busiest of the three, since nothing else on screen is moving yet. */
+.at-working[data-phase="reading"] .at-working__spark {
+  animation: at-working-turn 1600ms cubic-bezier(0.6, 0, 0.4, 1) infinite;
+}
+
+.at-working[data-phase="reading"] .at-working__spark > i {
+  animation-duration: 800ms;
+}
+
+/* Thinking: all four breathe together, slow and large. */
+.at-working[data-phase="thinking"] .at-working__spark > i {
+  animation: at-working-breathe 1800ms ease-in-out infinite;
+  animation-delay: 0ms;
+}
+
+.at-working[data-phase="thinking"] .at-working__spark > i:nth-child(2),
+.at-working[data-phase="thinking"] .at-working__spark > i:nth-child(3) {
+  animation-delay: 150ms;
+}
+
+@keyframes at-working-turn {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes at-working-breathe {
+  0%,
+  100% {
+    opacity: 0.3;
+    transform: scale(0.7);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .at-working__spark > i {
+  .at-working__spark,
+  .at-working__spark > i,
+  .at-working[data-phase] .at-working__spark,
+  .at-working[data-phase] .at-working__spark > i {
     animation: none;
     opacity: 0.7;
   }

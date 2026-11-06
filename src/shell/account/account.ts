@@ -58,6 +58,22 @@ export function initials(user: AccountUser): string {
   return (first + last).toUpperCase();
 }
 
+/**
+ * `YB2-4BR` from `yb24br`, `YB2 4BR` or `YB2-4BR`: the two halves the
+ * approval page prints, so the person can match them by eye. Home's
+ * `codeGroups` splits the same way.
+ */
+export function formatUserCode(code: string): string {
+  const clean = code.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+  const half = Math.ceil(clean.length / 2);
+  return clean.length > 4 ? `${clean.slice(0, half)}-${clean.slice(half)}` : clean;
+}
+
+/** Whole minutes until `expiresAtMs`, rounded up, never below zero. */
+export function minutesLeft(expiresAtMs: number, now: number): number {
+  return Math.max(0, Math.ceil((expiresAtMs - now) / 60_000));
+}
+
 /** The name to show, or the email when the account has no name. */
 export function displayName(user: AccountUser): string {
   return user.name.trim() || user.email;

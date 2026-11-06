@@ -40,6 +40,13 @@ import { StopButton } from "./StopButton";
 import { SideChat } from "./SideChat";
 import { Thinking } from "./Thinking";
 import { ActionGroup } from "./ActionGroup";
+import { AgentMap } from "./AgentMap";
+import { AgentsButton } from "./AgentsButton";
+import { CompactionItem } from "./CompactionItem";
+import { DetailsPanel } from "./DetailsPanel";
+import { NoticeItem } from "./NoticeItem";
+import { TaskCard } from "./TaskCard";
+import { TaskDetail } from "./TaskDetail";
 import { TodoList } from "./TodoList";
 import { ToolCall } from "./ToolCall";
 import { Transcript } from "./Transcript";
@@ -86,6 +93,14 @@ export interface Slots {
   Note: ComponentType<P.NoteProps>;
   Hint: ComponentType<P.HintProps>;
   SetupCard: ComponentType<P.SetupCardProps>;
+  TaskCard: ComponentType<P.TaskCardProps>;
+  NoticeItem: ComponentType<P.NoticeItemProps>;
+  CompactionItem: ComponentType<P.CompactionItemProps>;
+  // Details
+  DetailsPanel: ComponentType<P.DetailsPanelProps>;
+  TaskDetail: ComponentType<P.TaskDetailProps>;
+  AgentMap: ComponentType<P.AgentMapProps>;
+  AgentsButton: ComponentType<P.AgentsButtonProps>;
   // Composer
   Composer: ComponentType<P.ComposerProps>;
   ContextLink: ComponentType<P.ContextLinkProps>;
@@ -142,6 +157,13 @@ export const defaultSlots: Slots = {
   Note,
   Hint,
   SetupCard,
+  TaskCard,
+  NoticeItem,
+  CompactionItem,
+  DetailsPanel,
+  TaskDetail,
+  AgentMap,
+  AgentsButton,
   Composer,
   ContextLink,
   SideChat,

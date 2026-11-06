@@ -49,6 +49,11 @@ pub trait Adapter: Send + Sync {
     }
     /// Stop the running turn.
     fn abort(&self);
+    /// Ask the agent to stop one of the background tasks it reported. An
+    /// agent that reports none refuses every id.
+    fn stop_task(&self, _task_id: &str) -> Result<(), HostError> {
+        Err(HostError::UnknownTask)
+    }
     /// Answer an approval with one of the options it offered.
     fn answer_approval(&self, item_id: &str, option_id: &str) -> Result<(), HostError>;
     /// Answer a question card, skip it, or withdraw it.
@@ -94,6 +99,9 @@ impl Adapter for Session {
     }
     fn abort(&self) {
         self.cancel();
+    }
+    fn stop_task(&self, task_id: &str) -> Result<(), HostError> {
+        Session::stop_task(self, task_id)
     }
     fn answer_approval(&self, item_id: &str, option_id: &str) -> Result<(), HostError> {
         self.answer(item_id, option_id)
@@ -152,6 +160,10 @@ pub enum HostError {
     /// No approval with that id is waiting.
     #[error("no such approval is waiting")]
     UnknownApproval,
+    /// No background task with that id is running, or the agent will not
+    /// stop it.
+    #[error("no such task is running")]
+    UnknownTask,
     /// The option is not one the approval or the mode list offered.
     #[error("that is not one of the offered choices")]
     UnknownOption,
@@ -177,6 +189,7 @@ impl HostError {
             HostError::NoSession => "noSession",
             HostError::WrongWorktree => "wrongWorktree",
             HostError::UnknownApproval => "unknownApproval",
+            HostError::UnknownTask => "unknownTask",
             HostError::UnknownOption => "unknownOption",
             HostError::Spawn { .. } => "spawn",
             HostError::NotAWorktree(_) => "notAWorktree",
@@ -362,6 +375,7 @@ impl AgentHost {
                 id: format!("handoff{id}:pending"),
                 turn_id: format!("handoff{id}"),
                 kind: crate::event::ItemKind::UserMessage { text },
+                parent: None,
             });
         }
         let closed = session.wait_closed(Instant::now() + RETIRE_WAIT);
@@ -480,6 +494,13 @@ impl AgentHost {
     pub fn cancel(&self, instance_id: &str) -> Result<(), HostError> {
         self.get(instance_id).ok_or(HostError::NoSession)?.abort();
         Ok(())
+    }
+
+    /// Stop one of the background tasks the tab's agent is running.
+    pub fn stop_task(&self, instance_id: &str, task_id: &str) -> Result<(), HostError> {
+        self.get(instance_id)
+            .ok_or(HostError::NoSession)?
+            .stop_task(task_id)
     }
 
     /// Answer an approval in the tab's session.

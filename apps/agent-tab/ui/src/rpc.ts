@@ -111,6 +111,25 @@ export const btwAnswerQuestion = (itemId: string, outcome: QuestionOutcome) =>
 export const choose = (harness: Harness, model?: string | null) =>
   invoke<object>("agent-tab/choose", model === undefined ? { harness } : { harness, model });
 export const cancel = () => invoke<object>("agent-tab/cancel");
+/** Ask the agent to stop one of its background tasks. */
+export const stopTask = (taskId: string) => invoke<object>("agent-tab/stop-task", { taskId });
+
+/** Where this tab's agent works, and the MCP servers it can reach (`agent_tab.rs`). */
+export interface Environment {
+  /** `worktree` or `main`, or `null` with no project. */
+  kind: "worktree" | "main" | null;
+  path: string | null;
+  branch: string | null;
+  ahead: number;
+  behind: number;
+  /** Uncommitted lines and files, from git. */
+  insertions: number;
+  deletions: number;
+  files: number;
+  remote: string | null;
+  connectors: Array<{ name: string; source: "veistra" | "project" }>;
+}
+export const environment = () => invoke<Environment>("agent-tab/environment");
 export const answer = (itemId: string, optionId: string) =>
   invoke<object>("agent-tab/answer", { itemId, optionId });
 /** Answers, or skips, the question card `itemId`. */

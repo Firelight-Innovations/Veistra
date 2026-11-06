@@ -164,6 +164,7 @@ fn include_pending(mut items: Vec<Item>, pending: Option<&str>) -> Vec<Item> {
             id: "history-pending".into(),
             turn_id: "history-pending".into(),
             kind: ItemKind::UserMessage { text: text.into() },
+            parent: None,
         });
     }
     items
@@ -395,6 +396,7 @@ mod tests {
                 id: "i".into(),
                 turn_id: "t".into(),
                 kind: ItemKind::UserMessage { text: text.into() },
+                parent: None,
             }],
         }
     }
@@ -473,6 +475,7 @@ mod tests {
                 kind: ItemKind::UserMessage {
                     text: "Fix the agent UI".into(),
                 },
+                parent: None,
             }],
         };
         history

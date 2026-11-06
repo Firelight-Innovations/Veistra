@@ -6,10 +6,12 @@
  */
 import type { KeyboardEvent, MouseEvent, ReactNode, Ref } from "react";
 import type {
+  AgentState,
   ApprovalOption,
   PlanEntry,
   QuestionChoice,
   SessionState,
+  TaskState,
   ToolStatus,
 } from "../protocol.generated";
 import type { DiffLine } from "../diff";
@@ -17,11 +19,19 @@ import type { Tone } from "../meters";
 import type { ContextChip } from "../mentions";
 import type { LintCheck, LintReport } from "../validation";
 
-/** The tab's frame: header on top, transcript in the middle, composer below. */
+/**
+ * The tab's frame: header on top, transcript in the middle, composer below,
+ * and the Details panel beside them when it is open. In a narrow tab the
+ * panel covers the conversation instead.
+ */
 export interface LayoutProps {
   header: ReactNode;
   transcript: ReactNode;
   composer: ReactNode;
+  /** The Details panel, or nothing while it is closed. */
+  details?: ReactNode;
+  /** Drawn over everything, such as the agent map. */
+  overlay?: ReactNode;
 }
 export interface ContextLinkProps {
   /** Which tracker the link is for, `jira` or `linear`, for the title and example. */
@@ -45,6 +55,9 @@ export interface HeaderProps {
   onSideChat?: () => void;
   /** Show or hide the shell's Agents list, beside the work. */
   onAgents?: () => void;
+  /** Show or hide the Details panel. */
+  onDetails?: () => void;
+  detailsOpen?: boolean;
   history?: ReactNode;
   /** The session's state, or `null` before there is a session. */
   state: SessionState | null;
@@ -82,9 +95,18 @@ export interface TurnProps {
 export interface WorkingProps {
   /** What the agent is at, in words, such as "Running pnpm test". Without it, "Working…". */
   activity?: string;
+  /** Which stretch of the turn this is: before any output, thinking, or a tool running. */
+  phase?: WorkingPhase;
   /** When the turn started, in milliseconds since the epoch, for its running clock. */
   since?: number;
 }
+
+/**
+ * Which stretch of a running turn the agent is in, for how `Working` animates:
+ * `reading` before the agent has said or done anything, `thinking` while it
+ * reasons or decides its next step, `acting` while a tool runs.
+ */
+export type WorkingPhase = "reading" | "thinking" | "acting";
 
 /** Actions on a whole agent turn, such as copying it. */
 export type TurnActionsProps = Record<string, never>;
@@ -126,6 +148,8 @@ export interface UserMessageProps {
 /** Sanitised HTML from `renderMarkdown`. The handlers copy code and stop links. */
 export interface AssistantTextProps {
   html: string;
+  /** Still streaming in: the reply ends on a blinking caret. */
+  streaming?: boolean;
   onClick: (event: MouseEvent<HTMLDivElement>) => void;
   onAuxClick: (event: MouseEvent<HTMLDivElement>) => void;
 }
@@ -148,7 +172,7 @@ export interface ActionGroupProps {
 
 export interface ThinkingProps {
   text: string;
-  /** Still being written: the label shimmers. */
+  /** Still being written: the label shimmers and the latest line shows under it. */
   live?: boolean;
 }
 
@@ -170,6 +194,10 @@ export interface ToolCallProps {
   truncated: boolean;
   paths: string[];
   diffs: DiffProps[];
+  /** The item's id, so the tab can scroll to the row and open it. */
+  anchor?: string;
+  /** A subagent's own work, already drawn, nested under the call that started it. */
+  children?: ReactNode;
 }
 
 export interface PathListProps {
@@ -505,4 +533,169 @@ export interface SessionListProps {
   sessions: SessionRow[];
   activeId: string | null;
   onOpen: (id: string) => void;
+}
+
+/** A background task in the transcript: a workflow, a shell command, a monitor. */
+export interface TaskCardProps {
+  /** The item's id, so the tab can scroll to the card. */
+  anchor: string;
+  name: string;
+  /** "Workflow", "Shell", in words. */
+  type: string;
+  /** `workflow`, `shell`, ..., for its glyph. */
+  taskType: string;
+  state: TaskState;
+  /** The agent's line about it, or `null`. */
+  description: string | null;
+  /** What it said last, or how it ended. */
+  summary: string | null;
+  /** How long it has run, in words, or `null`. */
+  elapsed: string | null;
+  /** A workflow's place, "Phase 2 of 4: Review", or `null`. */
+  phase: string | null;
+  /** "3 running, 5 done", or the tokens it has used, or `null`. */
+  progress: string | null;
+  onDetails: () => void;
+  /** Stops it; `null` when it cannot be stopped or has ended. */
+  onStop: (() => void) | null;
+  stopping: boolean;
+}
+
+/** An advisory from the agent, such as a rate-limit warning. */
+export interface NoticeItemProps {
+  /** `info` or `warning`. */
+  severity: string;
+  title: string;
+  description: string | null;
+}
+
+/** The conversation being compacted: a divider, with what was kept folded under it. */
+export interface CompactionItemProps {
+  /** `inProgress`, `completed`, `failed` or `cancelled`. */
+  status: string;
+  summary: string;
+  error: string | null;
+}
+
+/** One row in a Details section: a file, a card shown, a connector. */
+export interface DetailRow {
+  id: string;
+  label: string;
+  /** A second, quieter part: a folder, a source, a state. */
+  detail?: string | null;
+  /** Lines added and removed, for a changed file. */
+  added?: number;
+  removed?: number;
+  /** Marks a file the agent made. */
+  isNew?: boolean;
+  /** A coloured dot: `running`, `done`, `failed`, `idle`. */
+  dot?: "running" | "done" | "failed" | "idle";
+  /** Without it the row is plain text. */
+  onOpen?: () => void;
+}
+
+/** Where the session works, in words. `null` fields are not shown. */
+export interface EnvironmentView {
+  /** "Local worktree", "Main checkout". */
+  kind: string;
+  branch: string | null;
+  path: string | null;
+  /** "2 ahead, 1 behind". */
+  sync: string | null;
+  remote: string | null;
+  /** "3 uncommitted files", with line counts. */
+  uncommitted: { label: string; added: number; removed: number } | null;
+}
+
+/**
+ * The Details panel: Environment, Context, Connectors, Outputs, Changes and
+ * Background tasks, as Claude's own app lays them out. With `detail` set it
+ * shows that instead, such as one task's phases.
+ */
+export interface DetailsPanelProps {
+  onClose: () => void;
+  /** `null` while it loads. */
+  environment: EnvironmentView | null;
+  onOpenGit: (() => void) | null;
+  context: { used: number; size: number } | null;
+  /** `null` while they load. */
+  connectors: DetailRow[] | null;
+  onManageConnectors: (() => void) | null;
+  outputs: DetailRow[];
+  changes: DetailRow[];
+  tasks: DetailRow[];
+  /** "3 agents", opening the agent map; `null` when there are none. */
+  agents: { label: string; onOpen: () => void } | null;
+  /** Shown in place of the sections, with a way back. */
+  detail?: ReactNode;
+}
+
+/** One agent of a workflow, in its phase. */
+export interface TaskAgentRow {
+  id: string;
+  label: string;
+  state: AgentState;
+  /** "Opus 5.5 · 1m 20s", in words, or `null`. */
+  meta: string | null;
+  /** The start of what it answered. */
+  result: string | null;
+}
+
+/** A workflow phase, with its agents under it. */
+export interface TaskPhaseRow {
+  title: string;
+  detail: string | null;
+  /** `done`, `running`, `failed`, `next` or `skipped`. */
+  state: string;
+  /** The state in words. */
+  stateLabel: string;
+  agents: TaskAgentRow[];
+}
+
+/** One background task, opened: its figures, then a workflow's phases. */
+export interface TaskDetailProps {
+  name: string;
+  type: string;
+  state: TaskState;
+  stateLabel: string;
+  /** "12m 4s · 225.8k tokens · 40 tool uses", in words. */
+  figures: string | null;
+  description: string | null;
+  summary: string | null;
+  lastTool: string | null;
+  /** Phases that have started or finished. */
+  phases: TaskPhaseRow[];
+  /** Phases no agent has reached, while the workflow runs. */
+  upNext: TaskPhaseRow[];
+  /** Agents that name no declared phase, or all of them when there are no phases. */
+  loose: TaskAgentRow[];
+  looseTitle: string;
+  onBack: () => void;
+  onStop: (() => void) | null;
+  stopping: boolean;
+}
+
+/** A node on the agent map: the session, a subagent or a task. */
+export interface MapNode {
+  id: string;
+  label: string;
+  /** "5m 18s · 225.8k tokens". */
+  meta: string | null;
+  state: "running" | "done" | "failed" | "idle";
+  onOpen?: () => void;
+}
+
+/** The session, the subagents it started and its background tasks, as a map. */
+export interface AgentMapProps {
+  main: MapNode;
+  agents: MapNode[];
+  tasks: MapNode[];
+  onClose: () => void;
+}
+
+/** The composer's "2 agents running" button, which opens the agent map. */
+export interface AgentsButtonProps {
+  label: string;
+  running: boolean;
+  onClick: () => void;
 }

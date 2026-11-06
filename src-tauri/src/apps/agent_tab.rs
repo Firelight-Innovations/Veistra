@@ -90,6 +90,7 @@ const INSTANCE_METHODS: &[&str] = &[
     "agent-tab/send",
     "agent-tab/attach",
     "agent-tab/cancel",
+    "agent-tab/stop-task",
     "agent-tab/answer",
     "agent-tab/set-mode",
     "agent-tab/set-config",
@@ -113,6 +114,7 @@ const INSTANCE_METHODS: &[&str] = &[
     "agent-tab/history-archive",
     "agent-tab/session-meta",
     "agent-tab/set-session-meta",
+    "agent-tab/environment",
 ];
 
 /// The methods that advance an agent, and so run only with developer mode on.
@@ -143,6 +145,7 @@ const UNGATED_METHODS: &[&str] = &[
     "agent-tab/history-archive",
     "agent-tab/session-meta",
     "agent-tab/set-session-meta",
+    "agent-tab/environment",
     "agent-tab/context-sources",
     "agent-tab/cluster-context",
     "agent-tab/btw-attach",
@@ -150,6 +153,7 @@ const UNGATED_METHODS: &[&str] = &[
     "agent-tab/btw-reset",
     "agent-tab/attach",
     "agent-tab/cancel",
+    "agent-tab/stop-task",
     "agent-tab/stop",
     "agent-tab/reset",
     "agent-tab/choose",
@@ -724,6 +728,8 @@ pub fn call_for(
         }
         "agent-tab/btw-answer" => answer(host, &format!("{instance}:btw"), &params),
         "agent-tab/cancel" => done(host.cancel(instance)),
+        // Ends what is running, as `cancel` does, so it is never gated.
+        "agent-tab/stop-task" => done(host.stop_task(instance, &text_param(&params, "taskId")?)),
         // Gated with `send` above, in `GATED_METHODS`. Answers a question card
         // too, so a question needs no method, and no gate, of its own.
         "agent-tab/answer" => answer(host, instance, &params),
@@ -752,6 +758,8 @@ pub fn call_for(
             Ok(json!(sessions.history.meta(instance)))
         }
         "agent-tab/session-meta" => Ok(json!(sessions.history.meta(instance))),
+        // A read, for the Details panel; ungated, as `session-meta` is.
+        "agent-tab/environment" => Ok(environment(app, context)),
         "agent-tab/reset" => {
             if let Ok(root) = worktree(app, context) {
                 sessions.save_history(host, instance, &root.path());
@@ -1098,6 +1106,104 @@ fn from_session(servers: Vec<crate::mcp::SessionServer>) -> Vec<McpServer> {
             bearer: s.bearer,
         })
         .collect()
+}
+
+/// The most bytes of a project's `.mcp.json` read for its server names.
+const MCP_JSON_LIMIT: u64 = 256 * 1024;
+
+/// What the Details panel shows of where the tab's agent runs: the checkout
+/// and its branch, how far it has drifted from its upstream, the remote, and
+/// the MCP servers a session there is handed. Each part is best-effort, so a
+/// cluster with no checkout answers with what it has. Server names only:
+/// never a URL or a bearer.
+fn environment(app: &AppHandle, context: &CallContext) -> Value {
+    let env = context
+        .cluster_id
+        .as_deref()
+        .and_then(|id| app.state::<ShellState>().cluster_write_environment(id));
+    let kind = match env {
+        Some(Environment::LocalWorktree { .. }) => Some("worktree"),
+        Some(Environment::Main) => Some("main"),
+        _ => None,
+    };
+    let path = worktree_path(env.as_ref(), context.project.as_deref()).ok();
+    let status = context.cluster_id.clone().and_then(|id| {
+        crate::git::git_cluster_status(app.clone(), id)
+            .ok()
+            .flatten()
+    });
+    let remote = path
+        .as_deref()
+        .and_then(|p| crate::git::remote_url(p, "origin"));
+    let veistra: Vec<String> = context
+        .cluster_id
+        .as_deref()
+        .map(|cluster| {
+            crate::mcp::session_servers(app, cluster)
+                .into_iter()
+                .map(|s| s.name)
+                .collect()
+        })
+        .unwrap_or_default();
+    let project = path.as_deref().map(project_servers).unwrap_or_default();
+    json!({
+        "kind": kind,
+        "path": path.map(|p| p.to_string_lossy().into_owned()),
+        "branch": status.as_ref().map(|s| s.branch.clone()).filter(|b| !b.is_empty()),
+        "ahead": status.as_ref().map_or(0, |s| s.ahead),
+        "behind": status.as_ref().map_or(0, |s| s.behind),
+        "insertions": status.as_ref().map_or(0, |s| s.insertions),
+        "deletions": status.as_ref().map_or(0, |s| s.deletions),
+        "files": status.as_ref().map_or(0, changed_files),
+        "remote": remote,
+        "connectors": veistra
+            .iter()
+            .map(|name| json!({ "name": name, "source": "veistra" }))
+            .chain(project.iter().map(|name| json!({ "name": name, "source": "project" })))
+            .collect::<Vec<_>>(),
+    })
+}
+
+/// How many files a status names, a file both staged and not counted once.
+fn changed_files(status: &crate::git::GitStatus) -> usize {
+    let mut paths: Vec<&str> = status
+        .staged
+        .iter()
+        .chain(&status.unstaged)
+        .map(|f| f.path.as_str())
+        .collect();
+    paths.sort_unstable();
+    paths.dedup();
+    paths.len()
+}
+
+/// The servers a project's own `.mcp.json` names, other than Veistra's,
+/// which the session lists from where it serves them.
+fn project_servers(root: &Path) -> Vec<String> {
+    use std::io::Read;
+    let Ok(file) = std::fs::File::open(root.join(".mcp.json")) else {
+        return Vec::new();
+    };
+    let mut text = String::new();
+    if file.take(MCP_JSON_LIMIT).read_to_string(&mut text).is_err() {
+        return Vec::new();
+    }
+    let Ok(json) = serde_json::from_str::<Value>(&text) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = json
+        .get("mcpServers")
+        .and_then(Value::as_object)
+        .map(|servers| {
+            servers
+                .keys()
+                .filter(|name| !name.starts_with("veistra-"))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
 }
 
 /// The worktree the calling cluster writes to, or why it has none.

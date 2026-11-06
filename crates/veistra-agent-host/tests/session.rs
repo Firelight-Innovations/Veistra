@@ -962,6 +962,7 @@ fn saved_conversation_restores_without_a_process_and_reaches_the_next_harness() 
             kind: ItemKind::UserMessage {
                 text: "Finish [@Design](<veistra://canvas/main/frame/99>)".into(),
             },
+            parent: None,
         },
         Item {
             id: "s1:i2".into(),
@@ -969,6 +970,7 @@ fn saved_conversation_restores_without_a_process_and_reaches_the_next_harness() 
             kind: ItemKind::AssistantText {
                 text: "The design context is loaded; next update the header.".into(),
             },
+            parent: None,
         },
     ];
     let imported = rig

@@ -5,7 +5,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { AccountStatus } from "../account/account";
+import { formatUserCode, minutesLeft, type AccountStatus } from "../account/account";
 
 const bindings = vi.hoisted(() => ({ accountCall: vi.fn() }));
 vi.mock("../../bindings", () => ({ accountCall: bindings.accountCall }));
@@ -15,7 +15,8 @@ import AccountMenu, {
   accountMenuItems,
   type AccountMenuActions,
 } from "./AccountMenu";
-import { resetAccountForTests } from "../account/useAccount";
+import { refreshAccount, resetAccountForTests } from "../account/useAccount";
+import SignInCodeHost from "../account/SignInCodeDialog";
 
 const base: AccountStatus = {
   configured: true,
@@ -42,14 +43,12 @@ function actions(): AccountMenuActions & Record<string, ReturnType<typeof vi.fn>
   return {
     openSettings: vi.fn(),
     signIn: vi.fn(),
+    showCode: vi.fn(),
     cancelSignIn: vi.fn(),
     signOut: vi.fn(),
     openWeb: vi.fn(),
   };
 }
-
-const labels = (status: AccountStatus | null) =>
-  accountMenuItems(status, actions()).map((i) => i.label);
 
 afterEach(() => {
   cleanup();
@@ -100,11 +99,27 @@ describe("accountMenuItems", () => {
     expect(a.openSettings).toHaveBeenCalledWith("account");
   });
 
-  it("offers to cancel a sign-in waiting for the browser", () => {
-    expect(labels(waiting).slice(0, 2)).toEqual([
-      "Waiting for the browser to approve…",
-      "Cancel sign-in",
-    ]);
+  it("offers the code and a cancel while a sign-in waits for the browser", () => {
+    const a = actions();
+    const items = accountMenuItems(waiting, a);
+    expect(items.slice(0, 2).map((i) => i.label)).toEqual(["Show sign-in code…", "Cancel sign-in"]);
+    items[0].onSelect?.();
+    expect(a.showCode).toHaveBeenCalled();
+    items[1].onSelect?.();
+    expect(a.cancelSignIn).toHaveBeenCalled();
+  });
+
+  it("prints the code in the two halves the approval page shows", () => {
+    expect(formatUserCode("YB2-4BR")).toBe("YB2-4BR");
+    expect(formatUserCode("yb24br")).toBe("YB2-4BR");
+    expect(formatUserCode("ABCD 1234")).toBe("ABCD-1234");
+    expect(formatUserCode("AB12")).toBe("AB12");
+  });
+
+  it("counts the code's minutes up, and never below zero", () => {
+    expect(minutesLeft(10 * 60_000, 0)).toBe(10);
+    expect(minutesLeft(61_000, 0)).toBe(2);
+    expect(minutesLeft(0, 5_000)).toBe(0);
   });
 
   it("names the button after the account, or just Account", () => {
@@ -195,6 +210,82 @@ describe("AccountMenu", () => {
     await waitFor(() => expect(bindings.accountCall).toHaveBeenCalledWith("account/sign-in"));
     await act(async () => {});
     expect(onOpenSettings).not.toHaveBeenCalled();
+  });
+
+  // The menu and the dialog together, as the window mounts them.
+  const both = () =>
+    render(
+      <>
+        <AccountMenu onOpenSettings={() => {}} />
+        <SignInCodeHost />
+      </>,
+    );
+  const dialog = () => screen.queryByRole("dialog", { name: "Sign-in code" });
+
+  it("puts the code the browser asks about in a dialog once a sign-in starts", async () => {
+    bindings.accountCall.mockImplementation((method: string) =>
+      Promise.resolve(method === "account/sign-in" ? waiting : base),
+    );
+    both();
+    expect(screen.queryByRole("button", { name: /^Sign-in code/ })).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Account" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Sign in…" }));
+
+    await waitFor(() => expect(dialog()).not.toBeNull());
+    expect(screen.getByRole("group", { name: "Code A B C D - 1 2 3 4" })).toBeTruthy();
+    // The browser opening takes focus from the window; the dialog stays.
+    fireEvent.blur(window);
+    expect(dialog()).not.toBeNull();
+  });
+
+  it("hides without cancelling, and comes back from the code in the title bar", async () => {
+    answer(waiting);
+    both();
+    fireEvent.click(await screen.findByRole("button", { name: /^Sign-in code/ }));
+    expect(dialog()).not.toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Hide" }));
+    await waitFor(() => expect(dialog()).toBeNull());
+    expect(bindings.accountCall).not.toHaveBeenCalledWith("account/cancel-sign-in");
+    const chip = screen.getByRole("button", { name: /^Sign-in code/ });
+    expect(chip.textContent).toContain("ABCD-1234");
+
+    fireEvent.click(chip);
+    expect(dialog()).not.toBeNull();
+  });
+
+  it("hides on Escape without the Escape reaching the page behind it", async () => {
+    answer(waiting);
+    const behind = vi.fn();
+    document.addEventListener("keydown", behind);
+    both();
+    fireEvent.click(await screen.findByRole("button", { name: /^Sign-in code/ }));
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    await waitFor(() => expect(dialog()).toBeNull());
+    expect(behind).not.toHaveBeenCalled();
+    document.removeEventListener("keydown", behind);
+  });
+
+  it("copies the approval page's address for a browser that did not open", async () => {
+    answer(waiting);
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    both();
+    fireEvent.click(await screen.findByRole("button", { name: /^Sign-in code/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy sign-in link" }));
+    expect(writeText).toHaveBeenCalledWith("https://veistra.com/device?code=ABCD1234");
+    expect(await screen.findByRole("button", { name: "Link copied" })).toBeTruthy();
+  });
+
+  it("closes by itself when the sign-in finishes", async () => {
+    answer(waiting);
+    both();
+    fireEvent.click(await screen.findByRole("button", { name: /^Sign-in code/ }));
+    expect(dialog()).not.toBeNull();
+    answer(signedIn);
+    await act(async () => refreshAccount());
+    await waitFor(() => expect(dialog()).toBeNull());
+    expect(screen.queryByRole("button", { name: /^Sign-in code/ })).toBeNull();
   });
 
   it("opens Settings on Usage from its row", async () => {

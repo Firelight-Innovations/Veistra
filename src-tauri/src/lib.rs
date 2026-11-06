@@ -62,6 +62,7 @@ mod telemetry;
 mod tool;
 mod tool_frontend;
 mod updater;
+mod url_scheme;
 mod userdata;
 mod webview;
 mod windows;
@@ -367,6 +368,10 @@ pub fn run() {
             // it touches is its own.
             settings::seed(app.handle());
             copilot_key::sync(app.handle());
+
+            // So veistra.com's "Open the Veistra app" reaches this window. Only
+            // writes when no installed Veistra already answers the scheme.
+            url_scheme::claim_if_unclaimed(&app.config().identifier);
 
             // Before the layout, because `restore_session` reads the old global
             // open project out of this store to migrate it onto a cluster. The

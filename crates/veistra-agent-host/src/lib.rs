@@ -32,6 +32,7 @@ pub mod transcript;
 mod transfer;
 pub mod veistra_call;
 pub mod wire;
+pub mod workflow;
 
 pub use event::{
     Attachment, ConfigChoice, ConfigOption, Envelope, Event, HarnessInfo, Hint, Item, ItemKind,

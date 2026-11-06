@@ -1,23 +1,20 @@
-//! ACP's `session/update` stream, turned into [`Event`]s.
+//! ACP's `session/update` stream, turned into [`Event`]s. Pure: no process,
+//! no clock, no I/O, so every rule below is tested one update at a time.
 //!
-//! Pure: no process, no clock, no I/O. The session feeds it what the agent
-//! says and sends on whatever comes out, which is what lets every rule below
-//! be tested one update at a time.
-//!
-//! What it does with each update kind:
-//!
-//! - message and thought chunks become one text or reasoning item per ACP
-//!   `messageId`, started and then appended to; when an adapter sends no
-//!   `messageId`, consecutive chunks of one kind are one item.
-//! - `tool_call` and `tool_call_update` become one tool item per `toolCallId`.
-//!   A field an update leaves out, or sends as `null`, is unchanged.
-//! - `plan` is one item for the whole session, replaced in place.
-//! - what the agent sends is capped before it is kept (see the limits below).
-//! - `usage_update` is remembered and drawn once, as the turn ends.
-//! - `current_mode_update` and `config_option_update` change the status, not
-//!   the transcript.
-//! - everything else is counted and dropped, `plan_update` and `_`-prefixed
-//!   kinds among them.
+//! - message and thought chunks are one item per `messageId`, or per run of
+//!   one kind when there is none; a tool is one item per `toolCallId`, and a
+//!   field an update leaves out or sends as `null` is unchanged.
+//! - `plan` is one item, replaced in place; `usage_update` is drawn once, as
+//!   the turn ends. What the agent sends is capped (see the limits below).
+//! - a chunk or new tool call with no turn open is the agent working on its
+//!   own: it opens a turn with no prompt, which the next `usage_update` closes.
+//! - `async_task_*` are one task item each, updated past their turn; a
+//!   workflow's run is read from disk (`workflow.rs`). `notice` and
+//!   `compaction_*` are items of their own.
+//! - an update naming `_meta.claudeCode.parentToolUseId` is a subagent's,
+//!   and its item names the subagent's call as its `parent`.
+//! - mode and config option updates change the status, not the transcript;
+//!   everything else is counted and dropped.
 
 use std::collections::{HashMap, HashSet};
 
@@ -26,12 +23,14 @@ use serde_json::Value;
 use crate::config::{enters_held_back, settings, Settings};
 use crate::elicit::Card;
 use crate::event::{
-    AgentCommand, ApprovalOption, Event, FileDiff, Hint, Item, ItemKind, PlanEntry, ToolStatus,
+    AgentCommand, ApprovalOption, Event, FileDiff, Hint, Item, ItemKind, PlanEntry, TaskState,
+    TaskUsage, ToolStatus, WorkflowRun,
 };
 use crate::guard::request_paths;
 use crate::harness::Harness;
 use crate::mask::mask;
 use crate::veistra_call;
+use crate::workflow::{self, Launch};
 
 /// The most tool output kept per tool item, in bytes.
 pub const OUTPUT_LIMIT: usize = 16 * 1024;
@@ -59,6 +58,17 @@ pub const MAX_PATHS: usize = 50;
 
 /// The most tool calls tracked as open at once. A call past it is dropped.
 pub const MAX_OPEN_TOOLS: usize = 500;
+
+/// The most background tasks tracked. A task past it is dropped.
+pub const MAX_TASKS: usize = 200;
+
+/// The most tool calls remembered past their turn, for nesting and tasks.
+/// Past it the memory starts again.
+const MAX_REMEMBERED: usize = 4096;
+
+/// How many more times a workflow's folder is read once its task ends, for
+/// the run record Claude writes as it finishes.
+const FINAL_READS: u8 = 5;
 
 /// The most commands kept from one `available_commands_update`.
 pub const COMMANDS_LIMIT: usize = 256;
@@ -109,6 +119,25 @@ pub struct Normalizer {
     commands: Option<Vec<AgentCommand>>,
     title: Option<String>,
     dropped: u64,
+    /// The turn last open, for what arrives between turns and belongs to the
+    /// conversation rather than to a turn of its own: a task, a notice.
+    last_turn: Option<String>,
+    /// The open turn is one the agent started itself, with no prompt.
+    autonomous: bool,
+    /// Item ids by the agent's tool call id, kept past the turn, so a subagent
+    /// or a task can name the call it belongs to.
+    calls: HashMap<String, String>,
+    /// Each tool call's parent call, by the agent's ids. An adapter may name
+    /// it on the first update only, so it is remembered.
+    parents: HashMap<String, String>,
+    /// Background tasks by the agent's task id.
+    tasks: HashMap<String, Item>,
+    /// Workflow runs by task id, from the Workflow tool's result.
+    launches: HashMap<String, Launch>,
+    /// Reads of a finished workflow's folder still to make.
+    final_reads: HashMap<String, u8>,
+    /// Compactions by the agent's id.
+    compactions: HashMap<String, Item>,
 }
 
 #[derive(Debug)]
@@ -140,6 +169,14 @@ impl Normalizer {
             commands: None,
             title: None,
             dropped: 0,
+            last_turn: None,
+            autonomous: false,
+            calls: HashMap::new(),
+            parents: HashMap::new(),
+            tasks: HashMap::new(),
+            launches: HashMap::new(),
+            final_reads: HashMap::new(),
+            compactions: HashMap::new(),
         }
     }
 
@@ -153,7 +190,44 @@ impl Normalizer {
             id: self.mint('i'),
             turn_id: self.turn.clone().unwrap_or_default(),
             kind,
+            parent: None,
         }
+    }
+
+    /// An item that belongs to the conversation rather than to a turn: the
+    /// open turn, or the one last open.
+    fn standing(&mut self, kind: ItemKind) -> Item {
+        let mut item = self.item(kind);
+        if item.turn_id.is_empty() {
+            item.turn_id = self.last_turn.clone().unwrap_or_default();
+        }
+        item
+    }
+
+    /// The agent started working with no prompt: a turn of its own.
+    fn open_cycle(&mut self) -> Vec<Event> {
+        let turn_id = self.mint('t');
+        self.turn = Some(turn_id.clone());
+        self.autonomous = true;
+        self.usage = None;
+        vec![Event::TurnStarted { turn_id }]
+    }
+
+    /// The item id of the subagent call `update` belongs to, if it names one
+    /// and the call is known.
+    fn parent(&self, update: &Value) -> Option<String> {
+        let call = update
+            .pointer("/_meta/claudeCode/parentToolUseId")
+            .and_then(Value::as_str)?;
+        self.calls.get(call).cloned()
+    }
+
+    fn remember(&mut self, call: &str, item_id: &str) {
+        if self.calls.len() >= MAX_REMEMBERED {
+            self.calls.clear();
+            self.parents.clear();
+        }
+        self.calls.insert(call.to_string(), item_id.to_string());
     }
 
     /// Updates dropped so far: unknown kinds, chunks outside a turn, text past
@@ -192,18 +266,34 @@ impl Normalizer {
         self.turn.as_deref()
     }
 
+    /// Whether the open turn is one the agent started itself, with no prompt.
+    pub fn autonomous(&self) -> bool {
+        self.turn.is_some() && self.autonomous
+    }
+
+    /// Whether a prompt's turn is open. A turn the agent started itself is
+    /// not one: the next prompt closes it.
+    pub fn prompted(&self) -> bool {
+        self.turn.is_some() && !self.autonomous
+    }
+
     /// A prompt starts a turn: the turn, then the user's message, complete.
+    /// A turn the agent started itself is closed first.
     pub fn begin_turn(&mut self, text: &str) -> Vec<Event> {
+        let mut events = if self.autonomous() {
+            self.end_turn("end_turn")
+        } else {
+            Vec::new()
+        };
         let turn_id = self.mint('t');
         self.turn = Some(turn_id.clone());
         self.usage = None;
         let item = self.item(ItemKind::UserMessage {
             text: text.to_string(),
         });
-        vec![
-            Event::TurnStarted { turn_id },
-            Event::ItemCompleted { item },
-        ]
+        events.push(Event::TurnStarted { turn_id });
+        events.push(Event::ItemCompleted { item });
+        events
     }
 
     /// The turn ended: close what is open, draw the usage, end the turn.
@@ -232,11 +322,33 @@ impl Normalizer {
             events.push(Event::ItemCompleted { item });
         }
         self.turn = None;
+        self.autonomous = false;
+        self.last_turn = Some(turn_id.clone());
         events.push(Event::TurnCompleted {
             turn_id,
             stop_reason: stop_reason.to_string(),
         });
         events
+    }
+
+    /// The agent has exited: every task it left running ends with it.
+    pub fn end_tasks(&mut self) -> Vec<Event> {
+        let mut ended: Vec<Item> = self
+            .tasks
+            .values_mut()
+            .filter(|item| is_running(item))
+            .map(|item| {
+                if let ItemKind::Task { state, .. } = &mut item.kind {
+                    *state = TaskState::Stopped;
+                }
+                item.clone()
+            })
+            .collect();
+        ended.sort_by(|a, b| a.id.cmp(&b.id));
+        ended
+            .into_iter()
+            .map(|item| Event::ItemCompleted { item })
+            .collect()
     }
 
     /// An error, drawn as one finished item. `message` is masked here.
@@ -354,8 +466,18 @@ impl Normalizer {
                 let used = number(update, "used");
                 let size = number(update, "size");
                 self.usage = Some((used, size));
+                // Every result ends with one, so it is what closes a turn the
+                // agent started itself.
+                if self.autonomous() {
+                    return self.end_turn("end_turn");
+                }
                 Vec::new()
             }
+            "async_task_spawned" | "async_task_progress" | "async_task_state_update" => {
+                self.task(kind, update)
+            }
+            "notice" => self.notice(update),
+            "compaction_update" | "compaction_summary_chunk" => self.compaction(kind, update),
             "current_mode_update" => {
                 self.mode = update
                     .get("currentModeId")
@@ -402,16 +524,19 @@ impl Normalizer {
             self.dropped += 1;
             return Vec::new();
         };
-        if self.turn.is_none() {
-            self.dropped += 1;
-            return Vec::new();
-        }
+        let mut events = if self.turn.is_none() {
+            self.open_cycle()
+        } else {
+            Vec::new()
+        };
+        let parent = self.parent(update);
         let message_id = update
             .get("messageId")
             .and_then(Value::as_str)
             .map(str::to_string);
         let continues = self.open.as_ref().is_some_and(|open| {
             is_reasoning(&open.item.kind) == reasoning
+                && open.item.parent == parent
                 && (message_id.is_none() || open.message_id == message_id)
         });
         if continues {
@@ -436,12 +561,13 @@ impl Normalizer {
                 self.dropped += 1;
             }
             text.push_str(&added);
-            return vec![Event::ItemDelta {
+            events.push(Event::ItemDelta {
                 item_id: open.item.id.clone(),
                 text: added,
-            }];
+            });
+            return events;
         }
-        let mut events = self.close_text();
+        events.extend(self.close_text());
         let (mut text, was_cut) = cut(chunk, TEXT_LIMIT);
         if was_cut {
             text.push_str(CUT_NOTE);
@@ -452,7 +578,8 @@ impl Normalizer {
         } else {
             ItemKind::AssistantText { text }
         };
-        let item = self.item(kind);
+        let mut item = self.item(kind);
+        item.parent = parent;
         events.push(Event::ItemStarted { item: item.clone() });
         self.open = Some(OpenText {
             item,
@@ -467,7 +594,10 @@ impl Normalizer {
             self.dropped += 1;
             return Vec::new();
         };
-        if self.turn.is_none() {
+        // A new call with no turn open is the agent working on its own; an
+        // update to a call whose turn has ended is not.
+        let opens = update.get("sessionUpdate").and_then(Value::as_str) == Some("tool_call");
+        if self.turn.is_none() && !opens {
             self.dropped += 1;
             return Vec::new();
         }
@@ -475,7 +605,18 @@ impl Normalizer {
             self.dropped += 1;
             return Vec::new();
         }
-        let mut events = self.close_text();
+        let mut events = if self.turn.is_none() {
+            self.open_cycle()
+        } else {
+            Vec::new()
+        };
+        events.extend(self.close_text());
+        if let Some(parent) = update
+            .pointer("/_meta/claudeCode/parentToolUseId")
+            .and_then(Value::as_str)
+        {
+            self.parents.insert(id.to_string(), parent.to_string());
+        }
         let named = self.named.entry(id.to_string()).or_default();
         for path in request_paths(update) {
             if !named.contains(&path) {
@@ -486,16 +627,25 @@ impl Normalizer {
         let started = known.is_none();
         let mut item = match known {
             Some(item) => item,
-            None => self.item(ItemKind::ToolCall {
-                title: String::new(),
-                tool_kind: "other".to_string(),
-                status: ToolStatus::Pending,
-                output: String::new(),
-                truncated: false,
-                paths: Vec::new(),
-                diffs: Vec::new(),
-                veistra: None,
-            }),
+            None => {
+                let mut item = self.item(ItemKind::ToolCall {
+                    title: String::new(),
+                    tool_kind: "other".to_string(),
+                    status: ToolStatus::Pending,
+                    output: String::new(),
+                    truncated: false,
+                    paths: Vec::new(),
+                    diffs: Vec::new(),
+                    veistra: None,
+                });
+                item.parent = self
+                    .parents
+                    .get(id)
+                    .and_then(|parent| self.calls.get(parent))
+                    .cloned();
+                self.remember(id, &item.id);
+                item
+            }
         };
         merge_tool(&mut item.kind, update);
         // A show call to the context server also carries its component.
@@ -521,6 +671,11 @@ impl Normalizer {
         );
         if done {
             self.named.remove(id);
+            if let ItemKind::ToolCall { output, .. } = &item.kind {
+                if let Some(launch) = workflow::launch(output) {
+                    self.launches.insert(launch.task_id.clone(), launch);
+                }
+            }
         }
         let event = match (started, done) {
             (_, true) => Event::ItemCompleted { item },
@@ -533,6 +688,197 @@ impl Normalizer {
             self.shows.remove(id);
         }
         events.push(event);
+        events
+    }
+
+    /// `async_task_spawned`, `async_task_progress` and
+    /// `async_task_state_update`: one item per task, updated in place.
+    fn task(&mut self, kind: &str, update: &Value) -> Vec<Event> {
+        let Some(task_id) = update.get("asyncTaskId").and_then(Value::as_str) else {
+            self.dropped += 1;
+            return Vec::new();
+        };
+        let call_item = update
+            .get("toolCallId")
+            .and_then(Value::as_str)
+            .and_then(|call| self.calls.get(call))
+            .cloned();
+        let mut events = Vec::new();
+        let (mut item, started) = match self.tasks.remove(task_id) {
+            Some(item) => (item, false),
+            None if kind == "async_task_spawned" && self.tasks.len() < MAX_TASKS => {
+                if self.turn.is_some() {
+                    events.extend(self.close_text());
+                }
+                let item = self.standing(ItemKind::Task {
+                    task_id: task_id.to_string(),
+                    name: String::new(),
+                    task_type: String::new(),
+                    description: String::new(),
+                    state: TaskState::Running,
+                    summary: None,
+                    last_tool: None,
+                    usage: None,
+                    can_stop: false,
+                    call_item: None,
+                    run: None,
+                });
+                (item, true)
+            }
+            None => {
+                self.dropped += 1;
+                return Vec::new();
+            }
+        };
+        merge_task(&mut item.kind, update, call_item);
+        let finished = matches!(
+            item.kind,
+            ItemKind::Task {
+                state: TaskState::Completed | TaskState::Failed | TaskState::Stopped,
+                ..
+            }
+        );
+        if finished {
+            self.final_reads
+                .entry(task_id.to_string())
+                .or_insert(FINAL_READS);
+        }
+        self.tasks.insert(task_id.to_string(), item.clone());
+        events.push(match (started, finished) {
+            (_, true) => Event::ItemCompleted { item },
+            (true, false) => Event::ItemStarted { item },
+            (false, false) => Event::ItemUpdated { item },
+        });
+        events
+    }
+
+    /// The workflow runs whose folders are worth reading now: every running
+    /// workflow task's, and a finished one's a few times more, for the run
+    /// record Claude writes as it ends.
+    pub fn runs_to_read(&mut self) -> Vec<(String, Launch)> {
+        let mut due = Vec::new();
+        for (task_id, launch) in &self.launches {
+            let Some(item) = self.tasks.get(task_id) else {
+                continue;
+            };
+            if is_running(item) {
+                due.push((task_id.clone(), launch.clone()));
+            } else if let Some(left) = self.final_reads.get_mut(task_id) {
+                if *left > 0 {
+                    *left -= 1;
+                    due.push((task_id.clone(), launch.clone()));
+                }
+            }
+        }
+        due
+    }
+
+    /// Whether any workflow run is still worth reading.
+    pub fn watching(&self) -> bool {
+        self.launches.keys().any(|task_id| {
+            self.tasks.get(task_id).is_some_and(is_running)
+                || self.final_reads.get(task_id).is_some_and(|left| *left > 0)
+        })
+    }
+
+    /// A workflow run as its folder now records it. Nothing is sent when it
+    /// has not changed.
+    pub fn set_run(&mut self, task_id: &str, read: WorkflowRun) -> Vec<Event> {
+        let Some(item) = self.tasks.get_mut(task_id) else {
+            return Vec::new();
+        };
+        let ItemKind::Task { run, .. } = &mut item.kind else {
+            return Vec::new();
+        };
+        if run.as_ref() == Some(&read) {
+            return Vec::new();
+        }
+        *run = Some(read);
+        vec![Event::ItemUpdated { item: item.clone() }]
+    }
+
+    /// Whether the agent has reported this task, still running, as one it
+    /// will stop on request.
+    pub fn stoppable(&self, task_id: &str) -> bool {
+        self.tasks.get(task_id).is_some_and(|item| {
+            is_running(item) && matches!(item.kind, ItemKind::Task { can_stop: true, .. })
+        })
+    }
+
+    /// A `notice`: one finished item.
+    fn notice(&mut self, update: &Value) -> Vec<Event> {
+        let title = cut(text(update, "title").trim(), TITLE_LIMIT).0;
+        if title.is_empty() {
+            self.dropped += 1;
+            return Vec::new();
+        }
+        let mut events = if self.turn.is_some() {
+            self.close_text()
+        } else {
+            Vec::new()
+        };
+        let severity = match text(update, "severity").as_str() {
+            "warning" | "error" => "warning",
+            _ => "info",
+        }
+        .to_string();
+        let description = update
+            .get("description")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+            .map(|d| cut(d, DETAIL_LIMIT).0);
+        let item = self.standing(ItemKind::Notice {
+            severity,
+            title,
+            description,
+        });
+        events.push(Event::ItemCompleted { item });
+        events
+    }
+
+    /// `compaction_update` and `compaction_summary_chunk`: one item per
+    /// compaction, its summary appended as it streams.
+    fn compaction(&mut self, kind: &str, update: &Value) -> Vec<Event> {
+        let Some(id) = update.get("compactionId").and_then(Value::as_str) else {
+            self.dropped += 1;
+            return Vec::new();
+        };
+        let mut events = Vec::new();
+        let mut item = match self.compactions.remove(id) {
+            Some(item) => item,
+            None => {
+                if self.turn.is_some() {
+                    events.extend(self.close_text());
+                }
+                if self.compactions.len() >= MAX_TASKS {
+                    self.compactions.clear();
+                }
+                self.standing(ItemKind::Compaction {
+                    status: "inProgress".to_string(),
+                    summary: String::new(),
+                    error: None,
+                })
+            }
+        };
+        if kind == "compaction_summary_chunk" {
+            if let Some(chunk) = update.pointer("/content/text").and_then(Value::as_str) {
+                if let ItemKind::Compaction { summary, .. } = &mut item.kind {
+                    let room = TEXT_LIMIT.saturating_sub(summary.len());
+                    summary.push_str(&cut(chunk, room).0);
+                }
+            }
+        } else {
+            merge_compaction(&mut item.kind, update);
+        }
+        let done =
+            matches!(&item.kind, ItemKind::Compaction { status, .. } if status != "inProgress");
+        self.compactions.insert(id.to_string(), item.clone());
+        events.push(if done {
+            Event::ItemCompleted { item }
+        } else {
+            Event::ItemUpdated { item }
+        });
         events
     }
 
@@ -562,6 +908,127 @@ impl Normalizer {
                 events
             }
         }
+    }
+}
+
+fn is_running(item: &Item) -> bool {
+    matches!(
+        item.kind,
+        ItemKind::Task {
+            state: TaskState::Running | TaskState::Paused,
+            ..
+        }
+    )
+}
+
+/// Take in what an `async_task_*` update says. A field it leaves out is
+/// unchanged.
+fn merge_task(kind: &mut ItemKind, update: &Value, call_item: Option<String>) {
+    let ItemKind::Task {
+        name,
+        task_type,
+        description,
+        state,
+        summary,
+        last_tool,
+        usage,
+        can_stop,
+        call_item: call,
+        ..
+    } = kind
+    else {
+        return;
+    };
+    let field = |key: &str, limit: usize| {
+        update
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| cut(s, limit).0)
+    };
+    if let Some(v) = field("name", TITLE_LIMIT) {
+        *name = v;
+    }
+    if let Some(v) = field("taskType", 64) {
+        *task_type = v;
+    }
+    if let Some(v) = field("description", TITLE_LIMIT) {
+        *description = v;
+    }
+    if let Some(v) = field("summary", DETAIL_LIMIT) {
+        *summary = Some(v);
+    }
+    if let Some(v) = field("lastToolName", 128) {
+        *last_tool = Some(v);
+    }
+    if let Some(v) = update.get("canStop").and_then(Value::as_bool) {
+        *can_stop = v;
+    }
+    if let Some(u) = update.get("usage").filter(|u| u.is_object()) {
+        *usage = Some(TaskUsage {
+            total_tokens: number(u, "totalTokens"),
+            tool_uses: number(u, "toolUses"),
+            duration_ms: number(u, "durationMs"),
+        });
+    }
+    if call.is_none() {
+        *call = call_item;
+    }
+    if let Some(s) = update.get("state").and_then(Value::as_str) {
+        *state = match s {
+            "paused" => TaskState::Paused,
+            "completed" => TaskState::Completed,
+            "failed" => TaskState::Failed,
+            "stopped" | "killed" | "cancelled" => TaskState::Stopped,
+            _ => TaskState::Running,
+        };
+    }
+    if name.is_empty() {
+        name.clone_from(description);
+    }
+}
+
+/// Take in a `compaction_update`: its status, the whole summary when it
+/// sends one, and why it failed.
+fn merge_compaction(kind: &mut ItemKind, update: &Value) {
+    let ItemKind::Compaction {
+        status,
+        summary,
+        error,
+    } = kind
+    else {
+        return;
+    };
+    if let Some(s) = update.get("status").and_then(Value::as_str) {
+        *status = match s {
+            "completed" => "completed",
+            "failed" => "failed",
+            "cancelled" => "cancelled",
+            _ => "inProgress",
+        }
+        .to_string();
+    }
+    let whole = match update.get("summary") {
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(Value::Array(blocks)) => Some(
+            blocks
+                .iter()
+                .filter_map(|b| b.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        _ => None,
+    };
+    if let Some(whole) = whole.filter(|w| !w.is_empty()) {
+        *summary = cut(&whole, TEXT_LIMIT).0;
+    }
+    if let Some(e) = update.get("error").filter(|e| !e.is_null()) {
+        let message = e
+            .as_str()
+            .or_else(|| e.get("message").and_then(Value::as_str))
+            .map_or_else(|| e.to_string(), str::to_string);
+        *error = Some(mask(&cut(&message, DETAIL_LIMIT).0));
     }
 }
 
@@ -739,10 +1206,223 @@ mod tests {
     }
 
     #[test]
-    fn chunks_outside_a_turn_are_dropped() {
+    fn a_chunk_outside_a_turn_opens_one_the_agent_started() {
+        // Claude reports back from a background task between turns. That
+        // used to be dropped, which lost everything a workflow said at its end.
         let mut n = Normalizer::new("s1", Harness::Claude);
-        assert!(n.update(&chunk("stray", None)).is_empty());
+        let events = n.update(&chunk("the workflow finished", None));
+        assert!(matches!(
+            &events[..],
+            [Event::TurnStarted { .. }, Event::ItemStarted { .. }]
+        ));
+        assert!(n.autonomous());
+        assert!(!n.prompted(), "a prompt may still be sent");
+        assert_eq!(n.dropped(), 0);
+        // The result's usage closes it.
+        let events = n.update(&json!({"sessionUpdate": "usage_update", "used": 5, "size": 10}));
+        assert!(matches!(events.last(), Some(Event::TurnCompleted { .. })));
+        assert!(n.turn().is_none());
+    }
+
+    #[test]
+    fn a_prompt_closes_a_turn_the_agent_started() {
+        let mut n = Normalizer::new("s1", Harness::Claude);
+        n.update(&chunk("reporting back", None));
+        let events = n.begin_turn("thanks");
+        assert!(matches!(
+            &events[..],
+            [
+                Event::ItemCompleted { .. },
+                Event::TurnCompleted { .. },
+                Event::TurnStarted { .. },
+                Event::ItemCompleted { .. }
+            ]
+        ));
+        assert!(n.prompted());
+    }
+
+    #[test]
+    fn an_update_to_a_call_whose_turn_ended_is_still_dropped() {
+        let mut n = Normalizer::new("s1", Harness::Claude);
+        let late =
+            json!({"sessionUpdate": "tool_call_update", "toolCallId": "t9", "status": "completed"});
+        assert!(n.update(&late).is_empty());
         assert_eq!(n.dropped(), 1);
+        assert!(n.turn().is_none());
+    }
+
+    #[test]
+    fn a_background_task_is_one_item_updated_past_its_turn() {
+        let mut n = started();
+        n.update(&json!({"sessionUpdate": "tool_call", "toolCallId": "w1", "title": "Workflow"}));
+        let spawned = n.update(&json!({
+            "sessionUpdate": "async_task_spawned", "asyncTaskId": "k1", "name": "review",
+            "taskType": "workflow", "description": "Review the diff", "showInTranscript": true,
+            "canStop": true, "toolCallId": "w1"
+        }));
+        let Some(Event::ItemStarted { item }) = spawned.last() else {
+            panic!("a task item: {spawned:?}");
+        };
+        let task_item = item.id.clone();
+        assert!(matches!(
+            &item.kind,
+            ItemKind::Task { name, task_type, call_item: Some(_), state: TaskState::Running, .. }
+                if name == "review" && task_type == "workflow"
+        ));
+        assert!(n.stoppable("k1"));
+        n.end_turn("end_turn");
+        // Progress after the turn ended still reaches the same item.
+        let progress = n.update(&json!({
+            "sessionUpdate": "async_task_progress", "asyncTaskId": "k1",
+            "lastToolName": "Read", "usage": {"totalTokens": 900, "toolUses": 4, "durationMs": 1200}
+        }));
+        assert!(matches!(
+            &progress[..],
+            [Event::ItemUpdated { item: Item { id, kind: ItemKind::Task { usage: Some(TaskUsage { tool_uses: 4, .. }), .. }, .. } }]
+                if *id == task_item
+        ));
+        assert!(n.turn().is_none(), "a task's progress opens no turn");
+        let ended = n.update(&json!({
+            "sessionUpdate": "async_task_state_update", "asyncTaskId": "k1", "state": "stopped"
+        }));
+        assert!(matches!(
+            &ended[..],
+            [Event::ItemCompleted {
+                item: Item {
+                    kind: ItemKind::Task {
+                        state: TaskState::Stopped,
+                        ..
+                    },
+                    ..
+                }
+            }]
+        ));
+        assert!(!n.stoppable("k1"));
+        // An update for a task never reported is dropped.
+        let unknown = json!({"sessionUpdate": "async_task_progress", "asyncTaskId": "zz"});
+        assert!(n.update(&unknown).is_empty());
+    }
+
+    #[test]
+    fn a_workflows_result_names_the_folder_to_read() {
+        let dir = if cfg!(windows) {
+            r"C:\u\p\s\subagents\workflows\wf_1"
+        } else {
+            "/u/p/s/subagents/workflows/wf_1"
+        };
+        let mut n = started();
+        n.update(&json!({
+            "sessionUpdate": "async_task_spawned", "asyncTaskId": "k1", "taskType": "workflow",
+            "canStop": true
+        }));
+        n.update(&json!({"sessionUpdate": "tool_call", "toolCallId": "w1", "title": "Workflow"}));
+        n.update(&json!({
+            "sessionUpdate": "tool_call_update", "toolCallId": "w1", "status": "completed",
+            "content": [{"type": "content", "content": {"type": "text",
+                "text": format!("Workflow launched in background. Task ID: k1\nTranscript dir: {dir}\n")}}]
+        }));
+        assert!(n.watching());
+        let due = n.runs_to_read();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].0, "k1");
+        let run = WorkflowRun {
+            run_id: "wf_1".into(),
+            ..WorkflowRun::default()
+        };
+        assert_eq!(n.set_run("k1", run.clone()).len(), 1);
+        assert!(
+            n.set_run("k1", run).is_empty(),
+            "an unchanged run sends nothing"
+        );
+        // Once the task ends, the folder is read a few times more, then not.
+        n.update(&json!({
+            "sessionUpdate": "async_task_state_update", "asyncTaskId": "k1", "state": "completed"
+        }));
+        for _ in 0..FINAL_READS {
+            assert_eq!(n.runs_to_read().len(), 1);
+        }
+        assert!(n.runs_to_read().is_empty());
+        assert!(!n.watching());
+    }
+
+    #[test]
+    fn a_subagents_work_names_the_call_that_started_it() {
+        let mut n = started();
+        let agent = n.update(&json!({
+            "sessionUpdate": "tool_call", "toolCallId": "a1", "title": "Explore the repo"
+        }));
+        let Some(Event::ItemStarted { item: call }) = agent.last() else {
+            panic!("a call");
+        };
+        let meta = json!({"claudeCode": {"parentToolUseId": "a1"}});
+        let child = n.update(&json!({
+            "sessionUpdate": "tool_call", "toolCallId": "c1", "title": "Read a.rs", "_meta": meta
+        }));
+        assert!(
+            matches!(child.last(), Some(Event::ItemStarted { item }) if item.parent.as_ref() == Some(&call.id))
+        );
+        // A later update without the meta keeps the parent it was given.
+        let update = n.update(&json!({
+            "sessionUpdate": "tool_call_update", "toolCallId": "c1", "status": "completed"
+        }));
+        assert!(
+            matches!(update.last(), Some(Event::ItemCompleted { item }) if item.parent.as_ref() == Some(&call.id))
+        );
+        let mut text = chunk("found it", Some("m1"));
+        text["_meta"] = meta;
+        let said = n.update(&text);
+        assert!(
+            matches!(said.last(), Some(Event::ItemStarted { item }) if item.parent.as_ref() == Some(&call.id))
+        );
+        // The main agent's next words are an item of their own.
+        let main = n.update(&chunk("Done.", Some("m1")));
+        assert!(matches!(main.last(), Some(Event::ItemStarted { item }) if item.parent.is_none()));
+    }
+
+    #[test]
+    fn notices_and_compaction_are_items_of_their_own() {
+        let mut n = started();
+        let notice = n.update(&json!({
+            "sessionUpdate": "notice", "severity": "warning", "title": "Switched to Sonnet",
+            "description": "Opus is overloaded"
+        }));
+        assert!(matches!(
+            notice.last(),
+            Some(Event::ItemCompleted { item: Item { kind: ItemKind::Notice { severity, .. }, .. } }) if severity == "warning"
+        ));
+        n.update(&json!({"sessionUpdate": "compaction_update", "compactionId": "c1", "status": "in_progress"}));
+        n.update(
+            &json!({"sessionUpdate": "compaction_summary_chunk", "compactionId": "c1",
+            "content": {"type": "text", "text": "Kept the plan."}}),
+        );
+        let done = n.update(&json!({"sessionUpdate": "compaction_update", "compactionId": "c1", "status": "completed"}));
+        assert!(matches!(
+            done.last(),
+            Some(Event::ItemCompleted { item: Item { kind: ItemKind::Compaction { status, summary, .. }, .. } })
+                if status == "completed" && summary == "Kept the plan."
+        ));
+    }
+
+    #[test]
+    fn an_exit_stops_every_task_still_running() {
+        let mut n = started();
+        n.update(
+            &json!({"sessionUpdate": "async_task_spawned", "asyncTaskId": "k1", "canStop": true}),
+        );
+        let ended = n.end_tasks();
+        assert!(matches!(
+            &ended[..],
+            [Event::ItemCompleted {
+                item: Item {
+                    kind: ItemKind::Task {
+                        state: TaskState::Stopped,
+                        ..
+                    },
+                    ..
+                }
+            }]
+        ));
+        assert!(n.end_tasks().is_empty());
     }
 
     #[test]

@@ -18,13 +18,23 @@ const ICON: Record<ToolStatus, LucideIcon> = {
  * One quiet row: glyph, summary, what it changed, and its status while it is
  * not yet done. Expands to its files, diffs and output.
  */
-export function ToolCall({ title, status, output, truncated, paths, diffs }: ToolCallProps) {
+export function ToolCall({
+  title,
+  status,
+  output,
+  truncated,
+  paths,
+  diffs,
+  anchor,
+  children,
+}: ToolCallProps) {
   const S = useSlots();
   // A canvas topology check is its own card; an edit that carries one shows
   // the card under its row.
   const report = lintReportOf(output);
   if (isLintTool(title)) return <S.Validation status={status} report={report} />;
-  const hasBody = output !== "" || paths.length > 0 || diffs.length > 0;
+  const nested = children !== undefined && children !== null && children !== false;
+  const hasBody = output !== "" || paths.length > 0 || diffs.length > 0 || nested;
   const added = diffs.reduce((n, diff) => n + diff.added, 0);
   const removed = diffs.reduce((n, diff) => n + diff.removed, 0);
   const done = status === "completed";
@@ -49,10 +59,17 @@ export function ToolCall({ title, status, output, truncated, paths, diffs }: Too
       <span className={done ? "at-sr" : "at-tool__status"}>{strings.tool[status]}</span>
     </>
   );
-  if (!hasBody) return <div className="at-item at-tool at-tool__head">{head}</div>;
+  if (!hasBody)
+    return (
+      <div className="at-item at-tool at-tool__head" data-item={anchor}>
+        {head}
+      </div>
+    );
   const row = (
-    <details className="at-item at-tool">
+    <details className="at-item at-tool" data-item={anchor}>
       <summary className="at-tool__head at-disclosure">{head}</summary>
+      {/* A subagent's own work, indented under the call that started it. */}
+      {nested && <div className="at-tool__nested">{children}</div>}
       <S.PathList paths={paths} />
       {diffs.map((diff, i) => (
         <S.Diff key={`${i}:${diff.path}`} {...diff} />

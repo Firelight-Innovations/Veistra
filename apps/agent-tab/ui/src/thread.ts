@@ -70,6 +70,8 @@ function same(a: readonly Item[], b: readonly Item[]): boolean {
 export function toTurns(items: readonly Item[], previous: readonly Turn[] = []): Turn[] {
   const runs: Item[][] = [];
   for (const item of items) {
+    // A subagent's work is drawn inside the call that started it (`Items.tsx`).
+    if (item.parent) continue;
     // Some adapters emit the same limit notice as text and again as a failed turn.
     if (
       item.kind.kind === "assistantText" &&
@@ -84,7 +86,13 @@ export function toTurns(items: readonly Item[], previous: readonly Turn[] = []):
       continue;
     const user = item.kind.kind === "userMessage";
     const last = runs[runs.length - 1];
-    if (user || !last || last[0].kind.kind === "userMessage") runs.push([item]);
+    // A turn the agent started on its own, between prompts, is a turn of its own.
+    const another =
+      last !== undefined &&
+      item.turnId !== "" &&
+      last[0].turnId !== "" &&
+      item.turnId !== last[0].turnId;
+    if (user || !last || last[0].kind.kind === "userMessage" || another) runs.push([item]);
     else last.push(item);
   }
   const before = new Map(previous.map((t) => [t.id, t]));

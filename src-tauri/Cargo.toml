@@ -311,12 +311,14 @@ windows-core = "0.61"
 # The Copilot key hook (`copilot_key.rs`) adds the window-message, keyboard and
 # thread-id modules, all inside the same crate. The embedder's clip box
 # (`embed/win32.rs`) adds GDI for the region it cuts the shell's menus out of.
+# `url_scheme.rs` adds the registry, to claim `veistra://` in an uninstalled build.
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_System_Diagnostics_Debug",
     "Win32_System_LibraryLoader",
     "Win32_System_Performance",
+    "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",

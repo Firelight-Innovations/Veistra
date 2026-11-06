@@ -3,7 +3,15 @@
  * behind it: markdown, diffs, the copy button, an approval in flight. Nothing
  * here draws; every piece of DOM comes from `components/` through `useSlots()`.
  */
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+} from "react";
 import type {
   FileDiff,
   Harness,
@@ -13,6 +21,7 @@ import type {
   QuestionOutcome,
   QuestionReply,
 } from "./protocol.generated";
+import { agentCounts, currentPhase, isLive } from "./details";
 import { counts, lineDiff } from "./diff";
 import { renderMarkdown } from "./markdown";
 import {
@@ -42,7 +51,19 @@ export interface ItemActions {
   onRetry: (itemId: string) => void;
   /** A hint as a sentence about `harness`, the one that raised it. */
   hintText: (hint: Hint, harness: Harness) => string;
+  /** Opens the Details panel on the background task `itemId`. */
+  onOpenTask: (itemId: string) => void;
+  /** Asks the agent to stop a background task. Rejects if the request did not land. */
+  onStopTask: (taskId: string) => Promise<void>;
+  /** How long the item `itemId` has run, in ms, or `null` when not known. */
+  elapsed: (itemId: string) => number | null;
 }
+
+/**
+ * The items nested under each call, by the call's item id: a subagent's own
+ * work, drawn inside the call that started it rather than in the turn.
+ */
+export const NestedItems = createContext<ReadonlyMap<string, readonly Item[]>>(new Map());
 
 /** `live`: the item is the part still streaming in a running turn. */
 export function ItemView({
@@ -60,11 +81,11 @@ export function ItemView({
     case "userMessage":
       return <S.UserMessage text={kind.text} />;
     case "assistantText":
-      return <AssistantItem text={kind.text} />;
+      return <AssistantItem text={kind.text} streaming={live} />;
     case "reasoning":
       return <S.Thinking text={kind.text} live={live} />;
     case "toolCall":
-      return <ToolItem tool={kind} />;
+      return <ToolItem id={item.id} tool={kind} actions={actions} />;
     case "approval":
       return <ApprovalItem id={item.id} approval={kind} onAnswer={actions.onAnswer} />;
     case "question":
@@ -82,10 +103,63 @@ export function ItemView({
           onRetry={() => actions.onRetry(item.id)}
         />
       );
+    case "task":
+      return <TaskItem id={item.id} task={kind} actions={actions} />;
+    case "notice":
+      return (
+        <S.NoticeItem severity={kind.severity} title={kind.title} description={kind.description} />
+      );
+    case "compaction":
+      return <S.CompactionItem status={kind.status} summary={kind.summary} error={kind.error} />;
   }
 }
 
-function AssistantItem({ text }: { text: string }) {
+/**
+ * A background task's card. Its clock and a workflow's progress come from
+ * the item; Stop stays pressed until the task says it has stopped, or the
+ * request fails.
+ */
+function TaskItem({ id, task, actions }: { id: string; task: Kind<"task">; actions: ItemActions }) {
+  const S = useSlots();
+  const [stopping, setStopping] = useState(false);
+  const live = isLive(task.state);
+  const run = task.run;
+  const at = run ? currentPhase(run) : null;
+  const tally = run && run.agents.length > 0 ? agentCounts(run) : null;
+  const ms = actions.elapsed(id);
+  return (
+    <S.TaskCard
+      anchor={id}
+      name={task.name || task.description}
+      type={strings.task.type(task.taskType)}
+      taskType={task.taskType}
+      state={task.state}
+      description={task.description || null}
+      summary={task.summary}
+      elapsed={ms === null ? null : strings.activity.elapsed(ms)}
+      phase={at && run ? strings.task.phase(at.index, run.phases.length, at.title) : null}
+      progress={
+        tally
+          ? strings.task.agents(tally.running, tally.done, tally.failed)
+          : task.usage && task.usage.totalTokens > 0
+            ? strings.task.tokens(task.usage.totalTokens)
+            : null
+      }
+      onDetails={() => actions.onOpenTask(id)}
+      onStop={
+        live && task.canStop
+          ? () => {
+              setStopping(true);
+              actions.onStopTask(task.taskId).catch(() => setStopping(false));
+            }
+          : null
+      }
+      stopping={stopping && live}
+    />
+  );
+}
+
+function AssistantItem({ text, streaming }: { text: string; streaming: boolean }) {
   const S = useSlots();
   const html = useMemo(() => renderMarkdown(text), [text]);
   const onClick = (event: MouseEvent<HTMLDivElement>) => {
@@ -106,7 +180,9 @@ function AssistantItem({ text }: { text: string }) {
   const onAuxClick = (event: MouseEvent<HTMLDivElement>) => {
     if ((event.target as HTMLElement).closest("a")) event.preventDefault();
   };
-  return <S.AssistantText html={html} onClick={onClick} onAuxClick={onAuxClick} />;
+  return (
+    <S.AssistantText html={html} onClick={onClick} onAuxClick={onAuxClick} streaming={streaming} />
+  );
 }
 
 /** Each file's line diff, worked out once per change rather than per draw. */
@@ -127,9 +203,18 @@ function useDiffs(diffs: FileDiff[]): DiffProps[] {
   );
 }
 
-function ToolItem({ tool }: { tool: Kind<"toolCall"> }) {
+function ToolItem({
+  id,
+  tool,
+  actions,
+}: {
+  id: string;
+  tool: Kind<"toolCall">;
+  actions: ItemActions;
+}) {
   const S = useSlots();
   const diffs = useDiffs(tool.diffs);
+  const nested = useContext(NestedItems).get(id);
   return (
     <S.ToolCall
       title={tool.title}
@@ -139,7 +224,12 @@ function ToolItem({ tool }: { tool: Kind<"toolCall"> }) {
       truncated={tool.truncated}
       paths={tool.paths}
       diffs={diffs}
-    />
+      anchor={id}
+    >
+      {nested?.map((child) => (
+        <ItemView key={child.id} item={child} actions={actions} />
+      ))}
+    </S.ToolCall>
   );
 }
 

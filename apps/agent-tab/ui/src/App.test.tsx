@@ -646,7 +646,7 @@ describe("the agent tab", () => {
     });
     const { container } = render(<App />);
     await screen.findByText("list the files");
-    expect(screen.getByText("Working…")).toBeTruthy();
+    expect(screen.getByText(strings.activity.reading)).toBeTruthy();
 
     emit({
       instanceId: "i",
@@ -658,7 +658,7 @@ describe("the agent tab", () => {
       seq: 4,
       event: { type: "itemStarted", item: item("r1", { kind: "reasoning", text: "hmm" }) },
     });
-    expect(screen.queryByText("Working…")).toBeNull();
+    expect(container.querySelector(".at-working")).toBeNull();
     expect(container.querySelectorAll(".at-turn--user")).toHaveLength(1);
     const agent = container.querySelectorAll(".at-turn--agent");
     expect(agent).toHaveLength(1);
@@ -678,15 +678,15 @@ describe("the agent tab", () => {
     });
     const items = [item("u1", { kind: "userMessage", text: "run the tests" }), tool];
     backend({ status: STATUS, seq: 2, items });
-    render(<App />);
+    const idle = render(<App />);
     await screen.findByText("pnpm test");
-    expect(screen.queryByText("Working…")).toBeNull();
+    expect(idle.container.querySelector(".at-working")).toBeNull();
     cleanup();
 
     backend({ status: { ...STATUS, state: "working" }, seq: 2, items });
     render(<App />);
     await screen.findByText("pnpm test");
-    expect(screen.getByText("Working…")).toBeTruthy();
+    expect(screen.getByText(strings.activity.thinking)).toBeTruthy();
   });
 
   it("keeps naming the running command when a plan update lands after it", async () => {
@@ -732,9 +732,9 @@ describe("the agent tab", () => {
         }),
       ],
     });
-    render(<App />);
+    const { container } = render(<App />);
     await screen.findByRole("button", { name: "Allow" });
-    expect(screen.queryByText("Working…")).toBeNull();
+    expect(container.querySelector(".at-working")).toBeNull();
   });
 
   it("puts Copy on every finished agent turn, where the keyboard can reach it", async () => {
