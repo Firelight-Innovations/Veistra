@@ -534,17 +534,30 @@ mod tests {
     #[test]
     fn the_boot_script_installs_nothing() {
         // Spec §11.2: the person's Blender is theirs. Nothing is enabled,
-        // saved or written outside the channel folder.
+        // and nothing is written outside the channel folder but the open
+        // file, in place, when they choose Save & close on its cluster.
         for call in [
             "addon_utils",
             "addon_enable",
             "preferences.addons.new",
             "save_userpref",
-            "save_mainfile",
             "save_as_mainfile",
+            "save_copy",
         ] {
             assert!(!BOOT_SCRIPT.contains(call), "veistra_boot.py uses {call}");
         }
+        let save = BOOT_SCRIPT.find("def cmd_save(").expect("cmd_save");
+        let after = &BOOT_SCRIPT[save..];
+        let body = &after[..after[1..].find("\ndef ").map_or(after.len(), |i| i + 1)];
+        assert_eq!(
+            BOOT_SCRIPT.matches("save_mainfile").count(),
+            body.matches("save_mainfile").count(),
+            "only cmd_save saves the file"
+        );
+        assert!(
+            body.contains("if not bpy.data.filepath:"),
+            "an untitled scene is refused, never saved somewhere Veistra picked"
+        );
         assert!(
             BOOT_SCRIPT.contains("if not CHANNEL:\n        return False"),
             "without VEISTRA_BLENDER_CHANNEL the script must do nothing"

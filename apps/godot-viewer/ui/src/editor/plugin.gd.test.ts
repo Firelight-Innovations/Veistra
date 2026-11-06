@@ -28,7 +28,7 @@ const code = (text: string) =>
 
 describe("the Veistra editor plugin", () => {
   it("is an editor plugin, and says its version on the first line for the installer", () => {
-    expect(script.split("\n")[0]).toBe("# veistra-editor v3");
+    expect(script.split("\n")[0]).toBe("# veistra-editor v4");
     expect(code(script)).toMatch(/^@tool\nextends EditorPlugin$/m);
   });
 
@@ -93,10 +93,16 @@ describe("the Veistra editor plugin", () => {
   });
 
   // Spec §13 test 10: Close asks Godot to save first, as its close button does.
-  it("closes the way the window's close button does, and never quits outright", () => {
+  // The one quit with no prompt is `quit`, sent only for a cluster the person
+  // closed with Close after Veistra asked; it is never killed.
+  it("closes the way the window's close button does, and quits outright only on quit", () => {
     const poll = fn("_poll_command");
-    expect(poll).toContain("get_tree().root.propagate_notification(NOTIFICATION_WM_CLOSE_REQUEST)");
-    expect(code(script)).not.toMatch(/\.quit\(|OS\.kill/);
+    expect(poll).toMatch(
+      /"close":\s+(#[^\n]*\s+)*get_tree\(\)\.root\.propagate_notification\(NOTIFICATION_WM_CLOSE_REQUEST\)/,
+    );
+    expect(poll).toMatch(/"quit":\s+(#[^\n]*\s+)*get_tree\(\)\.quit\(\)/);
+    expect(code(script).match(/\.quit\(/g)).toHaveLength(1);
+    expect(code(script)).not.toMatch(/OS\.kill/);
   });
 
   it("picks as the editor does: the renderer's ray, then each mesh's faces", () => {

@@ -23,10 +23,11 @@
 #
 # Commands: select (objects by name), viewport-only (maximise the 3D view, as
 # Ctrl Space does), capture (a picture of the 3D view, with the view it shows
-# and the selection), pick (the object under a point of that picture) and quit
-# (Blender's own quit, which asks to save first). The last three read or ask;
-# none edits the scene. A command is a function in COMMANDS taking the command
-# and returning the fields of its answer; add one there.
+# and the selection), pick (the object under a point of that picture), save
+# (the open file, in place) and quit (Blender's own quit, which asks to save
+# first; with discard, without asking, for a cluster closed with Close after
+# Veistra asked). None edits the scene. A command is a function in COMMANDS
+# taking the command and returning the fields of its answer; add one there.
 #
 # The Veistra tab (#320) is a panel in the 3D view's sidebar (N): the notes
 # on the selected objects, Looks good and Still broken on a fixed one, Ask the
@@ -261,15 +262,37 @@ def cmd_pick(cmd):
                     "worldPoint": [round(v, 6) for v in location]}}
 
 
-def cmd_quit(_cmd):
+def cmd_save(_cmd):
+    """The open file, saved where it is. An untitled scene has nowhere to go
+    without asking, so it is refused and Veistra hands Blender back instead."""
+    if not bpy.data.filepath:
+        raise Refused("this scene has never been saved, so it has no file to save to")
+    if not bpy.data.is_dirty:
+        return {"saved": False, "file": bpy.data.filepath}
+    win = _window()
+    if win is None:
+        bpy.ops.wm.save_mainfile()
+    else:
+        with bpy.context.temp_override(window=win):
+            bpy.ops.wm.save_mainfile()
+    return {"saved": True, "file": bpy.data.filepath}
+
+
+def cmd_quit(cmd):
     win = _window()
     if win is None:
         raise Refused("Blender has no window here")
+    discard = bool(cmd.get("discard", False))
 
     def ask():
-        # INVOKE_DEFAULT: Blender's own quit, with its "save changes?" prompt.
+        # INVOKE_DEFAULT is Blender's own quit, with its "save changes?"
+        # prompt. EXEC, with discard, quits without one: the person already
+        # chose Close in Veistra. Blender still writes its quit.blend.
         with bpy.context.temp_override(window=win):
-            bpy.ops.wm.quit_blender("INVOKE_DEFAULT")
+            if discard:
+                bpy.ops.wm.quit_blender()
+            else:
+                bpy.ops.wm.quit_blender("INVOKE_DEFAULT")
 
     # After this answer is written, so Veistra reads it before Blender asks.
     bpy.app.timers.register(ask, first_interval=0.05)
@@ -281,6 +304,7 @@ COMMANDS = {
     "viewport-only": cmd_viewport_only,
     "capture": cmd_capture,
     "pick": cmd_pick,
+    "save": cmd_save,
     "quit": cmd_quit,
 }
 
