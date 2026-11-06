@@ -59,7 +59,7 @@ const NOT_BOOTED: &str = "The Veistra script has not started in this Blender yet
 pub const READ_ONLY_REASON: &str = "This is the main checkout, which is read-only in Veistra: \
      Blender would save into it. Open a worktree to edit there.";
 
-/// One cluster's Blender.
+/// One Blender tab's Blender: each pane runs its own, on its own file.
 pub struct Editor {
     /// The environment the file is in.
     pub project: PathBuf,
@@ -222,7 +222,9 @@ impl Editor {
     }
 }
 
-/// Every cluster's Blender, managed by Tauri.
+/// Every Blender Veistra started, managed by Tauri. Keyed by the pane
+/// instance that shows it, so each Blender tab is its own Blender on its own
+/// file; one started with no pane (an agent's call) is keyed by its cluster.
 #[derive(Default)]
 pub struct Editors {
     all: Mutex<HashMap<String, Arc<Editor>>>,
@@ -230,18 +232,42 @@ pub struct Editors {
 }
 
 impl Editors {
-    pub fn get(&self, cluster: &str) -> Option<Arc<Editor>> {
-        self.all.lock_or_panic().get(cluster).cloned()
+    /// The Blender of a pane instance, or of a cluster for one started with no pane.
+    pub fn get(&self, key: &str) -> Option<Arc<Editor>> {
+        self.all.lock_or_panic().get(key).cloned()
     }
 
-    fn set(&self, cluster: &str, editor: Arc<Editor>) {
-        self.all.lock_or_panic().insert(cluster.to_string(), editor);
+    fn set(&self, key: &str, editor: Arc<Editor>) {
+        self.all.lock_or_panic().insert(key.to_string(), editor);
     }
 
-    fn remove_if(&self, cluster: &str, editor: &Arc<Editor>) {
+    fn remove_if(&self, key: &str, editor: &Arc<Editor>) {
         let mut all = self.all.lock_or_panic();
-        if all.get(cluster).is_some_and(|e| Arc::ptr_eq(e, editor)) {
-            all.remove(cluster);
+        if all.get(key).is_some_and(|e| Arc::ptr_eq(e, editor)) {
+            all.remove(key);
+        }
+    }
+
+    /// A call that names no pane stands for the cluster's Blender: the one in
+    /// a pane on screen, else any, by key so the answer does not change
+    /// between two calls.
+    fn in_cluster(
+        &self,
+        cluster: &str,
+        shown: &dyn Fn(&str) -> bool,
+    ) -> Option<(String, Arc<Editor>)> {
+        let mut ours: Vec<(String, Arc<Editor>)> = self
+            .all
+            .lock_or_panic()
+            .iter()
+            .filter(|(_, e)| e.cluster == cluster)
+            .map(|(k, e)| (k.clone(), e.clone()))
+            .collect();
+        ours.sort_by(|a, b| a.0.cmp(&b.0));
+        let on_screen = ours.iter().position(|(k, _)| shown(k));
+        match on_screen {
+            Some(i) => Some(ours.swap_remove(i)),
+            None => ours.into_iter().next(),
         }
     }
 
@@ -382,9 +408,24 @@ fn spawn(exe: &Path, args: &[String], cwd: &Path, channel: &Path) -> std::io::Re
     cmd.spawn()
 }
 
-/// The running Blender in this cluster.
+/// Where this call's Blender is kept: its pane instance, or its cluster for
+/// a call that names no pane.
+fn key(ctx: &Ctx) -> String {
+    ctx.instance.clone().unwrap_or_else(|| ctx.cluster.clone())
+}
+
+/// This call's Blender, running or not, and the key it is kept under: the
+/// pane's own, or for a call with no pane the cluster's ([`Editors::in_cluster`]).
+fn current(ctx: &Ctx) -> Option<(String, Arc<Editor>)> {
+    match &ctx.instance {
+        Some(instance) => ctx.editors.get(instance).map(|e| (instance.clone(), e)),
+        None => ctx.editors.in_cluster(&ctx.cluster, ctx.shown),
+    }
+}
+
+/// The running Blender of this pane, or of this cluster for a call with no pane.
 pub fn running(ctx: &Ctx) -> Option<Arc<Editor>> {
-    ctx.editors.get(&ctx.cluster).filter(|e| e.is_running())
+    current(ctx).map(|(_, e)| e).filter(|e| e.is_running())
 }
 
 /// `blender-viewer/editor-open {blend?}`. With `blend`, Blender on that file,
@@ -441,11 +482,12 @@ fn open_file(ctx: &Ctx, project: PathBuf, raw: &str) -> Result<Value, RpcError> 
     }
     if ctx.editors.holding(&project, &rel).is_some() {
         return Err(fail(format!(
-            "{rel} is open in Blender in another cluster. Close it there first: two Blenders on \
-             one file save over each other."
+            "{rel} is open in another Blender tab, or in a Blender window this Veistra handed \
+             back. Close it there first: two Blenders on one file save over each other."
         )));
     }
-    // Locks a Blender left when it crashed with no Veistra watching.
+    // Locks a Blender left when it crashed with no Veistra watching. One an
+    // earlier Veistra lost the window of is ended by `lock::live`.
     lock::sweep(&project);
     if let Some(held) = lock::live(&project, &rel) {
         return Err(fail(format!(
@@ -487,7 +529,7 @@ fn start(ctx: &Ctx, project: PathBuf, file: Option<(PathBuf, String)>) -> Result
     if let Some(rel) = &rel {
         editor.take(rel);
     }
-    ctx.editors.set(&ctx.cluster, editor.clone());
+    ctx.editors.set(&key(ctx), editor.clone());
     host(ctx, &editor);
     watch(editor);
     Ok(state(ctx))
@@ -568,13 +610,13 @@ fn lock_json(lock: Option<&Lock>) -> Value {
 /// where its window is, the file and its lock, and what the boot script
 /// reports of the selection and the 3D view.
 pub fn state(ctx: &Ctx) -> Value {
-    let Some(editor) = ctx.editors.get(&ctx.cluster) else {
+    let Some((key, editor)) = current(ctx) else {
         return json!({ "editor": Value::Null });
     };
     if let Some(code) = editor.ended() {
         editor.embed.forget();
         editor.release();
-        ctx.editors.remove_if(&ctx.cluster, &editor);
+        ctx.editors.remove_if(&key, &editor);
         return json!({
             "editor": Value::Null,
             "ended": { "file": editor.file(), "code": code },

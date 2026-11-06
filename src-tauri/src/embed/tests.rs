@@ -53,6 +53,8 @@ pub(crate) struct Fake {
     /// The mode of every embed and placement, in order.
     pub modes: Mutex<Vec<Mode>>,
     pub discarded: AtomicUsize,
+    /// Every set of holes cut in a child's clip box, in order.
+    pub cuts: Mutex<Vec<Vec<ScreenRect>>>,
 }
 
 impl Fake {
@@ -99,6 +101,7 @@ impl WindowSystem for Fake {
             at,
             visible,
             owner,
+            scale: 1.0,
             asked: Instant::now(),
         };
         self.placed
@@ -123,6 +126,10 @@ impl WindowSystem for Fake {
     }
     fn discard(&self, _saved: &sys::Saved) {
         self.discarded.fetch_add(1, Ordering::SeqCst);
+    }
+    fn cut(&self, _hwnd: isize, holes: &[ScreenRect]) -> Result<(), String> {
+        self.cuts.lock_or_panic().push(holes.to_vec());
+        Ok(())
     }
 }
 
@@ -724,6 +731,105 @@ fn a_placed_window_keeps_a_still_until_it_pops_out() {
     assert_eq!(report["kind"], "game");
     assert_eq!(report["state"]["kind"], "poppedOut");
     assert!(report["lastPlaceMs"].is_u64(), "{report}");
+}
+
+/// Graphics Capture refuses a child window ("Failed to convert item to
+/// `GraphicsCaptureItem`"), so an editor is never watched for a still.
+#[test]
+fn an_editor_placed_as_a_child_is_not_watched_for_a_still() {
+    for kind in [Kind::Blender, Kind::GodotEditor] {
+        let fake = Arc::new(Fake::default());
+        let editor = Embed::with(fake.clone(), kind);
+        editor.set_rect(shown(rect(10.0, 640.0)), None);
+        editor.attach(None, &|| vec![1], &|| Some(owner(1.0)), &|| true);
+        assert_eq!(editor.state(), State::Embedded);
+        assert_eq!(editor.still_png(), None, "{kind:?}");
+        assert_eq!(editor.report()["still"], false);
+    }
+}
+
+#[test]
+fn an_overlay_leaves_a_hole_where_it_falls_on_the_window_and_none_where_it_misses() {
+    let px = |x, y, w, h| ScreenRect { x, y, w, h };
+    let at = px(100, 200, 400, 300);
+    let covers = [
+        // The app picker hanging from the tab strip into the box's top.
+        px(250, 120, 300, 150),
+        // A toast entirely inside it.
+        px(150, 400, 50, 20),
+        // A menu beside the box, touching its edge only.
+        px(500, 200, 80, 80),
+    ];
+    assert_eq!(
+        holes(at, &covers),
+        vec![px(150, 0, 250, 70), px(50, 200, 50, 20)]
+    );
+    assert!(holes(at, &[]).is_empty());
+}
+
+/// An editor in its pane at CSS 10..650 x 0..100, at `scale`.
+fn placed_editor(fake: &Arc<Fake>, scale: f64) -> Embed {
+    let editor = Embed::with(fake.clone(), Kind::Blender);
+    editor.set_rect(shown(rect(10.0, 640.0)), None);
+    editor.attach(None, &|| vec![1], &|| Some(owner(scale)), &|| true);
+    assert_eq!(editor.state(), State::Embedded);
+    editor
+}
+
+fn cuts(fake: &Fake) -> Vec<Vec<ScreenRect>> {
+    fake.cuts.lock_or_panic().clone()
+}
+
+#[test]
+fn a_shell_overlay_over_a_child_editor_is_cut_out_of_it_and_given_back_when_it_closes() {
+    let fake = Arc::new(Fake::default());
+    let editor = placed_editor(&fake, 1.5);
+    assert!(cuts(&fake).is_empty(), "nothing open, nothing cut");
+
+    let picker = CssRect {
+        x: 210.0,
+        y: -40.0,
+        w: 200.0,
+        h: 100.0,
+    };
+    let before = placed(&fake).len();
+    editor.set_overlays(vec![picker], Some(&owner(1.5)));
+    let hole = ScreenRect {
+        x: 300,
+        y: 0,
+        w: 300,
+        h: 90,
+    };
+    wait_for("the hole", || {
+        cuts(&fake) == vec![vec![hole]] && placed(&fake).len() > before
+    });
+    assert!(
+        placed(&fake).last().unwrap().visible,
+        "still shown around it"
+    );
+    assert_eq!(editor.report()["holes"][0]["w"], 300);
+
+    // The same overlays again ask nothing of the window.
+    let made = placed(&fake).len();
+    editor.set_overlays(vec![picker], Some(&owner(1.5)));
+    editor.reapply(&owner(1.5));
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!((cuts(&fake).len(), placed(&fake).len()), (1, made));
+
+    editor.set_overlays(Vec::new(), Some(&owner(1.5)));
+    wait_for("the whole box back", || {
+        cuts(&fake).last().is_some_and(|c| c.is_empty())
+    });
+}
+
+#[test]
+fn the_game_swaps_for_its_still_rather_than_being_cut() {
+    let fake = Arc::new(Fake::default());
+    let game = embedded(&fake);
+    game.set_overlays(vec![rect(0.0, 2000.0)], Some(&owner(1.0)));
+    game.reapply(&owner(1.0));
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(cuts(&fake).is_empty());
 }
 
 #[test]

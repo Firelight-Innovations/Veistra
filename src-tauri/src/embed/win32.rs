@@ -548,6 +548,41 @@ unsafe fn place_child(h: HWND, r: ScreenRect, visible: bool, owner: HWND) -> Res
     Ok(())
 }
 
+/// Cut `holes`, in the clip box's own pixels, out of the clip box around
+/// `hwnd`, so the WebView below draws there: the shell's menus over an editor.
+/// No holes gives the box back its whole area.
+pub fn cut(hwnd: isize, holes: &[ScreenRect]) -> Result<(), String> {
+    use windows_sys::Win32::Graphics::Gdi::{
+        CombineRgn, CreateRectRgn, DeleteObject, SetWindowRgn, HRGN, RGN_DIFF,
+    };
+    // SAFETY: `hwnd` is a window handle; every region made here is either
+    // handed to `SetWindowRgn`, which then owns it, or deleted.
+    unsafe {
+        let clip = clip_of(hwnd as HWND).ok_or("the window is not in its clip box")?;
+        let region: HRGN = if holes.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            // Larger than any box, rather than this one's size: the holes are
+            // cut only when they change, and a box that grows after would be
+            // clipped to its old size.
+            let all = CreateRectRgn(0, 0, i16::MAX as i32, i16::MAX as i32);
+            for h in holes {
+                let hole = CreateRectRgn(h.x, h.y, h.x + h.w, h.y + h.h);
+                CombineRgn(all, all, hole, RGN_DIFF);
+                DeleteObject(hole);
+            }
+            all
+        };
+        if SetWindowRgn(clip, region, 1) == 0 {
+            if !region.is_null() {
+                DeleteObject(region);
+            }
+            return Err(last_error("SetWindowRgn"));
+        }
+    }
+    Ok(())
+}
+
 fn empty() -> RECT {
     RECT {
         left: 0,

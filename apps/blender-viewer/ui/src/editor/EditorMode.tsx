@@ -70,10 +70,10 @@ export interface EditorModeProps {
   viewer: BlenderViewerState;
   /** The `.blend` the app shows (absolute); follows the file Blender has open. */
   onPick: (blend: string) => void;
+  /** The app is fetching a file the shell opened this tab on: the open on mount waits for it. */
+  loading?: boolean;
   /** Where this frame is in its window (`veistra/window-rect`); `null` until the shell says. */
   frameRect: WindowRect | null;
-  /** The shell's open overlays (`veistra/overlays`). */
-  overlays: WindowRect[];
   /** The banner's "Compare with v<n>": Compare mode, with that version as B. */
   onCompare?: (version: number) => void;
   /** A chip clicked in the agent tab, to show in Blender (`editorReveal.ts`). */
@@ -267,12 +267,13 @@ export default function EditorMode(props: EditorModeProps) {
   // to ask first: the script goes on the command line into a temporary
   // folder, and nothing into the project. The main checkout, a cloud session
   // and a missing Blender never get here; `App.tsx` shows the viewer for them.
+  const loading = props.loading === true;
   useEffect(() => {
-    if (!polled || settled) return;
+    if (!polled || settled || loading) return;
     setSettled(true);
     if (open || ended) return;
     if (embedsHere) void openOn(target, false);
-  }, [polled, settled, open, ended, embedsHere, openOn, target]);
+  }, [polled, settled, loading, open, ended, embedsHere, openOn, target]);
 
   // From mount until the open answers, the pane says Opening rather than
   // offering a press that is about to happen by itself.
@@ -315,7 +316,10 @@ export default function EditorMode(props: EditorModeProps) {
 
   const box = useNativeBox({
     frameRect: props.frameRect,
-    overlays: props.overlays,
+    // The shell's overlays are not passed: the backend cuts the editor away
+    // under them (`embed_overlays`), so a menu is drawn above a live editor
+    // rather than the editor hiding. A child window has no still to show.
+    overlays: [],
     coveredHere: pickerOpen,
     hidden: marking !== null,
     placed: embed?.kind === "embedded",

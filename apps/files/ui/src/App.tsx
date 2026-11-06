@@ -34,6 +34,7 @@ import {
   type TreeChange,
 } from "./topics";
 import { describe, getRoot, watchRoot, type Root } from "./rpc";
+import { engineOpen } from "./engineOpen";
 
 /** The app id this app opens files into. A *kind*, never a surface — see
  *  `openIn`. Written down here rather than inlined because it is the one string
@@ -111,27 +112,6 @@ export default function App() {
         if (samePath(changed, rootPath)) reloadTree();
       }),
     [rootPath, reloadTree],
-  );
-
-  /**
-   * The shell asking this app to open one path — the search overlay's Enter
-   * key, relayed through `src/shell/search/openHit.ts`. A real open, not a
-   * peek: someone who pressed Enter on a search hit means to work in the file.
-   *
-   * Forwarded rather than handled, because this app no longer shows files.
-   * `openHit.ts` still addresses the Files instance by its app id, which was
-   * the only surface that could show a file when that code was written; the
-   * honest fix is for it to call `openIn("viewer", …)` itself and skip this hop
-   * entirely, and it is left alone only because that file is being worked on
-   * elsewhere. See `docs/handoffs/files-app-split.md`.
-   */
-  useEffect(
-    () =>
-      on("files:open-path", (payload) => {
-        const path = (payload as { path?: unknown } | null)?.path;
-        if (typeof path === "string") void openIn(VIEWER_APP, { path, preview: false }).catch(noop);
-      }),
-    [],
   );
 
   /**
@@ -246,10 +226,43 @@ export default function App() {
    * The rejection is swallowed: `openIn` can fail if the cluster went away
    * between the click and the call, and a tree that raised an error bar because
    * a pane closed would be reporting the shell's business as the user's problem.
+   *
+   * A deliberate open of a `.blend` or a Godot scene goes to its engine
+   * (`engineOpen.ts`); a peek stays a peek in the Viewer.
    */
-  const openFile = useCallback((path: string, preview: boolean) => {
-    void openIn(VIEWER_APP, { path, preview }).catch(noop);
-  }, []);
+  const openFile = useCallback(
+    (path: string, preview: boolean) => {
+      const engine = preview ? null : engineOpen(path, rootPath);
+      const opened = engine
+        ? openIn(engine.appId, engine.payload)
+        : openIn(VIEWER_APP, { path, preview });
+      void opened.catch(noop);
+    },
+    [rootPath],
+  );
+  const openFileRef = useRef(openFile);
+  openFileRef.current = openFile;
+
+  /**
+   * The shell asking this app to open one path — the search overlay's Enter
+   * key, relayed through `src/shell/search/openHit.ts`. A real open, not a
+   * peek: someone who pressed Enter on a search hit means to work in the file.
+   *
+   * Forwarded rather than handled, because this app no longer shows files.
+   * `openHit.ts` still addresses the Files instance by its app id, which was
+   * the only surface that could show a file when that code was written; the
+   * honest fix is for it to call `openIn("viewer", …)` itself and skip this hop
+   * entirely, and it is left alone only because that file is being worked on
+   * elsewhere. See `docs/handoffs/files-app-split.md`.
+   */
+  useEffect(
+    () =>
+      on("files:open-path", (payload) => {
+        const path = (payload as { path?: unknown } | null)?.path;
+        if (typeof path === "string") openFileRef.current(path, false);
+      }),
+    [],
+  );
 
   const openTreatment = useMemo(() => openPath, [openPath]);
 

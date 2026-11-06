@@ -65,3 +65,26 @@ export async function revealInGodot(r: Reveal, editor: EditorInfo): Promise<stri
   const { missing } = await editorSelect(r.nodes);
   return missing.length ? `Not in the scene now: ${missing.join(", ")}.` : null;
 }
+
+/** A scene file, by the names `godot/editor-open` takes for one. */
+export const isSceneFile = (path: string) => /\.(tscn|scn)$/i.test(path);
+
+/**
+ * The project and `res://` scene to start the editor on for a reveal of a
+ * scene file (one opened from the Explorer): the innermost project holding
+ * it. A scene given at launch needs no plugin to be shown. `null` for any
+ * other reveal, or a file in no project.
+ */
+export function launchSceneFor(
+  r: Reveal | null | undefined,
+  projects: readonly { rel: string }[],
+): { project: string; scene: string } | null {
+  const file = r?.file;
+  if (!file || !isSceneFile(file)) return null;
+  let best: { project: string; scene: string } | null = null;
+  for (const { rel } of projects) {
+    const scene = resPath(rel, file);
+    if (scene && (!best || rel.length > best.project.length)) best = { project: rel, scene };
+  }
+  return best;
+}

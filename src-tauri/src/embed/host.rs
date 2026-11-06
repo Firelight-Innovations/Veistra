@@ -35,6 +35,9 @@ use veistra_rpc::{RpcError, INTERNAL_ERROR, INVALID_PARAMS, METHOD_NOT_FOUND};
 /// machine where embedding works (§13 test 9): `VEISTRA_EMBED=off`.
 pub const SWITCH_ENV: &str = "VEISTRA_EMBED";
 
+/// The window a pane that names none is in, as [`owner_of`] reads `None`.
+const MAIN_WINDOW: &str = "main";
+
 /// A pane's last box, kept between runs so a window is launched at its size.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pane {
@@ -150,6 +153,9 @@ pub struct Hosts {
     forced_off: bool,
     hosted: Mutex<Vec<Arc<Hosted>>>,
     boxes: Arc<Mutex<HashMap<Slot, Pane>>>,
+    /// The shell's open overlays in each Veistra window, by label, in CSS
+    /// pixels: what an editor placed as a child is cut away under.
+    overlays: Mutex<HashMap<String, Vec<CssRect>>>,
 }
 
 impl Default for Hosts {
@@ -172,6 +178,7 @@ impl Hosts {
             forced_off,
             hosted: Mutex::new(Vec::new()),
             boxes: Arc::new(Mutex::new(HashMap::new())),
+            overlays: Mutex::new(HashMap::new()),
         }
     }
 
@@ -226,9 +233,40 @@ impl Hosts {
         };
         if let Some(hosted) = self.get(slot) {
             let owner = owner_of(pane.window.as_deref());
+            // The pane may have moved to another window, or the window come
+            // after the overlays were said: its menus are this window's.
+            hosted
+                .embed
+                .set_overlays(self.overlays_in(pane.window.as_deref()), None);
             hosted.embed.set_rect(asked, owner.as_ref());
         }
         pane
+    }
+
+    fn overlays_in(&self, window: Option<&str>) -> Vec<CssRect> {
+        let label = window.unwrap_or(MAIN_WINDOW);
+        self.overlays
+            .lock_or_panic()
+            .get(label)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The shell's open overlays in Veistra window `window`, from its overlay
+    /// watch (`overlayWatch.ts`): each editor in a pane of that window is cut
+    /// away under them.
+    pub fn set_overlays(&self, window: &str, rects: Vec<CssRect>, owner_of: &OwnerFn) {
+        self.overlays
+            .lock_or_panic()
+            .insert(window.to_string(), rects.clone());
+        for hosted in self.live() {
+            let pane_window = window_of(&self.boxes, &hosted);
+            if pane_window.as_deref().unwrap_or(MAIN_WINDOW) != window {
+                continue;
+            }
+            let owner = owner_of(pane_window.as_deref());
+            hosted.embed.set_overlays(rects.clone(), owner.as_ref());
+        }
     }
 
     /// Register a window and start looking for it on a thread of its own.
@@ -628,6 +666,16 @@ pub fn sync_visibility(app: &tauri::AppHandle, snapshot: &ShellSnapshot) {
 pub fn reposition_all(app: &tauri::AppHandle) {
     use tauri::Manager;
     app.state::<Hosts>().reposition_all(&owner_fn(app));
+}
+
+/// The shell's open overlays in the calling Veistra window, in CSS pixels,
+/// each time they change: an editor placed as a child is cut away under them,
+/// so the menu, picker or dialog is drawn above it (`ToolWindow.tsx`).
+#[tauri::command]
+pub fn embed_overlays(app: tauri::AppHandle, window: tauri::Window, rects: Vec<CssRect>) {
+    use tauri::Manager;
+    app.state::<Hosts>()
+        .set_overlays(window.label(), rects, &owner_fn(&app));
 }
 
 /// [`Hosts::release_all`], at exit.

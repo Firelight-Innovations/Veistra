@@ -22,7 +22,10 @@ import type {
 import { paneLeaves, paneOfTab, paneTabs } from "../contract";
 import { activateInstance, openInstance, setInstanceTitle } from "../state/shellState";
 import { clearsSubject, declaredSubject, getSubject, setSubject } from "../viewerSubjects";
-import { resolveViewerTarget as planViewerTarget } from "../viewerTarget";
+import {
+  resolveFileTabTarget as planFileTabTarget,
+  resolveViewerTarget as planViewerTarget,
+} from "../viewerTarget";
 import { baseNameOf } from "../viewerTitle";
 import { feedbackFromFrame, trackFromFrame, type FrameAnswer } from "../telemetry/appTrack";
 import { shell } from "../telemetry/features";
@@ -65,6 +68,7 @@ import {
   AGENT_TAB_MODELS,
   AGENT_TAB_RESTORED,
   appPainted,
+  embedOverlays,
   onAgentTabChosen,
   onAgentTabEvent,
   onAgentTabInstall,
@@ -91,7 +95,7 @@ import {
   type OsFileDragMessage,
 } from "../toolWindowRegistry";
 import { sameWindowRect, windowRectOfPane, type WindowRect } from "./surfaceRect";
-import { watchOverlays } from "../overlayWatch";
+import { watchOverlays, type OverlayRect } from "../overlayWatch";
 import "./toolwindow.css";
 
 /**
@@ -100,6 +104,14 @@ import "./toolwindow.css";
  * the person clicking made.
  */
 const VIEWER_APP = "viewer";
+
+/**
+ * Apps that run one editor per file, and the payload field naming that file:
+ * a `veistra/open` of one with that field gets the tab already on the file, or
+ * a new tab of its own, never another tab's (`resolveFileTabTarget`). Blender
+ * is one Blender per tab, so taking over a tab would mean closing its file.
+ */
+const FILE_TAB_APPS: Readonly<Record<string, string>> = { "blender-viewer": "blend" };
 
 /** The app an operating-system file drop is handed to when it lands on one of its frames. */
 const FILES_APP = "files";
@@ -654,14 +666,29 @@ const ToolWindow = forwardRef<
     .map((i) => i.id)
     .sort()
     .join(" ");
+  //
+  // Rust is told as well: an editor placed as a child (Godot, Blender) is cut
+  // away under each box, so the overlay is drawn above it. A frame cannot do
+  // that for itself, and a child has no still to swap in. The watch starts
+  // from "nothing open", so stopping it says so too, or a picker that closed
+  // as it opened an app would leave its hole in the editor.
   useEffect(() => {
     if (overlayTargets === "") return;
     const ids = overlayTargets.split(" ");
-    return watchOverlays((rects) => {
+    const tellRust = (rects: readonly OverlayRect[]) =>
+      void embedOverlays(rects.map((r) => ({ x: r.x, y: r.y, w: r.width, h: r.height }))).catch(
+        () => undefined,
+      );
+    const stop = watchOverlays((rects) => {
+      tellRust(rects);
       for (const id of ids) {
         if (readyIdsRef.current.has(id)) deliverEvent(id, OVERLAYS_EVENT, { rects });
       }
     });
+    return () => {
+      stop();
+      tellRust([]);
+    };
   }, [overlayTargets, deliverEvent]);
 
   // The page's own window rect, for a page app that needs one. Its box is not
@@ -772,6 +799,54 @@ const ToolWindow = forwardRef<
   const focusedPaneRef = useRef(focusedPaneId);
   focusedPaneRef.current = focusedPaneId;
   const lastViewerPane = useRef<string | null>(null);
+  const measuredPanes = useCallback(
+    () =>
+      paneLeaves(layout.current).map((leaf) => {
+        const rect = rectsRef.current.get(leaf.id);
+        return { id: leaf.id, tabs: leaf.tabs, area: rect ? rect.width * rect.height : 0 };
+      }),
+    [],
+  );
+
+  /**
+   * Which tab of a `FILE_TAB_APPS` app opens `path`: the one an earlier open
+   * gave that file, else a new one where a new File Viewer would go. Recorded
+   * before the tab has said anything, as `resolveViewerTarget` does, so two
+   * quick opens of one file make one tab.
+   */
+  const fileTabs = useRef(new Map<string, string>());
+  const resolveFileTab = useCallback(
+    async (appId: string, path: string, sourceInstance?: string): Promise<string> => {
+      const isApp = (id: string) => {
+        const instance = roster.current.get(id);
+        return !!instance && instance.kind !== "terminal" && instance.appId === appId;
+      };
+      const plan = planFileTabTarget(
+        {
+          panes: measuredPanes(),
+          viewerIds: paneTabs(layout.current).filter(isApp),
+          subjectOf: (id) => {
+            const file = fileTabs.current.get(id);
+            return file ? { path: file, preview: false, dirty: false } : undefined;
+          },
+          lastViewerPaneId: null,
+          sourcePaneId: sourceInstance ? paneOfTab(layout.current, sourceInstance) : null,
+        },
+        path,
+      );
+      let id: string;
+      if (plan.kind === "new") {
+        id = await openInstance(windowLabel(), appId, plan.paneId);
+      } else {
+        id = plan.id;
+        void activateInstance(id);
+      }
+      fileTabs.current.set(id, path);
+      void setInstanceTitle(id, baseNameOf(path));
+      return id;
+    },
+    [measuredPanes],
+  );
 
   const resolveViewerTarget = useCallback(
     async (path: string, preview: boolean, sourceInstance?: string): Promise<string> => {
@@ -780,10 +855,7 @@ const ToolWindow = forwardRef<
         return !!instance && instance.kind !== "terminal" && instance.appId === VIEWER_APP;
       };
       const viewerIds = paneTabs(layout.current).filter(isViewer);
-      const panes = paneLeaves(layout.current).map((leaf) => {
-        const rect = rectsRef.current.get(leaf.id);
-        return { id: leaf.id, tabs: leaf.tabs, area: rect ? rect.width * rect.height : 0 };
-      });
+      const panes = measuredPanes();
       const focused = panes.find((pane) => pane.id === focusedPaneRef.current);
       if (focused?.tabs.some(isViewer)) lastViewerPane.current = focused.id;
       const plan = planViewerTarget(
@@ -814,7 +886,7 @@ const ToolWindow = forwardRef<
       void setInstanceTitle(id, baseNameOf(path));
       return id;
     },
-    [],
+    [measuredPanes],
   );
 
   /**
@@ -1025,9 +1097,12 @@ const ToolWindow = forwardRef<
       // `resolveViewerTarget`. The payload is still not interpreted beyond the
       // two fields that decide *which* viewer — the rest goes through as is.
       const file = viewerFileRequest(target.appId, target.payload);
+      const tabFile = fileTabRequest(target.appId, target.payload);
       const resolved = file
         ? resolveViewerTarget(file.path, file.preview, frameId)
-        : resolveOpenTarget(target.appId);
+        : tabFile
+          ? resolveFileTab(target.appId, tabFile, frameId)
+          : resolveOpenTarget(target.appId);
       void resolved
         .then((instanceId) => {
           // Queued if that frame has not finished its handshake, which is the
@@ -1893,6 +1968,14 @@ function viewerFileRequest(
   if (appId !== VIEWER_APP || typeof payload !== "object" || payload === null) return null;
   const { path, preview } = payload as { path?: unknown; preview?: unknown };
   return typeof path === "string" && path !== "" ? { path, preview: preview === true } : null;
+}
+
+/** The file a `FILE_TAB_APPS` app is asked to open, else `null`. */
+function fileTabRequest(appId: string, payload: unknown): string | null {
+  const field = Object.hasOwn(FILE_TAB_APPS, appId) ? FILE_TAB_APPS[appId] : undefined;
+  if (!field || typeof payload !== "object" || payload === null) return null;
+  const file = (payload as Record<string, unknown>)[field];
+  return typeof file === "string" && file !== "" ? file : null;
 }
 
 /** The event an app's `veistra/attach-to-agent` becomes, for the agent tab. */

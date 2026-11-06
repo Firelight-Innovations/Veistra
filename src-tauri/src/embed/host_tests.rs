@@ -385,7 +385,30 @@ fn embed_methods_place_an_editor_for_its_pane_and_leave_the_game_to_play() {
     );
     wait_for("placed", || state_of(&blender) == State::Embedded);
     assert_eq!(ask("embed/state").unwrap()["embedded"], true);
-    assert_eq!(ask("embed/still").unwrap()["png"], BASE64.encode(b"PNG"));
+    // A child has no still: Graphics Capture takes only top-level windows,
+    // so a menu over it is cut out of it instead (below).
+    assert!(ask("embed/still").is_err());
+    let picker = CssRect {
+        x: 100.0,
+        y: 0.0,
+        w: 200.0,
+        h: 100.0,
+    };
+    hosts.set_overlays("win-2", vec![picker], &o);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert!(
+        fake.cuts.lock_or_panic().is_empty(),
+        "another window's menu is not over it"
+    );
+    hosts.set_overlays("main", vec![picker], &o);
+    wait_for("the hole", || !fake.cuts.lock_or_panic().is_empty());
+    hosts.set_overlays("main", Vec::new(), &o);
+    wait_for("the hole closed", || {
+        fake.cuts
+            .lock_or_panic()
+            .last()
+            .is_some_and(|c| c.is_empty())
+    });
     assert_eq!(ask("embed/pop-out").unwrap()["embed"]["kind"], "poppedOut");
     assert_eq!(ask("embed/dock").unwrap()["embed"]["kind"], "embedded");
 

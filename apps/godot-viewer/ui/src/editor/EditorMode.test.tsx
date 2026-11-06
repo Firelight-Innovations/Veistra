@@ -216,7 +216,6 @@ function props(over: Partial<EditorModeProps> = {}): EditorModeProps {
     reloadStatus,
     epoch: 0,
     frameRect: { x: 0, y: 0, width: 800, height: 600 },
-    overlays: [],
     ...over,
   };
 }
@@ -320,6 +319,19 @@ describe("Editor mode before the editor opens", () => {
     await waitFor(() => expect(within(bar()).getByRole("status").textContent).toBe("Starting"));
     await polls();
     expect(calls("godot/editor-open")).toHaveLength(1);
+  });
+
+  it("starts the editor on a scene opened from the Explorer, and takes the reveal as done", async () => {
+    backend();
+    const onRevealHandled = vi.fn();
+    const reveal = { n: 4, tool: "godot" as const, file: "levels/hall.tscn" };
+    render(<EditorMode {...props({ status: WITH_PLUGIN, reveal, onRevealHandled })} />);
+    await waitFor(() => expect(calls("godot/editor-open")).toHaveLength(1));
+    expect(lastParams("godot/editor-open")).toEqual({
+      project: ".",
+      scene: "res://levels/hall.tscn",
+    });
+    expect(onRevealHandled).toHaveBeenCalledWith(4);
   });
 
   it("says why when the editor would not open, and offers Open the editor again", async () => {
@@ -456,19 +468,16 @@ describe("Editor mode before the editor opens", () => {
 });
 
 describe("Editor mode with the editor open", () => {
-  it("shows nothing of its own over the editor, and its last frame while covered", async () => {
+  // A shell menu over the editor no longer hides it: the backend cuts the
+  // editor away under the menu (`embed_overlays`, `embed::holes`), because a
+  // child window has no still and hiding it blanked the whole pane.
+  it("shows nothing of its own over the editor, and keeps it shown", async () => {
     backend({ editor: editorInfo() });
-    const view = render(<EditorMode {...props()} />);
+    render(<EditorMode {...props()} />);
     await waitFor(() => expect(within(bar()).getByRole("status").textContent).toBe("Editing"));
     expect(screen.getByText("The Godot editor is shown here.").className).toBe("ge__sr");
     await waitFor(() => expect(lastParams("embed/rect")?.visible).toBe(true));
-    view.rerender(
-      <EditorMode {...props({ overlays: [{ x: 100, y: 100, width: 50, height: 50 }] })} />,
-    );
-    const still = await screen.findByRole("img", { name: "The Godot editor's last frame" });
-    expect(still.getAttribute("src")).toBe("blob:frame");
-    await waitFor(() => expect(lastParams("embed/rect")?.visible).toBe(false));
-    expect(lastParams("embed/still")).toEqual({ kind: "godotEditor" });
+    expect(lastParams("embed/still")).toBeUndefined();
   });
 
   it("says why each tool waits while the plugin is not running", async () => {

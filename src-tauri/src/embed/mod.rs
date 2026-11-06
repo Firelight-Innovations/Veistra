@@ -203,6 +203,27 @@ pub fn target(mode: Mode, css: CssRect, owner: &Owner, scale: f64) -> ScreenRect
     }
 }
 
+/// The parts of `covers` that fall on a window at `at`, moved into that
+/// window's own pixels; a cover that misses it leaves no hole. Both are in
+/// the same space (a child's: the Veistra window's client pixels).
+pub fn holes(at: ScreenRect, covers: &[ScreenRect]) -> Vec<ScreenRect> {
+    covers
+        .iter()
+        .filter_map(|c| {
+            let left = c.x.max(at.x);
+            let top = c.y.max(at.y);
+            let right = (c.x + c.w).min(at.x + at.w);
+            let bottom = (c.y + c.h).min(at.y + at.h);
+            (right > left && bottom > top).then(|| ScreenRect {
+                x: left - at.x,
+                y: top - at.y,
+                w: right - left,
+                h: bottom - top,
+            })
+        })
+        .collect()
+}
+
 /// The physical size a window is first launched at: the pane's last box if
 /// one is known, else 1280 x 720. Even numbers, because an H.264 encoder
 /// refuses odd ones.
@@ -376,6 +397,11 @@ pub trait WindowSystem: Send + Sync {
     /// stay over the pane as an empty dark rectangle. Never touches the
     /// window's own handle, which Windows may have given to another window.
     fn discard(&self, _saved: &sys::Saved) {}
+    /// Cut `holes`, in its own pixels, out of a child's clip box, so what the
+    /// WebView draws there shows through; none restores the whole box.
+    fn cut(&self, _hwnd: isize, _holes: &[ScreenRect]) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 struct Native;
@@ -399,6 +425,9 @@ impl WindowSystem for Native {
     }
     fn discard(&self, saved: &sys::Saved) {
         sys::discard(saved)
+    }
+    fn cut(&self, hwnd: isize, holes: &[ScreenRect]) -> Result<(), String> {
+        sys::cut(hwnd, holes)
     }
     fn release(
         &self,
@@ -432,6 +461,8 @@ struct Placement {
     at: ScreenRect,
     visible: bool,
     owner: isize,
+    /// Physical pixels per CSS pixel, for the shell's overlays ([`holes`]).
+    scale: f64,
     asked: Instant,
 }
 
@@ -484,6 +515,11 @@ struct Inner {
     ops: Mutex<()>,
     still: Mutex<Option<Box<dyn Still>>>,
     placed: Mutex<Option<Placed>>,
+    /// The shell's open overlays in the pane's Veistra window, CSS pixels
+    /// ([`Embed::set_overlays`]), and the holes last cut for them in a
+    /// child's clip box, in its own pixels. Empty when nothing covers it.
+    overlays: Mutex<Vec<CssRect>>,
+    cut: Mutex<Vec<ScreenRect>>,
     settled: Mutex<Option<Settled>>,
     /// When the wait for the window began: the attach, or the pane that
     /// rejoined it ([`Embed::rejoin`]). [`Kind::find_for`] counts from here,
@@ -500,7 +536,28 @@ impl Inner {
         *self.hwnd.lock_or_panic()
     }
 
+    /// Where the shell's overlays fall on a child placed by `p`, in its clip
+    /// box's pixels. None for an owned popup: the game swaps for its still.
+    fn holes_for(&self, p: &Placement) -> Vec<ScreenRect> {
+        if self.kind.mode() != Mode::Child {
+            return Vec::new();
+        }
+        let overlays = self.overlays.lock_or_panic();
+        let covers: Vec<ScreenRect> = overlays
+            .iter()
+            .map(|o| to_screen(*o, (0, 0), p.scale))
+            .collect();
+        holes(p.at, &covers)
+    }
+
     fn place(&self, p: &Placement) -> Result<(), String> {
+        // The holes first, so a window shown by this placement never paints
+        // over an overlay for a frame.
+        let holes = self.holes_for(p);
+        if *self.cut.lock_or_panic() != holes {
+            self.win.cut(p.hwnd, &holes)?;
+            *self.cut.lock_or_panic() = holes;
+        }
         self.win
             .place(p.hwnd, p.at, p.visible, p.owner, self.kind.mode())?;
         *self.placed.lock_or_panic() = Some(Placed {
@@ -520,12 +577,15 @@ impl Inner {
         if self.kind.mode() != Mode::Child {
             return false;
         }
+        // A queued placement cuts the holes the overlays need when it is made.
         match queued {
             Some(q) => p.same(q.hwnd, q.at, q.visible, q.owner),
-            None => self
-                .placed
-                .lock_or_panic()
-                .is_some_and(|d| p.same(d.hwnd, d.at, d.visible, d.owner)),
+            None => {
+                self.placed
+                    .lock_or_panic()
+                    .is_some_and(|d| p.same(d.hwnd, d.at, d.visible, d.owner))
+                    && *self.cut.lock_or_panic() == self.holes_for(p)
+            }
         }
     }
 
@@ -603,6 +663,8 @@ impl Embed {
                 ops: Mutex::new(()),
                 still: Mutex::new(None),
                 placed: Mutex::new(None),
+                overlays: Mutex::new(Vec::new()),
+                cut: Mutex::new(Vec::new()),
                 settled: Mutex::new(None),
                 since: Mutex::new(Instant::now()),
             }),
@@ -805,6 +867,8 @@ impl Embed {
             }
         };
         *self.inner.saved.lock_or_panic() = Some(saved.clone());
+        // A fresh clip box has no holes yet, whatever the last one had.
+        self.inner.cut.lock_or_panic().clear();
         self.set(State::Embedded);
         if let Err(e) = self.place_now(owner) {
             crate::veistra_log!("embed: could not move {}: {e}", self.inner.kind.what());
@@ -814,7 +878,11 @@ impl Embed {
             self.own_window(Cause::PlaceFailed);
             return false;
         }
-        *self.inner.still.lock_or_panic() = self.inner.win.watch(hwnd);
+        // Graphics Capture takes only a top-level window, so an editor placed
+        // as a child has no still: asking only logged a failure per embed.
+        if mode == Mode::Owned {
+            *self.inner.still.lock_or_panic() = self.inner.win.watch(hwnd);
+        }
         true
     }
 
@@ -824,6 +892,24 @@ impl Embed {
         {
             let mut last = self.inner.last.lock_or_panic();
             *last = Some(Last::then(*last, next));
+        }
+        if let Some(owner) = owner {
+            self.reapply(owner);
+        }
+    }
+
+    /// The shell's open overlays in the pane's Veistra window, CSS pixels. A
+    /// child is cut away where they fall on it, so a menu opened over the
+    /// editor is drawn above it while the rest of the editor stays live: a
+    /// child window has no still to stand in for it (Graphics Capture takes
+    /// only top-level windows), so hiding it would blank the whole pane.
+    pub fn set_overlays(&self, rects: Vec<CssRect>, owner: Option<&Owner>) {
+        {
+            let mut overlays = self.inner.overlays.lock_or_panic();
+            if *overlays == rects {
+                return;
+            }
+            *overlays = rects;
         }
         if let Some(owner) = owner {
             self.reapply(owner);
@@ -862,6 +948,7 @@ impl Embed {
             at: target(self.inner.kind.mode(), last.rect, owner, scale),
             visible: last.visible && shown && last.rect.w >= 1.0 && last.rect.h >= 1.0,
             owner: owner.hwnd,
+            scale,
             asked: Instant::now(),
         })
     }
@@ -989,6 +1076,7 @@ impl Embed {
             "shown": self.shown(),
             "box": self.last().map(|l| json!({ "rect": l.rect, "visible": l.visible, "dpr": l.dpr })),
             "placed": placed.map(|p| json!({ "at": p.at, "visible": p.visible })),
+            "holes": self.inner.cut.lock_or_panic().clone(),
             "lastPlaceMs": placed.map(|p| p.ms),
             "still": self.inner.still.lock_or_panic().is_some(),
         })
@@ -1151,6 +1239,10 @@ pub mod sys {
     }
 
     pub fn discard(_saved: &Saved) {}
+
+    pub fn cut(_hwnd: isize, _holes: &[ScreenRect]) -> Result<(), String> {
+        Ok(())
+    }
 
     pub fn show_near(_hwnd: isize, _near: Option<ScreenRect>) -> Result<(), String> {
         Err(NONE.into())

@@ -1,12 +1,13 @@
 # Veistra Roadmap
 
 Rough execution order. Items are mostly sequential; a couple are explicitly
-parallel or vague-on-purpose (noted inline). Updated 2026-08-21.
+parallel or vague-on-purpose (noted inline). Updated 2026-11-06.
 
 ## Known issues (open)
 
-Reported by Braden on 2026-11-04. Pick one up by name; each needs scoping
-before it is built.
+Reported by Braden on 2026-11-04. Each needs scoping before it is built. They
+are taken **in this order, one branch each**, after the editors branch below
+merges.
 
 1. **There is no Veistra harness yet.** Agents run inside whatever harness the
    terminal or agent tab launches; Veistra has no agent harness of its own.
@@ -16,10 +17,14 @@ before it is built.
    real Veistra from a clean profile, sign-out, and a restart that stays signed
    in; and recording runs (`POST /v1/runs`), without which the usage page's
    run counts stay at zero. Billed totals stay at zero until the gateway exists.
-3. **Agents output only scripts, not the finished artifact.** Asked for a game
-   (Elijah's game, for example), an agent writes the scripts and stops: there is
-   no built, runnable result at the end. The deliverable should be the artifact
-   itself, not only the code that would produce it.
+3. **Agents output code that builds the artifact, not the artifact.** Asked for
+   a game (Elijah's game, for example), an agent writes scripts that construct
+   the scene, the level or the model at runtime and stops there. The deliverable
+   should be the human-editable artifact itself — a `.tscn` a person can open in
+   the Godot editor, a `.blend` they can open in Blender — with code only for
+   behaviour. This wants **checks**, not a request in a prompt: something that
+   fails an agent's output when the content it was asked for exists only as
+   code that generates it.
    *In progress.* Elijah's agent (agent tab, Claude, developer mode off, a
    prompt naming Godot, an empty folder) left only `.gd` files: no scene and no
    main scene, though both are text it could write. That is guidance, so the
@@ -28,6 +33,25 @@ before it is built.
    game from its own shell. Still open, pending Braden: tools any agent can
    call to run the game in the Play pane, read its log and capture a frame, and
    the same treatment for Blender assets.
+
+## Embedded editors (in review)
+
+Branch `braden/editor-overlays-file-open`, on top of #349. Godot and Blender
+run embedded in their tabs and start when the tab opens; each Blender tab runs
+its own Blender on its own file. A deliberate open of a `.blend` or a `.tscn`/`.scn` in Files loads it
+in the engine rather than as text. Shell overlays (the app picker, menus) are
+cut out of an embedded editor's window so they draw above it while the rest of
+the editor stays live.
+
+Still open:
+
+- **The overlay cut has not been seen on a real window.** The tests prove the
+  geometry and when a cut is made and given back; that the WebView shows
+  through the hole needs a look in `pnpm app`.
+- Re-opening a `.blend` focuses its tab only for tabs opened from a file, not
+  ones opened from the picker.
+- A Godot editor already running without the Veistra plugin cannot switch
+  scenes when one is opened from Files.
 
 ## Done
 

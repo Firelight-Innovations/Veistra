@@ -77,25 +77,47 @@ impl World {
     }
 
     fn with<R>(&self, read_only: bool, f: impl FnOnce(&Ctx) -> R) -> R {
+        self.with_in(Some("pane-1"), &|_| true, read_only, f)
+    }
+
+    /// A call from `instance` (`None`: an agent's, naming no pane), with
+    /// `shown` saying which panes are on screen.
+    fn with_in<R>(
+        &self,
+        instance: Option<&str>,
+        shown: &dyn Fn(&str) -> bool,
+        read_only: bool,
+        f: impl FnOnce(&Ctx) -> R,
+    ) -> R {
         let exe = self.exe.clone();
         let find = move || Ok((exe.clone(), Some("4.2.1".to_string())));
         let ctx = Ctx {
             editors: &self.editors,
             hosts: &self.hosts,
             cluster: "c1".into(),
-            instance: Some("pane-1".into()),
+            instance: instance.map(str::to_string),
             project: Some(self.root.clone()),
             read_only,
             find: &find,
             scratch: self.scratch.clone(),
             owner: Arc::new(|_| None),
-            shown: &|_| true,
+            shown,
         };
         f(&ctx)
     }
 
     fn call(&self, method: &str, params: Value) -> Result<Value, RpcError> {
-        self.with(false, |ctx| {
+        self.call_in(Some("pane-1"), &|_| true, method, params)
+    }
+
+    fn call_in(
+        &self,
+        instance: Option<&str>,
+        shown: &dyn Fn(&str) -> bool,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, RpcError> {
+        self.with_in(instance, shown, false, |ctx| {
             call(ctx, method, Some(&params)).expect("an editor method")
         })
     }
@@ -103,7 +125,7 @@ impl World {
     fn open(&self, blend: &str) -> Arc<Editor> {
         self.call("blender-viewer/editor-open", json!({ "blend": blend }))
             .expect("opened");
-        self.editors.get("c1").expect("an editor")
+        self.editors.get("pane-1").expect("an editor")
     }
 }
 
@@ -340,7 +362,63 @@ fn a_file_open_in_another_blender_is_not_opened_again() {
         "{}",
         err.message
     );
-    assert!(w.editors.get("c1").is_none(), "nothing started");
+    assert!(w.editors.get("pane-1").is_none(), "nothing started");
+}
+
+/// Each Blender tab is its own Blender: a second pane in the cluster opens
+/// its own file instead of being told the first pane's Blender is open.
+#[test]
+fn two_blender_tabs_in_one_cluster_each_run_their_own_blender() {
+    let w = World::new();
+    let bed = w.open("props/bed.blend");
+    let open = |instance: &str, blend: &str| {
+        w.call_in(
+            Some(instance),
+            &|_| true,
+            "blender-viewer/editor-open",
+            json!({ "blend": blend }),
+        )
+    };
+    open("pane-2", "props/lamp.blend").expect("the second tab opens its own file");
+    let lamp = w.editors.get("pane-2").expect("pane-2's Blender");
+    assert!(!Arc::ptr_eq(&bed, &lamp));
+    assert_eq!(lamp.file().as_deref(), Some("props/lamp.blend"));
+
+    // Each pane's state is its own Blender.
+    let state = |instance: &str| {
+        w.call_in(
+            Some(instance),
+            &|_| true,
+            "blender-viewer/editor-state",
+            json!({}),
+        )
+        .unwrap()
+    };
+    assert_eq!(state("pane-1")["editor"]["file"], "props/bed.blend");
+    assert_eq!(state("pane-2")["editor"]["file"], "props/lamp.blend");
+    assert!(
+        state("pane-3")["editor"].is_null(),
+        "a pane with none has none"
+    );
+
+    // One file is still one Blender, whichever tab asks.
+    let again = open("pane-3", "props/bed.blend").unwrap_err();
+    assert!(
+        again.message.contains("open in another Blender tab"),
+        "{}",
+        again.message
+    );
+
+    // A call naming no pane stands for the Blender on screen.
+    let agent = w
+        .call_in(
+            None,
+            &|i| i == "pane-2",
+            "blender-viewer/editor-state",
+            json!({}),
+        )
+        .unwrap();
+    assert_eq!(agent["editor"]["file"], "props/lamp.blend");
 }
 
 #[test]
@@ -367,7 +445,7 @@ fn with_no_blend_blender_starts_on_a_new_scene_and_writes_nothing_into_the_envir
     let w = World::new();
     w.call("blender-viewer/editor-open", json!({}))
         .expect("opened");
-    let editor = w.editors.get("c1").expect("an editor");
+    let editor = w.editors.get("pane-1").expect("an editor");
     until("argv", || editor.channel.join("argv.txt").is_file());
     let argv = std::fs::read_to_string(editor.channel.join("argv.txt")).unwrap();
     let args: Vec<&str> = argv.lines().map(str::trim).collect();
@@ -388,7 +466,7 @@ fn a_new_scene_saved_into_the_environment_is_followed_and_locked() {
     let w = World::new();
     w.call("blender-viewer/editor-open", json!({ "blend": null }))
         .expect("opened");
-    let editor = w.editors.get("c1").expect("an editor");
+    let editor = w.editors.get("pane-1").expect("an editor");
     report(&editor, "", true);
     assert_eq!(editor.file(), None);
     // The person saves it as props/chair.blend, in Blender's own dialog.
@@ -410,7 +488,7 @@ fn opening_a_new_scene_while_blender_runs_answers_the_running_one() {
     let first = w.open("props/bed.blend");
     let state = w.call("blender-viewer/editor-open", json!({})).unwrap();
     assert_eq!(state["editor"]["file"], "props/bed.blend");
-    assert!(Arc::ptr_eq(&first, &w.editors.get("c1").unwrap()));
+    assert!(Arc::ptr_eq(&first, &w.editors.get("pane-1").unwrap()));
     let bad = w
         .call("blender-viewer/editor-open", json!({ "blend": 3 }))
         .unwrap_err();

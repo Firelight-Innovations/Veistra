@@ -183,7 +183,6 @@ export default function App() {
         <EditorMode
           {...shared}
           frameRect={frameRect}
-          overlays={overlays}
           reveal={reveal.request}
           onRevealHandled={reveal.handled}
         />

@@ -17,7 +17,7 @@
  * at a time. It also says when an agent works in this environment, which is
  * the banner under the bar: an agent reads the files, not the editor.
  */
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { reportPainted } from "@veistra/bridge";
 import type { CameraPose } from "@veistra/markup";
 import type { MarkupExport } from "@veistra/markup/layer";
@@ -55,7 +55,7 @@ import {
   type EditorState,
 } from "./rpc";
 import PluginConsent from "./PluginConsent";
-import { godotPlace, godotReport, revealInGodot } from "./reveal";
+import { godotPlace, godotReport, launchSceneFor, revealInGodot } from "./reveal";
 import { sendSelection } from "./selection";
 import "./editor.css";
 
@@ -70,8 +70,6 @@ const icon = (I: typeof Scan) => <I size={16} strokeWidth={1.5} aria-hidden="tru
 export interface EditorModeProps extends ModeProps {
   /** Where this frame is in its window (`veistra/window-rect`); `null` until the shell says. */
   frameRect: WindowRect | null;
-  /** The shell's open overlays (`veistra/overlays`). */
-  overlays: WindowRect[];
   /** A chip clicked in the agent tab, to show in the editor once it can. */
   reveal?: RevealRequest | null;
   onRevealHandled?: (n: number) => void;
@@ -172,8 +170,13 @@ export default function EditorMode(props: EditorModeProps) {
   const surface = status?.editor;
   const projects = status?.projects ?? [];
   const editor = ed?.editor ?? null;
+  // A scene opened from the Explorer: its project is the one to open, on it.
+  const launch = useMemo(
+    () => (editor ? null : launchSceneFor(props.reveal, projects)),
+    [editor, props.reveal, projects],
+  );
   const chosen =
-    projects.find((p) => p.rel === (editor?.project ?? picked)) ??
+    projects.find((p) => p.rel === (editor?.project ?? launch?.project ?? picked)) ??
     projects.find((p) => p.engineMajor >= 4) ??
     projects[0];
   const embed = editor?.embed.state ?? null;
@@ -274,21 +277,27 @@ export default function EditorMode(props: EditorModeProps) {
 
   // A press clears what the pane said before; the open on mount keeps it, so
   // a plugin install that failed just before is still said once Godot opens.
-  const openOn = useCallback(async (project: string | undefined, pressed: boolean) => {
-    if (pressed) {
-      setProblem(null);
-      setNotice(null);
-    }
-    setOpening(true);
-    setEnded(null);
-    try {
-      setEd(await openEditor(project));
-    } catch (e) {
-      setProblem(errorText(e));
-    } finally {
-      setOpening(false);
-    }
-  }, []);
+  const openOn = useCallback(
+    async (project: string | undefined, pressed: boolean, scene?: string) => {
+      if (pressed) {
+        setProblem(null);
+        setNotice(null);
+      }
+      setOpening(true);
+      setEnded(null);
+      try {
+        setEd(await openEditor(project, scene));
+      } catch (e) {
+        setProblem(errorText(e));
+      } finally {
+        setOpening(false);
+      }
+    },
+    [],
+  );
+
+  const { reveal, onRevealHandled } = props;
+  const revealing = useRef<number | null>(null);
 
   // Opening on mount: decided once the first poll has said whether an editor
   // runs, and once the status has named the project. An editor already open,
@@ -308,8 +317,30 @@ export default function EditorMode(props: EditorModeProps) {
     }
     if (consentOpen) return;
     setAuto("done");
-    if (embedsHere) void openOn(rel, false);
-  }, [polled, auto, open, ended, launchable, askFirst, consentOpen, embedsHere, openOn, rel]);
+    if (!embedsHere) return;
+    // The scene a reveal names is opened by the launch itself, so the reveal
+    // is done: it is not left to say the plugin is needed to show it.
+    const scene = launch && launch.project === rel ? launch.scene : undefined;
+    if (scene && reveal) {
+      revealing.current = reveal.n;
+      onRevealHandled?.(reveal.n);
+    }
+    void openOn(rel, false, scene);
+  }, [
+    polled,
+    auto,
+    open,
+    ended,
+    launchable,
+    askFirst,
+    consentOpen,
+    embedsHere,
+    openOn,
+    rel,
+    launch,
+    reveal,
+    onRevealHandled,
+  ]);
 
   // From mount until the open answers, the pane says Opening rather than
   // offering a press that is about to happen by itself.
@@ -319,8 +350,6 @@ export default function EditorMode(props: EditorModeProps) {
   // A chip clicked in the agent tab: shown once the plugin can act, which on
   // a pane that just opened is after the editor and its plugin have started.
   // With no editor coming, or no plugin in it, the pane says so instead.
-  const { reveal, onRevealHandled } = props;
-  const revealing = useRef<number | null>(null);
   useEffect(() => {
     if (!reveal || revealing.current === reveal.n) return;
     const give = (text: string | null) => {
@@ -352,7 +381,10 @@ export default function EditorMode(props: EditorModeProps) {
 
   const box = useNativeBox({
     frameRect: props.frameRect,
-    overlays: props.overlays,
+    // The shell's overlays are not passed: the backend cuts the editor away
+    // under them (`embed_overlays`), so a menu is drawn above a live editor
+    // rather than the editor hiding. A child window has no still to show.
+    overlays: [],
     coveredHere: consentOpen || pickerOpen,
     hidden: marking !== null,
     placed: embed?.kind === "embedded",

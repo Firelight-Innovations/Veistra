@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { reconcileBlend, selectionWasDropped } from "./selection";
+import { openedBlend, reconcileBlend, selectionWasDropped } from "./selection";
 
 describe("reconcileBlend", () => {
   it("adopts the host's default when nothing was chosen", () => {
@@ -23,5 +23,17 @@ describe("reconcileBlend", () => {
   it("does not call an untouched selection dropped", () => {
     expect(selectionWasDropped(null, { blend: "C:/p/a.blend" })).toBe(false);
     expect(selectionWasDropped("C:/p/a.blend", { blend: "C:/p/a.blend" })).toBe(false);
+  });
+});
+
+describe("openedBlend", () => {
+  it("reads the file the Explorer opened this tab on", () => {
+    expect(openedBlend({ blend: "C:/p/art/chair.blend" })).toBe("C:/p/art/chair.blend");
+  });
+
+  it("is null for a reveal, an empty file or no payload", () => {
+    expect(openedBlend({ reveal: { tool: "blender", file: "a.blend" } })).toBeNull();
+    expect(openedBlend({ blend: "" })).toBeNull();
+    expect(openedBlend(null)).toBeNull();
   });
 });

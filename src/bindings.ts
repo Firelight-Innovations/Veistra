@@ -1135,6 +1135,23 @@ export function appPainted(id: string): Promise<void> {
   return invoke<void>("app_painted", { id });
 }
 
+/** A box in window CSS pixels, as `embed::CssRect` takes it. */
+export interface CssRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * The shell's open overlays in this window, each time they change. Rust cuts
+ * an editor placed in a pane (the Godot editor, Blender) away under them, so
+ * a menu or the app picker is drawn above it (`embed::host::embed_overlays`).
+ */
+export function embedOverlays(rects: CssRect[]): Promise<void> {
+  return invoke<void>("embed_overlays", { rects });
+}
+
 /**
  * Mirrors `boot::BootStatus`.
  *

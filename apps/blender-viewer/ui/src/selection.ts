@@ -21,3 +21,10 @@ export function selectionWasDropped(
 ): boolean {
   return current !== null && next.blend !== current;
 }
+
+/** The file off an open's `{ blend }` payload, else `null`. */
+export function openedBlend(payload: unknown): string | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const { blend } = payload as { blend?: unknown };
+  return typeof blend === "string" && blend !== "" ? blend : null;
+}

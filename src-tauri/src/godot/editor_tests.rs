@@ -142,6 +142,7 @@ fn the_editor_launches_in_one_window_at_the_pane_with_its_channel() {
             Path::new("/p"),
             Some(at),
             Some(0x3213f2),
+            None,
             Path::new("/tmp/e")
         ),
         vec![
@@ -160,8 +161,25 @@ fn the_editor_launches_in_one_window_at_the_pane_with_its_channel() {
             "--veistra-editor-dir=/tmp/e",
         ]
     );
-    let centred = launch_args(Path::new("/p"), None, None, Path::new("/tmp/e"));
+    let centred = launch_args(Path::new("/p"), None, None, None, Path::new("/tmp/e"));
     assert_eq!(centred[3..], ["/p", "--", "--veistra-editor-dir=/tmp/e"]);
+    // A scene opened from the Explorer is the editor's own argument, before `--`.
+    let on_scene = launch_args(
+        Path::new("/p"),
+        None,
+        None,
+        Some("res://levels/a.tscn"),
+        Path::new("/tmp/e"),
+    );
+    assert_eq!(
+        on_scene[3..],
+        [
+            "/p",
+            "res://levels/a.tscn",
+            "--",
+            "--veistra-editor-dir=/tmp/e"
+        ]
+    );
 }
 
 /// `--wid` makes the window Veistra's from its first frame, with no frame or
@@ -233,6 +251,10 @@ fn opening_is_refused_on_main_and_for_a_project_another_cluster_holds() {
     assert_eq!(err.code, READ_ONLY);
 
     let c = ctx(&w, "c1");
+    for bad in ["levels/a.tscn", "res://../a.tscn", "res://a.gd"] {
+        let err = call(&c, "godot/editor-open", json!({ "scene": bad })).unwrap_err();
+        assert_eq!(err.code, INVALID_PARAMS, "{bad}");
+    }
     let opened = call(&c, "godot/editor-open", json!({})).unwrap();
     assert_eq!(opened["editor"]["project"], "game");
     assert_eq!(opened["agent"], true);
