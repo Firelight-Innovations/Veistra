@@ -2,7 +2,7 @@
  * Every word the agent tab shows. Handoff §0: user-facing strings live in one
  * file, and the harness is "Claude" — never "Claude Code".
  */
-import type { HarnessInfo, Hint, SessionState, ToolStatus } from "./protocol.generated";
+import type { HarnessInfo, Hint, SessionState, TaskState, ToolStatus } from "./protocol.generated";
 
 /**
  * What a hint sentence names: the harness, and the commands that set it up.
@@ -363,11 +363,124 @@ export const strings = {
   },
   /** The running line under a working turn: what the agent is at, and for how long. */
   activity: {
+    /** Before the agent has said or done anything about the prompt. */
+    reading: "Reading your prompt",
+    /** While it reasons, or between one step and the next. */
+    thinking: "Thinking",
     running: (command: string) => `Running ${command}`,
+    /** While the agent summarises the conversation to make room. */
+    compacting: "Compacting the conversation",
     elapsed: (ms: number) => {
       const s = Math.max(0, Math.floor(ms / 1000));
       return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
     },
+  },
+  /** Work the agent runs in the background: workflows, shell commands, monitors. */
+  task: {
+    type: (taskType: string) =>
+      ({ workflow: "Workflow", shell: "Shell", monitor: "Monitor", agent: "Agent" })[taskType] ??
+      taskType.charAt(0).toUpperCase() + taskType.slice(1),
+    state: {
+      running: "Running",
+      paused: "Paused",
+      completed: "Done",
+      failed: "Failed",
+      stopped: "Stopped",
+    } satisfies Record<TaskState, string>,
+    details: "Details",
+    stop: "Stop",
+    stopping: "Stopping…",
+    stopFailed: "Could not stop that task.",
+    back: "Background tasks",
+    phase: (index: number, total: number, title: string) =>
+      `Phase ${index + 1} of ${total}: ${title}`,
+    agents: (running: number, done: number, failed: number) =>
+      [
+        running > 0 ? `${running} running` : null,
+        done > 0 ? `${done} done` : null,
+        failed > 0 ? `${failed} failed` : null,
+      ]
+        .filter(Boolean)
+        .join(", ") || "No agents yet",
+    tokens: (n: number) => `${tokens(n)} tokens`,
+    toolUses: (n: number) => `${n} tool ${n === 1 ? "use" : "uses"}`,
+    lastTool: (name: string) => `Last: ${name}`,
+    upNext: "Up next",
+    skipped: "Not reached",
+    other: "Other agents",
+    noPhases: "Agents",
+    phaseState: {
+      done: "Done",
+      running: "Running",
+      failed: "Failed",
+      next: "Up next",
+      skipped: "Not reached",
+    } as Record<string, string>,
+    agentState: { running: "Running", done: "Done", failed: "Failed" } as Record<string, string>,
+  },
+  /** The agent's own advisories, and the conversation being compacted. */
+  agentNotice: { info: "Note", warning: "Warning" } as Record<string, string>,
+  compaction: {
+    inProgress: "Compacting the conversation…",
+    completed: "Conversation compacted",
+    failed: "Compacting failed",
+    cancelled: "Compacting cancelled",
+    summary: "What was kept",
+  } as Record<string, string>,
+  /** The side panel: what the session is working with and what it has done. */
+  details: {
+    title: "Details",
+    open: "Show details",
+    close: "Hide details",
+    environment: "Environment",
+    worktree: "Local worktree",
+    main: "Main checkout",
+    noEnvironment: "No project",
+    branch: "Branch",
+    remote: "Remote",
+    sync: (ahead: number, behind: number) =>
+      ahead === 0 && behind === 0
+        ? "Up to date"
+        : [ahead > 0 ? `${ahead} ahead` : null, behind > 0 ? `${behind} behind` : null]
+            .filter(Boolean)
+            .join(", "),
+    uncommitted: (files: number) => `${files} uncommitted ${files === 1 ? "file" : "files"}`,
+    openGit: "Open in Git",
+    context: "Context",
+    noContext: "No usage reported yet",
+    connectors: "Connectors",
+    noConnectors: "No MCP servers",
+    connectorSource: { veistra: "Veistra", project: "Project" } as Record<string, string>,
+    manageConnectors: "Manage",
+    outputs: "Outputs",
+    noOutputs: "Nothing made yet",
+    shown: (component: string) => `Shown: ${component}`,
+    changes: "Changes",
+    noChanges: "No files changed yet",
+    changeTotals: (files: number) => `${files} ${files === 1 ? "file" : "files"}`,
+    tasks: "Background tasks",
+    noTasks: "None running",
+    agents: "Agents",
+    openMap: "Agent map",
+    loading: "Loading…",
+  },
+  /** The map of the session, its subagents and its background tasks. */
+  map: {
+    title: "Agent map",
+    button: (running: number, total: number) =>
+      running > 0
+        ? `${running} ${running === 1 ? "agent" : "agents"} running`
+        : `${total} ${total === 1 ? "agent" : "agents"}`,
+    agents: (n: number) =>
+      `${n} ${n === 1 ? "agent" : "agents"} · click an agent to go to its work`,
+    tasks: (n: number) =>
+      `${n} background ${n === 1 ? "task" : "tasks"} · click a task for details`,
+    main: (model: string | null, used: number | null) =>
+      [model, used === null ? null : `${tokens(used)} tokens in context`]
+        .filter(Boolean)
+        .join(" · "),
+    close: "Close",
+    session: "This session",
   },
   usage: (used: number, size: number) =>
     `Context: ${used.toLocaleString()} of ${size.toLocaleString()} tokens`,

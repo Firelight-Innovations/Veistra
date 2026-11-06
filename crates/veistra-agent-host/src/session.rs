@@ -46,6 +46,13 @@ use crate::models::MODEL_CATEGORY;
 use crate::normalize::Normalizer;
 use crate::transcript::Transcript;
 use crate::wire::{self, Id, Incoming, RemoteError, AUTH_REQUIRED, METHOD_NOT_FOUND};
+use crate::workflow;
+
+/// How often a running workflow's folder is read.
+const WORKFLOW_POLL: Duration = Duration::from_secs(1);
+
+/// How long a request to stop a task waits for its answer.
+const STOP_WAIT: Duration = Duration::from_secs(15);
 
 /// Where every envelope goes. Called from one thread, in `seq` order.
 pub type Sink = Arc<dyn Fn(Envelope) + Send + Sync>;
@@ -182,6 +189,8 @@ struct Inner {
     events: Sender<Envelope>,
     last_seq: u64,
     noise: u64,
+    /// A thread is reading workflow folders (`watch_workflows`).
+    watching: bool,
     /// Set when the tab stopped showing this session: nothing more is
     /// numbered or sent, so a reset tab never hears from its old agent.
     silenced: bool,
@@ -338,6 +347,7 @@ impl Session {
                 events,
                 last_seq: seq.load(Ordering::SeqCst),
                 noise: 0,
+                watching: false,
                 silenced: false,
             }),
             wake: Condvar::new(),
@@ -386,7 +396,9 @@ impl Session {
         if inner.closed || inner.status.state == SessionState::Failed {
             return Err(HostError::Closed);
         }
-        if inner.prompt.is_some() || inner.normalizer.turn().is_some() {
+        // A turn the agent started itself does not hold the prompt back: the
+        // prompt's turn closes it.
+        if inner.prompt.is_some() || inner.normalizer.prompted() {
             return Err(HostError::Busy);
         }
         inner.prompt = Some(text.to_string());
@@ -422,6 +434,43 @@ impl Session {
             }
         }
         shared.close_approvals(&mut inner, "cancelled");
+        // No prompt is waiting on a turn the agent started itself, so
+        // nothing else would end it.
+        if inner.normalizer.autonomous() {
+            let events = inner.normalizer.end_turn("cancelled");
+            shared.emit_all(&mut inner, events);
+            shared.set_state(&mut inner, SessionState::Ready);
+        }
+    }
+
+    /// Ask the agent to stop a background task it reported as stoppable. The
+    /// task's item says when it has.
+    pub(crate) fn stop_task(&self, task_id: &str) -> Result<(), HostError> {
+        let session_id = {
+            let inner = self.shared.lock();
+            let session_id = open(&inner)?;
+            if !inner.normalizer.stoppable(task_id) {
+                return Err(HostError::UnknownTask);
+            }
+            session_id
+        };
+        let shared = Arc::clone(&self.shared);
+        let params = json!({ "sessionId": session_id, "asyncTaskId": task_id });
+        spawn("agent-stop-task", move || {
+            // The answer says only whether it stopped; the update that
+            // follows says so on the task, and a refusal leaves it running.
+            if let Err(e) = shared.request("_session/async_task/stop", params, Some(STOP_WAIT)) {
+                (shared.log)(
+                    Level::Info,
+                    &format!(
+                        "agent-host: {} could not stop a task: {}",
+                        shared.instance_id,
+                        mask(&e.message)
+                    ),
+                );
+            }
+        });
+        Ok(())
     }
 
     /// Answer the approval `item_id` with `option_id`, which must be one the
@@ -806,6 +855,34 @@ impl Shared {
             self.complete_approval(inner, &waiting.item_id, answer);
         }
         self.settle(inner);
+    }
+
+    /// Read every running workflow's folder once a second, and send what
+    /// changed, until none is left to read. The reads happen outside the
+    /// lock; a read that finds nothing new sends nothing.
+    fn watch_workflows(self: Arc<Self>) {
+        loop {
+            let due = {
+                let mut inner = self.lock();
+                if inner.closed || !inner.normalizer.watching() {
+                    inner.watching = false;
+                    return;
+                }
+                inner.normalizer.runs_to_read()
+            };
+            let read: Vec<_> = due
+                .into_iter()
+                .filter_map(|(task_id, launch)| Some((task_id, workflow::read(&launch)?)))
+                .collect();
+            {
+                let mut inner = self.lock();
+                for (task_id, run) in read {
+                    let events = inner.normalizer.set_run(&task_id, run);
+                    self.emit_all(&mut inner, events);
+                }
+            }
+            thread::sleep(WORKFLOW_POLL);
+        }
     }
 
     // --- the driver ------------------------------------------------------
@@ -1456,7 +1533,7 @@ impl Shared {
         }
     }
 
-    fn on_line(&self, line: &str) {
+    fn on_line(self: &Arc<Self>, line: &str) {
         match wire::parse(line) {
             None => self.lock().noise += 1,
             Some(Incoming::Response { id, outcome }) => {
@@ -1494,8 +1571,25 @@ impl Shared {
                         return;
                     }
                     let update = params.get("update").unwrap_or(&Value::Null);
+                    let cycling = inner.normalizer.autonomous();
                     let events = inner.normalizer.update(update);
                     self.emit_all(&mut inner, events);
+                    // The agent started or finished working on its own.
+                    if inner.normalizer.autonomous() != cycling && inner.prompt.is_none() {
+                        let state = if cycling {
+                            SessionState::Ready
+                        } else {
+                            SessionState::Working
+                        };
+                        if inner.approvals.is_empty() {
+                            self.set_state(&mut inner, state);
+                        }
+                    }
+                    if !inner.watching && inner.normalizer.watching() {
+                        inner.watching = true;
+                        let s = Arc::clone(self);
+                        spawn("agent-workflows", move || s.watch_workflows());
+                    }
                     let mode = inner.normalizer.take_mode();
                     let settings = inner.normalizer.take_settings();
                     let commands = inner.normalizer.take_commands();
@@ -1701,6 +1795,8 @@ impl Shared {
                 self.complete_approval(&mut inner, &waiting.item_id, "cancelled");
             }
             let events = inner.normalizer.end_turn("error");
+            self.emit_all(&mut inner, events);
+            let events = inner.normalizer.end_tasks();
             self.emit_all(&mut inner, events);
             let ready = inner.status.state != SessionState::Starting
                 && inner.status.state != SessionState::Failed;
@@ -1910,13 +2006,31 @@ fn ultra_reasoning(inner: &Inner) -> Option<String> {
 /// read or write a file, run a command, or open a URL. They do declare form
 /// elicitation: it is how every agent asks the user a question, and Claude's
 /// adapter disallows its AskUserQuestion tool without it (see `elicit.rs`).
+///
+/// The rest is for Claude's adapter, and an agent that knows none of it
+/// ignores it; each key says what it is for.
 pub(crate) fn hello() -> Value {
     json!({
         "protocolVersion": 1,
         "clientCapabilities": {
             "fs": { "readTextFile": false, "writeTextFile": false },
             "terminal": false,
-            "elicitation": { "form": {} }
+            "elicitation": { "form": {} },
+            // Advisories and compaction as updates of their own, rather than
+            // as text in the answer and a made-up tool call.
+            "session": { "notices": {}, "compaction": {} },
+            // `subagent-transcript` forwards what a subagent writes, marked
+            // with the call that started it, so it nests under that call.
+            //
+            // AIR's `asyncTasks` reports background work (workflows, shell
+            // commands, monitors) as tasks the user can stop. It also sends
+            // a tool's `_meta` only once (remembered in `normalize.rs`) and
+            // drops Read and Grep calls' text output. AIR's `subagents` is
+            // left out: it hides the subagent's call, where its work is drawn.
+            "_meta": {
+                "subagent-transcript": true,
+                "jetbrains": { "air": { "version": 1, "capabilities": ["asyncTasks"] } }
+            }
         },
         "clientInfo": { "name": "veistra", "version": env!("CARGO_PKG_VERSION") }
     })
@@ -2128,6 +2242,7 @@ mod tests {
             events,
             last_seq: 0,
             noise: 0,
+            watching: false,
             silenced: false,
         }
     }

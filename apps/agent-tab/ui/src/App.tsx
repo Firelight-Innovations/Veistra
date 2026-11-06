@@ -29,7 +29,6 @@ import type {
   Harness,
   HarnessInfo,
   Hint,
-  Item,
   PlanEntry,
   QuestionOutcome,
   SessionStatus,
@@ -87,6 +86,9 @@ import {
 import { ChipOpen, type ChipOpener } from "./chipOpen";
 import { useMentions } from "./useMentions";
 import { useSideChat } from "./useSideChat";
+import { workingLine } from "./working";
+import { useDetails } from "./useDetails";
+import { NestedItems } from "./Items";
 import { EFFORT_LEVELS } from "./preferences";
 import { loadPrefs, savePrefs } from "./prefs";
 
@@ -880,6 +882,22 @@ export default function App() {
     }
   };
 
+  // The Details panel, the agent map and the clock on task cards.
+  const shownModel = modelOption(status);
+  const shownValue = shownModel ? (live?.config[shownModel.id]?.value ?? shownModel.value) : null;
+  const onStopFailed = useCallback(
+    (err: unknown) => setNotice(noticeOf(err, strings.task.stopFailed, session)),
+    [session],
+  );
+  const details = useDetails({
+    items: state.items,
+    working,
+    title: sessionName,
+    model: shownModel?.choices.find((c) => c.value === shownValue)?.name ?? shownValue,
+    onStopFailed,
+  });
+  const { elapsed, openTask, stopTask } = details;
+
   const actions = useMemo(
     () => ({
       onAnswer: (itemId: string, optionId: string) =>
@@ -903,8 +921,11 @@ export default function App() {
         if (text !== null) submit(text, true);
       },
       hintText: (hint: Hint, harness: Harness) => hintText(hint, infoOf(harnesses, harness)),
+      onOpenTask: openTask,
+      onStopTask: stopTask,
+      elapsed,
     }),
-    [state.items, submit, session, harnesses],
+    [state.items, submit, session, harnesses, openTask, stopTask, elapsed],
   );
 
   // The transcript as assistant-ui's thread. Turns whose items did not change
@@ -926,25 +947,17 @@ export default function App() {
   for (const item of state.items) if (item.kind.kind === "userMessage") lastPrompt = item.id;
   const [since, setSince] = useState<number | undefined>(undefined);
   useEffect(() => setSince(working ? Date.now() : undefined), [working, lastPrompt]);
-  const activity = useMemo(() => {
-    // A plan or usage update draws nothing, so the line reads past it.
-    let last: Item["kind"] | undefined;
-    for (const item of state.items)
-      if (item.kind.kind !== "plan" && item.kind.kind !== "usage") last = item.kind;
-    if (last?.kind !== "toolCall" || last.status === "completed" || last.status === "failed")
-      return undefined;
-    const title = last.title.replace(/`/g, "");
-    return last.toolKind === "execute" ? strings.activity.running(title) : title;
-  }, [state.items]);
+  const { activity, phase } = useMemo(() => workingLine(state.items), [state.items]);
   const lookup = useMemo(
     () => ({
       byId: new Map(state.items.map((item) => [item.id, item])),
       actions,
       waiting,
       activity,
+      phase,
       since,
     }),
-    [state.items, actions, waiting, activity, since],
+    [state.items, actions, waiting, activity, phase, since],
   );
   // The agent's to-do list stays pinned over the composer while a step is left.
   let plan: PlanEntry[] | null = null;
@@ -1269,278 +1282,287 @@ export default function App() {
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <TurnsProvider value={lookup}>
-        <ChipOpen.Provider value={chipOpener}>
-          <S.Layout
-            header={
-              <S.Header
-                state={status?.state ?? null}
-                onSideChat={() => askSide("")}
-                // The shell's Alt+6, sent the way the bridge forwards any chord a
-                // frame swallows; the shell opens or closes its Agents window.
-                onAgents={() =>
-                  void invoke("veistra/key", { key: "6", code: "Digit6", altKey: true }).catch(
-                    () => {},
-                  )
-                }
-                onHistory={() => {
-                  setHistoryOpen((was) => !was);
-                  if (!historyOpen) loadHistory();
-                }}
-                history={
-                  historyOpen ? (
-                    <S.HistoryPanel
-                      sessions={savedSessions}
-                      loading={historyLoading}
-                      error={historyError}
-                      onClose={() => {
-                        setHistoryOpen(false);
-                        prompt.current?.focus();
-                      }}
-                      onRetry={loadHistory}
-                      onArchive={(id, archived) => {
-                        void rpc
-                          .archiveHistory(id, archived)
-                          .then(loadHistory, () => setHistoryError(strings.history.failed));
-                      }}
-                      onOpen={(id, harness) => {
-                        setHistoryLoading(true);
-                        setPending(null);
-                        void rpc
-                          .openHistory(id, harness)
-                          .then(
-                            (attachment) => {
-                              dispatch({ type: "attached", attachment });
-                              loadMeta();
-                              setHistoryOpen(false);
-                              setNotice(null);
-                              setDraft("");
-                              setChips([]);
-                              void listHarnesses();
-                            },
-                            () => setHistoryError(strings.history.openFailed),
-                          )
-                          .finally(() => setHistoryLoading(false));
-                      }}
-                    />
-                  ) : undefined
-                }
-                onNewSession={() => {
-                  setNotice(null);
-                  setChatName(null);
-                  void rpc.reset().catch(() => {});
-                }}
-              />
-            }
-            transcript={
-              <S.Transcript>
-                {state.items.length === 0 && pendingPrompt === null ? (
-                  <S.EmptyState
-                    blocked={blocked}
-                    setupHint={current?.hint ? hintText(current.hint, current) : null}
-                    setup={setup}
-                  />
-                ) : (
-                  <>
-                    <Turns />
-                    {/* Chosen mid-conversation: the card follows what was said. */}
-                    {setup && <S.SetupCard {...setup} />}
-                  </>
-                )}
-                {pendingPrompt !== null && <S.UserMessage text={pendingPrompt} pending />}
-                {hint && <S.Hint text={hintText(hint, session)} />}
-                {loginNote && <S.Note text={loginNote} />}
-                {exited && state.items.length > 0 && (
-                  <S.Note text={strings.exited(status.exitCode)} />
-                )}
-              </S.Transcript>
-            }
-            composer={
-              <S.Composer
-                ref={prompt}
-                chips={chips}
-                effortLevel={effortValue}
-                auxiliary={
-                  issuePicker ? (
-                    <S.ContextLink
-                      provider={issuePicker}
-                      onCancel={() => {
-                        setIssuePicker(null);
-                        dropMention();
-                      }}
-                      onAdd={(link) => {
-                        const at = mentions.query ?? { start: caret, end: caret };
-                        setIssuePicker(null);
-                        placeChip(
-                          {
-                            uri: link,
-                            title: link.split("/").filter(Boolean).slice(-2).join("/"),
-                            kind: "issue",
-                          },
-                          at.start,
-                          at.end,
-                        );
-                      }}
-                    />
-                  ) : undefined
-                }
-                value={draft}
-                placeholder={working ? strings.promptBusy : strings.promptPlaceholder}
-                onChange={(text, at) => {
-                  setDraft(text);
-                  // A reference whose token was typed over or cut is gone with it.
-                  setChips((now) => {
-                    const kept = keptChips(text, now);
-                    return kept.length === now.length ? now : kept;
-                  });
-                  if (!text.includes("@")) setContextScope(null);
-                  setCaret(at ?? text.length);
-                  setMenuRow(0);
-                  setMenuPath([]);
-                }}
-                onSelect={setCaret}
-                images={images}
-                queued={queue.map((q) => ({ id: q.id, text: q.text }))}
-                onUnqueue={(id) => setQueue((now) => now.filter((q) => q.id !== id))}
-                onRemoveImage={(id) => setImages((now) => now.filter((i) => i.id !== id))}
-                onReplaceImage={(id, image) =>
-                  setImages((now) => now.map((i) => (i.id === id ? { ...i, ...image } : i)))
-                }
-                onPasteImages={(files) => void addImages(files)}
-                onAttach={() => {
-                  const at = prompt.current?.selectionStart ?? draft.length;
-                  const prefix = at > 0 && !/\s/.test(draft[at - 1]) ? " @" : "@";
-                  const next = draft.slice(0, at) + prefix + draft.slice(at);
-                  setDraft(next);
-                  setCaret(at + prefix.length);
-                  setMenuRow(0);
-                  setMenuPath([]);
-                  setContextScope(null);
-                  setMenuClosedFor(null);
-                  requestAnimationFrame(() => {
-                    prompt.current?.focus();
-                    prompt.current?.setSelectionRange(at + prefix.length, at + prefix.length);
-                  });
-                }}
-                onDictate={() => {}}
-                sideChat={side.open ? <S.SideChat {...side.props} /> : undefined}
-                plan={openPlan ? <S.TodoList entries={openPlan} live={working} /> : undefined}
-                onKeyDown={onKeyDown}
-                menu={
-                  mentionOpen ? (
-                    <S.MentionMenu
-                      label={strings.mentions.label}
-                      title={scopeTitle}
-                      status={named.length && !mentions.items.length ? null : mentions.note}
-                      onBack={
-                        contextScope
-                          ? () => {
-                              setContextScope(null);
-                              setMenuRow(0);
-                            }
-                          : undefined
-                      }
-                      items={contextItems}
-                      activeId={menuActive}
-                      path={menuPath}
-                      onPathChange={changeMenuPath}
-                      onPick={pickMention}
+        <NestedItems.Provider value={details.nested}>
+          <ChipOpen.Provider value={chipOpener}>
+            <S.Layout
+              details={details.panel}
+              overlay={details.overlay}
+              header={
+                <S.Header
+                  state={status?.state ?? null}
+                  onDetails={details.toggleDetails}
+                  detailsOpen={details.detailsOpen}
+                  onSideChat={() => askSide("")}
+                  // The shell's Alt+6, sent the way the bridge forwards any chord a
+                  // frame swallows; the shell opens or closes its Agents window.
+                  onAgents={() =>
+                    void invoke("veistra/key", { key: "6", code: "Digit6", altKey: true }).catch(
+                      () => {},
+                    )
+                  }
+                  onHistory={() => {
+                    setHistoryOpen((was) => !was);
+                    if (!historyOpen) loadHistory();
+                  }}
+                  history={
+                    historyOpen ? (
+                      <S.HistoryPanel
+                        sessions={savedSessions}
+                        loading={historyLoading}
+                        error={historyError}
+                        onClose={() => {
+                          setHistoryOpen(false);
+                          prompt.current?.focus();
+                        }}
+                        onRetry={loadHistory}
+                        onArchive={(id, archived) => {
+                          void rpc
+                            .archiveHistory(id, archived)
+                            .then(loadHistory, () => setHistoryError(strings.history.failed));
+                        }}
+                        onOpen={(id, harness) => {
+                          setHistoryLoading(true);
+                          setPending(null);
+                          void rpc
+                            .openHistory(id, harness)
+                            .then(
+                              (attachment) => {
+                                dispatch({ type: "attached", attachment });
+                                loadMeta();
+                                setHistoryOpen(false);
+                                setNotice(null);
+                                setDraft("");
+                                setChips([]);
+                                void listHarnesses();
+                              },
+                              () => setHistoryError(strings.history.openFailed),
+                            )
+                            .finally(() => setHistoryLoading(false));
+                        }}
+                      />
+                    ) : undefined
+                  }
+                  onNewSession={() => {
+                    setNotice(null);
+                    setChatName(null);
+                    void rpc.reset().catch(() => {});
+                  }}
+                />
+              }
+              transcript={
+                <S.Transcript>
+                  {state.items.length === 0 && pendingPrompt === null ? (
+                    <S.EmptyState
+                      blocked={blocked}
+                      setupHint={current?.hint ? hintText(current.hint, current) : null}
+                      setup={setup}
                     />
                   ) : (
-                    menuOpen && (
-                      <S.SlashMenu
-                        label={strings.commands}
-                        title={skillsOpen ? strings.skills.title : undefined}
-                        search={
-                          skillsOpen
-                            ? { query: skillSearch, placeholder: strings.skills.search }
+                    <>
+                      <Turns />
+                      {/* Chosen mid-conversation: the card follows what was said. */}
+                      {setup && <S.SetupCard {...setup} />}
+                    </>
+                  )}
+                  {pendingPrompt !== null && <S.UserMessage text={pendingPrompt} pending />}
+                  {hint && <S.Hint text={hintText(hint, session)} />}
+                  {loginNote && <S.Note text={loginNote} />}
+                  {exited && state.items.length > 0 && (
+                    <S.Note text={strings.exited(status.exitCode)} />
+                  )}
+                </S.Transcript>
+              }
+              composer={
+                <S.Composer
+                  ref={prompt}
+                  chips={chips}
+                  effortLevel={effortValue}
+                  auxiliary={
+                    issuePicker ? (
+                      <S.ContextLink
+                        provider={issuePicker}
+                        onCancel={() => {
+                          setIssuePicker(null);
+                          dropMention();
+                        }}
+                        onAdd={(link) => {
+                          const at = mentions.query ?? { start: caret, end: caret };
+                          setIssuePicker(null);
+                          placeChip(
+                            {
+                              uri: link,
+                              title: link.split("/").filter(Boolean).slice(-2).join("/"),
+                              kind: "issue",
+                            },
+                            at.start,
+                            at.end,
+                          );
+                        }}
+                      />
+                    ) : undefined
+                  }
+                  value={draft}
+                  placeholder={working ? strings.promptBusy : strings.promptPlaceholder}
+                  onChange={(text, at) => {
+                    setDraft(text);
+                    // A reference whose token was typed over or cut is gone with it.
+                    setChips((now) => {
+                      const kept = keptChips(text, now);
+                      return kept.length === now.length ? now : kept;
+                    });
+                    if (!text.includes("@")) setContextScope(null);
+                    setCaret(at ?? text.length);
+                    setMenuRow(0);
+                    setMenuPath([]);
+                  }}
+                  onSelect={setCaret}
+                  images={images}
+                  queued={queue.map((q) => ({ id: q.id, text: q.text }))}
+                  onUnqueue={(id) => setQueue((now) => now.filter((q) => q.id !== id))}
+                  onRemoveImage={(id) => setImages((now) => now.filter((i) => i.id !== id))}
+                  onReplaceImage={(id, image) =>
+                    setImages((now) => now.map((i) => (i.id === id ? { ...i, ...image } : i)))
+                  }
+                  onPasteImages={(files) => void addImages(files)}
+                  onAttach={() => {
+                    const at = prompt.current?.selectionStart ?? draft.length;
+                    const prefix = at > 0 && !/\s/.test(draft[at - 1]) ? " @" : "@";
+                    const next = draft.slice(0, at) + prefix + draft.slice(at);
+                    setDraft(next);
+                    setCaret(at + prefix.length);
+                    setMenuRow(0);
+                    setMenuPath([]);
+                    setContextScope(null);
+                    setMenuClosedFor(null);
+                    requestAnimationFrame(() => {
+                      prompt.current?.focus();
+                      prompt.current?.setSelectionRange(at + prefix.length, at + prefix.length);
+                    });
+                  }}
+                  onDictate={() => {}}
+                  sideChat={side.open ? <S.SideChat {...side.props} /> : undefined}
+                  plan={openPlan ? <S.TodoList entries={openPlan} live={working} /> : undefined}
+                  onKeyDown={onKeyDown}
+                  menu={
+                    mentionOpen ? (
+                      <S.MentionMenu
+                        label={strings.mentions.label}
+                        title={scopeTitle}
+                        status={named.length && !mentions.items.length ? null : mentions.note}
+                        onBack={
+                          contextScope
+                            ? () => {
+                                setContextScope(null);
+                                setMenuRow(0);
+                              }
                             : undefined
                         }
-                        status={
-                          skillsOpen && !matches.length
-                            ? skillList.length
-                              ? strings.skills.noMatch
-                              : strings.skills.empty
-                            : null
-                        }
-                        onBack={skillsOpen ? leaveSkills : undefined}
-                        items={slashItems}
+                        items={contextItems}
                         activeId={menuActive}
                         path={menuPath}
                         onPathChange={changeMenuPath}
-                        onPick={pickCommand}
+                        onPick={pickMention}
+                      />
+                    ) : (
+                      menuOpen && (
+                        <S.SlashMenu
+                          label={strings.commands}
+                          title={skillsOpen ? strings.skills.title : undefined}
+                          search={
+                            skillsOpen
+                              ? { query: skillSearch, placeholder: strings.skills.search }
+                              : undefined
+                          }
+                          status={
+                            skillsOpen && !matches.length
+                              ? skillList.length
+                                ? strings.skills.noMatch
+                                : strings.skills.empty
+                              : null
+                          }
+                          onBack={skillsOpen ? leaveSkills : undefined}
+                          items={slashItems}
+                          activeId={menuActive}
+                          path={menuPath}
+                          onPathChange={changeMenuPath}
+                          onPick={pickCommand}
+                        />
+                      )
+                    )
+                  }
+                  menuActiveId={mentionOpen || menuOpen ? menuActive : null}
+                  notices={
+                    <>
+                      {attachFailed && (
+                        <S.Notice
+                          text={strings.failed.attach}
+                          hint={null}
+                          action={{ label: strings.retry, onClick: () => void attach() }}
+                        />
+                      )}
+                      {harnessesFailed && (
+                        <S.Notice
+                          text={strings.failed.harnesses}
+                          hint={null}
+                          action={{ label: strings.retry, onClick: () => void listHarnesses() }}
+                        />
+                      )}
+                      {trouble && (
+                        <S.Notice text={troubleText(trouble)} hint={null} action={null} />
+                      )}
+                      {notice && <S.Notice text={notice.text} hint={notice.hint} action={null} />}
+                    </>
+                  }
+                  controls={
+                    <S.ModelMenu
+                      label={strings.settings}
+                      openRequest={settingsRequest}
+                      harnessLocked={false}
+                      ultracode={{
+                        enabled: ultraEnabled,
+                        disabled: status?.state === "starting",
+                        onChange: (enabled) => {
+                          if (running) onConfig("ultra_effort", enabled ? "on" : "off");
+                          else setUltracode(enabled);
+                        },
+                      }}
+                      harness={running ?? chosen}
+                      // The model is the running session's own option, so it is
+                      // listed under the harness in use, with the agent's names.
+                      harnesses={harnessChoices(harnesses, running ?? chosen, runningModel)}
+                      // With no agent running, a pick chooses the next session's
+                      // harness. While one runs, its prompts go to that agent until
+                      // a new session starts, so only its model can change.
+                      onChoose={(picked, value) => {
+                        if (picked === running && onModel) onModel(picked, value);
+                        else chooseHarness(picked, value);
+                      }}
+                      sections={sections}
+                    />
+                  }
+                  meters={
+                    <>
+                      <S.ValidationBadge {...latestValidation(state.items)} />
+                      {details.button}
+                      <S.ContextMeter {...latestUsage(state.items)} />
+                      <S.UsageRing limits={[]} />
+                    </>
+                  }
+                  action={
+                    working ? (
+                      <S.StopButton onClick={stopTurn} />
+                    ) : (
+                      <S.SendButton
+                        disabled={(draft.trim() === "" && chips.length === 0) || capturing > 0}
+                        onClick={() => submit(draft)}
                       />
                     )
-                  )
-                }
-                menuActiveId={mentionOpen || menuOpen ? menuActive : null}
-                notices={
-                  <>
-                    {attachFailed && (
-                      <S.Notice
-                        text={strings.failed.attach}
-                        hint={null}
-                        action={{ label: strings.retry, onClick: () => void attach() }}
-                      />
-                    )}
-                    {harnessesFailed && (
-                      <S.Notice
-                        text={strings.failed.harnesses}
-                        hint={null}
-                        action={{ label: strings.retry, onClick: () => void listHarnesses() }}
-                      />
-                    )}
-                    {trouble && <S.Notice text={troubleText(trouble)} hint={null} action={null} />}
-                    {notice && <S.Notice text={notice.text} hint={notice.hint} action={null} />}
-                  </>
-                }
-                controls={
-                  <S.ModelMenu
-                    label={strings.settings}
-                    openRequest={settingsRequest}
-                    harnessLocked={false}
-                    ultracode={{
-                      enabled: ultraEnabled,
-                      disabled: status?.state === "starting",
-                      onChange: (enabled) => {
-                        if (running) onConfig("ultra_effort", enabled ? "on" : "off");
-                        else setUltracode(enabled);
-                      },
-                    }}
-                    harness={running ?? chosen}
-                    // The model is the running session's own option, so it is
-                    // listed under the harness in use, with the agent's names.
-                    harnesses={harnessChoices(harnesses, running ?? chosen, runningModel)}
-                    // With no agent running, a pick chooses the next session's
-                    // harness. While one runs, its prompts go to that agent until
-                    // a new session starts, so only its model can change.
-                    onChoose={(picked, value) => {
-                      if (picked === running && onModel) onModel(picked, value);
-                      else chooseHarness(picked, value);
-                    }}
-                    sections={sections}
-                  />
-                }
-                meters={
-                  <>
-                    <S.ValidationBadge {...latestValidation(state.items)} />
-                    <S.ContextMeter {...latestUsage(state.items)} />
-                    <S.UsageRing limits={[]} />
-                  </>
-                }
-                action={
-                  working ? (
-                    <S.StopButton onClick={stopTurn} />
-                  ) : (
-                    <S.SendButton
-                      disabled={(draft.trim() === "" && chips.length === 0) || capturing > 0}
-                      onClick={() => submit(draft)}
-                    />
-                  )
-                }
-              />
-            }
-          />
-        </ChipOpen.Provider>
+                  }
+                />
+              }
+            />
+          </ChipOpen.Provider>
+        </NestedItems.Provider>
       </TurnsProvider>
     </AssistantRuntimeProvider>
   );

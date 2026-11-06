@@ -3,15 +3,26 @@
  * Reads only `--k-*` tokens (src/agent-tokens.css).
  */
 
+/* The conversation, and the Details panel beside it when open. The tab is a
+   size container so the panel reacts to the pane's width, not the window's. */
 .at {
+  position: relative;
   display: flex;
-  flex-direction: column;
   height: 100%;
   min-height: 0;
+  container-type: inline-size;
   background: var(--k-editor-bg);
   color: var(--k-editor-fg);
   font: var(--k-text-body);
   font-family: var(--k-font);
+}
+
+.at__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .at-mono {

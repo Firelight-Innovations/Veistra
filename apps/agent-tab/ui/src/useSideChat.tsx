@@ -84,6 +84,10 @@ export function useSideChat(main: readonly Item[]) {
           ask(prompt.kind.text.split("\n\nSide question: ").pop() ?? prompt.kind.text);
       },
       hintText: () => strings.hintUnknown,
+      // A side question runs no background tasks of its own.
+      onOpenTask: () => {},
+      onStopTask: () => Promise.resolve(),
+      elapsed: () => null,
     }),
     [attachment, ask],
   );

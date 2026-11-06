@@ -71,4 +71,25 @@ describe("toTurns", () => {
     const third = toTurns([U1, A1, R1, G1], second);
     expect(third[1].message.content).toHaveLength(3);
   });
+
+  it("leaves a subagent's work out of the turn, to be drawn under its call", () => {
+    const nested: Item = { ...item("n1", { kind: "assistantText", text: "inner" }), parent: "c1" };
+    const turns = toTurns([U1, A1, nested, R1]);
+    expect(turns[1].items.map((i) => i.id)).toEqual(["a1", "r1"]);
+  });
+
+  it("makes a turn the agent started on its own a turn of its own", () => {
+    const later: Item = { id: "a2", turnId: "t2", kind: { kind: "assistantText", text: "done" } };
+    const turns = toTurns([U1, A1, later]);
+    expect(turns.map((t) => [t.message.role, t.items.map((i) => i.id)])).toEqual([
+      ["user", ["u1"]],
+      ["assistant", ["a1"]],
+      ["assistant", ["a2"]],
+    ]);
+  });
+
+  it("keeps an item with no turn in the turn it follows", () => {
+    const loose: Item = { id: "e1", turnId: "", kind: { kind: "assistantText", text: "?" } };
+    expect(toTurns([U1, A1, loose])[1].items.map((i) => i.id)).toEqual(["a1", "e1"]);
+  });
 });

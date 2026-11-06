@@ -48,6 +48,36 @@
   margin: 0 0 var(--k-space-1-5);
 }
 
+/* While the reply streams in, it ends on a soft caret, so text still arriving
+   reads as live rather than as a finished paragraph. */
+.at-assistant[data-streaming] > :last-child::after {
+  content: "";
+  display: inline-block;
+  width: 0.45em;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: -0.15em;
+  border-radius: 2px;
+  background: var(--accent-blue);
+  animation: at-caret 1s ease-in-out infinite;
+}
+
+@keyframes at-caret {
+  0%,
+  100% {
+    opacity: 0.9;
+  }
+  50% {
+    opacity: 0.15;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .at-assistant[data-streaming] > :last-child::after {
+    animation: none;
+  }
+}
+
 .at-assistant a {
   color: var(--k-link);
 }
@@ -165,6 +195,31 @@ details[open] > .at-disclosure::after,
   white-space: pre-wrap;
   color: var(--k-fg-muted);
   padding-left: var(--k-space-3);
+}
+
+/* The line the agent is thinking right now, faint beside the label, fading
+   in at each new line; the open fold shows all of it instead. */
+.at-reasoning__latest {
+  display: block;
+  margin-top: 2px;
+  padding-left: var(--k-space-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--k-fg-faint);
+  font-style: italic;
+  animation: at-latest-in 240ms ease-out;
+}
+
+.at-reasoning[open] .at-reasoning__latest {
+  display: none;
+}
+
+@keyframes at-latest-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
 }
 
 /* A run of tool calls: one line, and open, one card with a row per call. */

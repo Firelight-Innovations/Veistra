@@ -93,6 +93,11 @@ pub struct Item {
     pub turn_id: String,
     /// What kind of item, and its content.
     pub kind: ItemKind,
+    /// The item it is nested under: the subagent call whose work this is.
+    /// Absent for the main agent's own items.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub parent: Option<String>,
 }
 
 /// The kinds of item in handoff §2.2 this slice draws.
@@ -202,6 +207,144 @@ pub enum ItemKind {
         /// tab's next session runs another.
         harness: Harness,
     },
+    /// Work the agent left running in the background: a workflow, a shell
+    /// command, a monitor. Updated in place for as long as it runs, across
+    /// turns; drawn where it started and listed under Background tasks.
+    Task {
+        /// The agent's id for it, which stopping it names.
+        task_id: String,
+        /// What it is called: a workflow's name, or the command.
+        name: String,
+        /// `workflow`, `shell`, `monitor`, or what else the agent says.
+        task_type: String,
+        /// The agent's one-line account of it.
+        description: String,
+        /// Where it is.
+        state: TaskState,
+        /// What it reported last, or how it ended.
+        summary: Option<String>,
+        /// The tool it ran last.
+        last_tool: Option<String>,
+        /// What it has used so far, once the agent says.
+        usage: Option<TaskUsage>,
+        /// Whether the agent will stop it on request.
+        can_stop: bool,
+        /// The tool call that started it, by item id, when the agent named one.
+        call_item: Option<String>,
+        /// A workflow's phases and agents, read from its run folder.
+        run: Option<WorkflowRun>,
+    },
+    /// Something the agent wants the user to know that is not part of its
+    /// answer: a model fallback, a mode it had to leave, a task stopped.
+    Notice {
+        /// `info` or `warning`.
+        severity: String,
+        /// The headline.
+        title: String,
+        /// More, when there is more.
+        description: Option<String>,
+    },
+    /// The agent compacted the conversation to free context.
+    Compaction {
+        /// `inProgress`, `completed`, `failed` or `cancelled`.
+        status: String,
+        /// What the agent kept, as it wrote it. Cut at
+        /// [`crate::normalize::TEXT_LIMIT`].
+        summary: String,
+        /// Why it failed, when it did.
+        error: Option<String>,
+    },
+}
+
+/// A background task's progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub enum TaskState {
+    /// Running.
+    Running,
+    /// Paused, and may resume.
+    Paused,
+    /// Finished.
+    Completed,
+    /// Finished with an error.
+    Failed,
+    /// Stopped by the user or the agent.
+    Stopped,
+}
+
+/// What a background task has used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct TaskUsage {
+    /// Tokens, all agents together.
+    pub total_tokens: u64,
+    /// Tool calls, all agents together.
+    pub tool_uses: u64,
+    /// How long it has run.
+    pub duration_ms: u64,
+}
+
+/// A workflow's run, as its folder records it: the phases its script
+/// declares, and every agent it has started so far.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowRun {
+    /// `wf_…`.
+    pub run_id: String,
+    /// In the script's order. Empty when the script declares none.
+    pub phases: Vec<WorkflowPhase>,
+    /// In the order they started.
+    pub agents: Vec<WorkflowAgent>,
+}
+
+/// One phase a workflow script declares.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowPhase {
+    /// Its title, which agents name to place themselves in it.
+    pub title: String,
+    /// The script's line about it.
+    pub detail: Option<String>,
+}
+
+/// One agent a workflow started.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowAgent {
+    /// Claude's id for it.
+    pub id: String,
+    /// The label the script gave it.
+    pub label: String,
+    /// The phase it runs in.
+    pub phase: Option<String>,
+    /// Where it is.
+    pub state: AgentState,
+    /// The model it runs on, once known.
+    pub model: Option<String>,
+    /// When it started, in ms since the epoch, once known.
+    pub started_at: Option<u64>,
+    /// How long it ran, once finished and recorded.
+    pub duration_ms: Option<u64>,
+    /// The start of what it answered.
+    pub result: Option<String>,
+}
+
+/// A workflow agent's progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub enum AgentState {
+    /// Running.
+    Running,
+    /// Answered.
+    Done,
+    /// Failed.
+    Failed,
 }
 
 /// A tool call's progress, as ACP reports it.
@@ -597,6 +740,12 @@ mod tests {
             QuestionReply::decl(&cfg),
             QuestionOutcome::decl(&cfg),
             PlanEntry::decl(&cfg),
+            TaskState::decl(&cfg),
+            TaskUsage::decl(&cfg),
+            WorkflowRun::decl(&cfg),
+            WorkflowPhase::decl(&cfg),
+            WorkflowAgent::decl(&cfg),
+            AgentState::decl(&cfg),
             SessionState::decl(&cfg),
             Hint::decl(&cfg),
             SessionStatus::decl(&cfg),

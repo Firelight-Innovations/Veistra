@@ -61,7 +61,12 @@ The tab runs on `@assistant-ui/react` (pinned in `package.json`) with its extern
 Our own state stays the source of truth, and assistant-ui draws the thread around it:
 
 - `thread.ts` groups the items into turns. Each prompt is a user turn. Everything the agent does
-  until the next prompt is one agent turn, with one part per item.
+  until the next prompt is one agent turn, with one part per item. Work the agent starts on its own
+  between prompts, such as answering a finished background task, carries a turn id of its own and
+  is a turn of its own.
+- A subagent's items name the call that started it as their `parent`. They are left out of the
+  turn and drawn inside that call's `ToolCall` row instead, through its `children`
+  (`NestedItems` in `Items.tsx`).
 - `Turns.tsx` draws each turn through the `UserTurn` or `AssistantTurn` slot. It draws each part by
   looking its item up and handing it to the item's own slot, so `ToolCall`, `Diff` and the rest are
   unchanged.
@@ -107,3 +112,24 @@ right.
 - Both meters open their cards through the `HoverCard` slot and draw rings through `Ring`, so one
   replacement changes both. `meters.ts` holds the thresholds: a meter turns `high` at 80% and
   `full` at 95%, read from `--k-meter-*`. The context categories take `--k-context-1` to `-6`.
+
+## Background tasks, the Details panel and the agent map
+
+- `TaskCard` is a background task in the transcript: a workflow, a shell command or a monitor. It
+  shows the task's state and running time, and a workflow's phase and agents. Details opens the
+  panel on it, and Stop asks the agent to stop it. The task's item is updated in place long after
+  its turn ends.
+- `NoticeItem` is an advisory from the agent. `CompactionItem` is a divider where the agent
+  compacted the conversation, with what it kept folded under it.
+- `DetailsPanel` opens from the header. It has the sections Claude's own app has: Environment,
+  Context, Connectors, Outputs, Changes and Background tasks. Rows open in the rest of Veistra: a
+  file in the viewer, changes in the Git sidebar, connectors in Settings. With a task open,
+  `TaskDetail` takes the panel's place: the task's phases with their agents, then what is up next.
+  `Layout` puts the panel beside the conversation, and over it in a tab narrower than 720px. This
+  is a container query, so a narrow pane in a wide window gets the overlay too.
+- `AgentMap` is the session, its subagents and its background tasks, opened from `AgentsButton` in
+  the composer's footer. A subagent opens its call in the transcript, and a task opens the panel.
+- `details.ts` works out what all of these show, and `useDetails.tsx` turns it into props. The
+  protocol carries no clock, so running times are timed by the tab from when it first saw an item.
+  An item that had already finished when the tab first saw it has no time.
+

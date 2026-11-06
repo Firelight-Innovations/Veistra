@@ -105,7 +105,12 @@ turnId: string,
 /**
  * What kind of item, and its content.
  */
-kind: ItemKind, };
+kind: ItemKind, 
+/**
+ * The item it is nested under: the subagent call whose work this is.
+ * Absent for the main agent's own items.
+ */
+parent?: string, };
 
 export type ItemKind = { "kind": "userMessage", 
 /**
@@ -230,7 +235,76 @@ hint: Hint | null,
  * The harness that failed. The hint is worded for it, even after the
  * tab's next session runs another.
  */
-harness: Harness, };
+harness: Harness, } | { "kind": "task", 
+/**
+ * The agent's id for it, which stopping it names.
+ */
+taskId: string, 
+/**
+ * What it is called: a workflow's name, or the command.
+ */
+name: string, 
+/**
+ * `workflow`, `shell`, `monitor`, or what else the agent says.
+ */
+taskType: string, 
+/**
+ * The agent's one-line account of it.
+ */
+description: string, 
+/**
+ * Where it is.
+ */
+state: TaskState, 
+/**
+ * What it reported last, or how it ended.
+ */
+summary: string | null, 
+/**
+ * The tool it ran last.
+ */
+lastTool: string | null, 
+/**
+ * What it has used so far, once the agent says.
+ */
+usage: TaskUsage | null, 
+/**
+ * Whether the agent will stop it on request.
+ */
+canStop: boolean, 
+/**
+ * The tool call that started it, by item id, when the agent named one.
+ */
+callItem: string | null, 
+/**
+ * A workflow's phases and agents, read from its run folder.
+ */
+run: WorkflowRun | null, } | { "kind": "notice", 
+/**
+ * `info` or `warning`.
+ */
+severity: string, 
+/**
+ * The headline.
+ */
+title: string, 
+/**
+ * More, when there is more.
+ */
+description: string | null, } | { "kind": "compaction", 
+/**
+ * `inProgress`, `completed`, `failed` or `cancelled`.
+ */
+status: string, 
+/**
+ * What the agent kept, as it wrote it. Cut at
+ * [`crate::normalize::TEXT_LIMIT`].
+ */
+summary: string, 
+/**
+ * Why it failed, when it did.
+ */
+error: string | null, };
 
 export type ToolStatus = "pending" | "inProgress" | "completed" | "failed";
 
@@ -370,6 +444,82 @@ status: string,
  * `high`, `medium` or `low`, as ACP sends it.
  */
 priority: string, };
+
+export type TaskState = "running" | "paused" | "completed" | "failed" | "stopped";
+
+export type TaskUsage = { 
+/**
+ * Tokens, all agents together.
+ */
+totalTokens: number, 
+/**
+ * Tool calls, all agents together.
+ */
+toolUses: number, 
+/**
+ * How long it has run.
+ */
+durationMs: number, };
+
+export type WorkflowRun = { 
+/**
+ * `wf_…`.
+ */
+runId: string, 
+/**
+ * In the script's order. Empty when the script declares none.
+ */
+phases: Array<WorkflowPhase>, 
+/**
+ * In the order they started.
+ */
+agents: Array<WorkflowAgent>, };
+
+export type WorkflowPhase = { 
+/**
+ * Its title, which agents name to place themselves in it.
+ */
+title: string, 
+/**
+ * The script's line about it.
+ */
+detail: string | null, };
+
+export type WorkflowAgent = { 
+/**
+ * Claude's id for it.
+ */
+id: string, 
+/**
+ * The label the script gave it.
+ */
+label: string, 
+/**
+ * The phase it runs in.
+ */
+phase: string | null, 
+/**
+ * Where it is.
+ */
+state: AgentState, 
+/**
+ * The model it runs on, once known.
+ */
+model: string | null, 
+/**
+ * When it started, in ms since the epoch, once known.
+ */
+startedAt: number | null, 
+/**
+ * How long it ran, once finished and recorded.
+ */
+durationMs: number | null, 
+/**
+ * The start of what it answered.
+ */
+result: string | null, };
+
+export type AgentState = "running" | "done" | "failed";
 
 export type SessionState = "starting" | "ready" | "working" | "needsInput" | "stopped" | "failed";
 

@@ -1,6 +1,6 @@
 //! A bounded account of the visible conversation for a different harness.
 
-use crate::event::{Item, ItemKind, QuestionOutcome, ToolStatus};
+use crate::event::{Item, ItemKind, QuestionOutcome, TaskState, ToolStatus};
 use crate::harness::Harness;
 
 const CONTEXT_LIMIT: usize = 64 * 1024;
@@ -21,6 +21,12 @@ pub(crate) fn settle(items: &mut [Item]) {
             {
                 *status = ToolStatus::Failed;
             }
+            // Its agent is gone, and the task with it.
+            ItemKind::Task { state, .. }
+                if matches!(state, TaskState::Running | TaskState::Paused) =>
+            {
+                *state = TaskState::Stopped;
+            }
             _ => {}
         }
     }
@@ -39,7 +45,8 @@ pub(crate) fn context(items: &[Item], source: Harness) -> Option<String> {
     let mut used = original_text.as_ref().map_or(0, String::len);
     let mut omitted = 0;
     for (index, item) in items.iter().enumerate().rev() {
-        if original == Some(index) {
+        // A subagent's work is summed up by the call that ran it.
+        if original == Some(index) || item.parent.is_some() {
             continue;
         }
         let entry = match &item.kind {
@@ -130,6 +137,7 @@ mod tests {
             id: n.to_string(),
             turn_id: n.to_string(),
             kind,
+            parent: None,
         }
     }
 

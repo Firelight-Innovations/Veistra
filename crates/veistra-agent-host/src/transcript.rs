@@ -154,6 +154,34 @@ fn weight(item: &Item) -> usize {
         ItemKind::Plan { entries } => entries.iter().map(|e| e.content.len()).sum(),
         ItemKind::Usage { .. } => 0,
         ItemKind::Error { message, .. } => message.len(),
+        ItemKind::Task {
+            name,
+            description,
+            summary,
+            run,
+            ..
+        } => {
+            name.len()
+                + description.len()
+                + summary.as_ref().map_or(0, String::len)
+                + run.as_ref().map_or(0, |run| {
+                    run.agents
+                        .iter()
+                        .map(|a| a.label.len() + a.result.as_ref().map_or(0, String::len) + 64)
+                        .sum::<usize>()
+                        + run
+                            .phases
+                            .iter()
+                            .map(|p| p.title.len() + p.detail.as_ref().map_or(0, String::len))
+                            .sum::<usize>()
+                })
+        }
+        ItemKind::Notice {
+            title, description, ..
+        } => title.len() + description.as_ref().map_or(0, String::len),
+        ItemKind::Compaction { summary, error, .. } => {
+            summary.len() + error.as_ref().map_or(0, String::len)
+        }
     };
     body + 64
 }
@@ -167,6 +195,7 @@ mod tests {
             id: id.into(),
             turn_id: "t1".into(),
             kind: ItemKind::AssistantText { text: text.into() },
+            parent: None,
         }
     }
 

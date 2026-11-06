@@ -153,10 +153,10 @@ describe("the transcript", () => {
     expect(screen.queryByText("Ran 2 commands")).toBeNull();
   });
 
-  it("shows Working in an agent turn that has nothing in it yet", async () => {
+  it("says it is reading the prompt in an agent turn that has nothing in it yet", async () => {
     backend(session("working", [PROMPT]));
     render(<App />);
-    const label = await screen.findByText("Working…");
+    const label = await screen.findByText("Reading your prompt");
     expect(label.hasAttribute("data-live")).toBe(true);
   });
 

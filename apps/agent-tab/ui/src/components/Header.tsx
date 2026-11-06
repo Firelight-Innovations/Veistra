@@ -1,4 +1,4 @@
-import { SquarePen, History, MessageSquare, PanelRight } from "lucide-react";
+import { SquarePen, History, MessageSquare, PanelRight, Info } from "lucide-react";
 import { strings } from "../strings";
 import { useSlots } from "./registry";
 import type { HeaderProps } from "./types";
@@ -14,6 +14,8 @@ export function Header({
   onHistory,
   onSideChat,
   onAgents,
+  onDetails,
+  detailsOpen = false,
   history,
 }: HeaderProps) {
   const S = useSlots();
@@ -56,6 +58,18 @@ export function Header({
           <SquarePen size={14} strokeWidth={2} aria-hidden="true" />
         </button>
       }
+      {onDetails && (
+        <button
+          type="button"
+          className="k-btn k-btn--ghost k-btn--icon"
+          aria-label={detailsOpen ? strings.details.close : strings.details.open}
+          aria-pressed={detailsOpen}
+          title={detailsOpen ? strings.details.close : strings.details.open}
+          onClick={onDetails}
+        >
+          <Info size={15} aria-hidden="true" />
+        </button>
+      )}
       {onAgents && (
         <button
           type="button"

@@ -10,12 +10,14 @@ import { createContext, useContext, type ReactNode } from "react";
 import {
   MessagePrimitive,
   ThreadPrimitive,
+  useSmooth,
   type PartState,
   type ThreadMessage,
 } from "@assistant-ui/react";
 import type { Item } from "./protocol.generated";
 import { ItemView, type ItemActions } from "./Items";
 import { useSlots } from "./components/registry";
+import type { WorkingPhase } from "./components/types";
 import { summarize } from "./actions";
 import { strings } from "./strings";
 import { ACTION_TOOL } from "./thread";
@@ -27,6 +29,8 @@ interface Lookup {
   waiting: boolean;
   /** What the running turn is at, for `Working`, when there is more to say than "Working…". */
   activity?: string;
+  /** Which stretch of the turn it is in, for how `Working` animates. */
+  phase?: WorkingPhase;
   /** When the running turn started, for `Working`'s clock. */
   since?: number;
 }
@@ -41,6 +45,29 @@ function ById({ id, live }: { id: string | undefined; live?: boolean }) {
   const lookup = useContext(LookupContext);
   const item = id === undefined ? undefined : lookup?.byId.get(id);
   return item && lookup ? <ItemView item={item} actions={lookup.actions} live={live} /> : null;
+}
+
+/**
+ * How fast streamed text is revealed: a backlog drains over about a third of
+ * a second, so a burst of tokens types out rather than landing at once, and
+ * the markdown is re-rendered at most every other frame.
+ */
+const SMOOTH = { drainMs: 320, minCommitMs: 32 } as const;
+
+/**
+ * The agent's reply as it streams: assistant-ui's own `useSmooth` reveals what
+ * has arrived at a steady rate, and the item draws with a caret until the
+ * reveal has caught up with a finished part.
+ */
+function SmoothText({ part }: { part: PartState & { type: "text" } }) {
+  const lookup = useContext(LookupContext);
+  // Only while the part streams: a finished reply, or one replayed on attach,
+  // draws whole at once rather than typing itself out again.
+  const { text, status } = useSmooth(part, part.status.type === "running" && SMOOTH);
+  const item = part.id === undefined ? undefined : lookup?.byId.get(part.id);
+  if (!item || !lookup || item.kind.kind !== "assistantText") return <ById id={part.id} />;
+  const shown: Item = { ...item, kind: { ...item.kind, text } };
+  return <ItemView item={shown} actions={lookup.actions} live={status.type === "running"} />;
 }
 
 /** A prompt has only text. */
@@ -104,7 +131,7 @@ function AgentParts({ message }: { message: ThreadMessage }) {
               <Actions ids={part.indices.map((i) => toolCallIdAt(message, i))}>{children}</Actions>
             );
           case "text":
-            return <ById id={part.id} />;
+            return <SmoothText part={part} />;
           case "reasoning":
             return <ById id={part.id} live={part.status.type === "running"} />;
           case "tool-call":
@@ -113,7 +140,7 @@ function AgentParts({ message }: { message: ThreadMessage }) {
             return waiting ? (
               <></>
             ) : (
-              <S.Working activity={lookup?.activity} since={lookup?.since} />
+              <S.Working activity={lookup?.activity} phase={lookup?.phase} since={lookup?.since} />
             );
           default:
             // An empty fragment, not `null`: `null` would ask for a registered tool UI.

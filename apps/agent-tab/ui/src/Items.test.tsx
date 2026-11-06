@@ -5,9 +5,10 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { ItemView } from "./Items";
+import { ItemView, NestedItems } from "./Items";
+import { strings } from "./strings";
 import { answerOpenCard } from "./questions";
-import type { FileDiff, Item, Question, QuestionOutcome } from "./protocol.generated";
+import type { FileDiff, Item, Question, QuestionOutcome, WorkflowRun } from "./protocol.generated";
 
 afterEach(cleanup);
 
@@ -16,6 +17,9 @@ const actions = {
   onQuestion: () => Promise.resolve(),
   onRetry: () => {},
   hintText: () => "",
+  onOpenTask: () => {},
+  onStopTask: () => Promise.resolve(),
+  elapsed: () => null,
 };
 
 function view(item: Item) {
@@ -307,5 +311,142 @@ describe("a question card", () => {
       kind: "answered",
       replies: [{ picks: ["top"], other: null }],
     });
+  });
+});
+
+const taskItem = (state: "running" | "completed", run: WorkflowRun | null = null): Item => ({
+  id: "k1",
+  turnId: "t1",
+  kind: {
+    kind: "task",
+    taskId: "task-7",
+    name: "Review the branch",
+    taskType: "workflow",
+    description: "Review the branch",
+    state,
+    summary: null,
+    lastTool: null,
+    usage: null,
+    canStop: true,
+    callItem: null,
+    run,
+  },
+});
+
+describe("a background task", () => {
+  it("shows a workflow's phase and agents, and asks to stop it by its task id", () => {
+    const onStopTask = vi.fn(() => Promise.resolve());
+    const onOpenTask = vi.fn();
+    render(
+      <ItemView
+        item={taskItem("running", {
+          runId: "wf_1",
+          phases: [
+            { title: "Survey", detail: null },
+            { title: "Review", detail: null },
+          ],
+          agents: [
+            {
+              id: "a",
+              label: "a",
+              phase: "Survey",
+              state: "done",
+              model: null,
+              startedAt: null,
+              durationMs: null,
+              result: null,
+            },
+            {
+              id: "b",
+              label: "b",
+              phase: "Review",
+              state: "running",
+              model: null,
+              startedAt: null,
+              durationMs: null,
+              result: null,
+            },
+          ],
+        })}
+        actions={{ ...actions, onStopTask, onOpenTask, elapsed: () => 65_000 }}
+      />,
+    );
+    expect(screen.getByText(strings.task.phase(1, 2, "Review"))).toBeTruthy();
+    expect(screen.getByText(strings.task.agents(1, 1, 0))).toBeTruthy();
+    expect(screen.getByText("1m 5s")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: strings.task.details }));
+    expect(onOpenTask).toHaveBeenCalledWith("k1");
+    fireEvent.click(screen.getByRole("button", { name: strings.task.stop }));
+    expect(onStopTask).toHaveBeenCalledWith("task-7");
+    expect(screen.getByRole("button", { name: strings.task.stopping })).toBeTruthy();
+  });
+
+  it("offers no Stop once it has ended", () => {
+    render(<ItemView item={taskItem("completed")} actions={actions} />);
+    expect(screen.queryByRole("button", { name: strings.task.stop })).toBeNull();
+    expect(screen.getByText(strings.task.state.completed)).toBeTruthy();
+  });
+
+  it("lets Stop be pressed again when the request fails", async () => {
+    const onStopTask = vi.fn(() => Promise.reject(new Error("no")));
+    render(<ItemView item={taskItem("running")} actions={{ ...actions, onStopTask }} />);
+    fireEvent.click(screen.getByRole("button", { name: strings.task.stop }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: strings.task.stop })).toBeTruthy(),
+    );
+  });
+});
+
+describe("the agent's advisories and compaction", () => {
+  it("draws a notice with its title and description", () => {
+    view({
+      id: "n1",
+      turnId: "t1",
+      kind: {
+        kind: "notice",
+        severity: "warning",
+        title: "Rate limited",
+        description: "Retrying soon",
+      },
+    });
+    expect(screen.getByText("Rate limited")).toBeTruthy();
+    expect(screen.getByText("Retrying soon")).toBeTruthy();
+  });
+
+  it("draws compaction as a divider with what was kept folded under it", () => {
+    view({
+      id: "m1",
+      turnId: "t1",
+      kind: { kind: "compaction", status: "completed", summary: "Kept the plan", error: null },
+    });
+    expect(screen.getByText(strings.compaction.completed)).toBeTruthy();
+    expect(screen.getByText("Kept the plan")).toBeTruthy();
+  });
+});
+
+describe("a subagent", () => {
+  it("draws its work inside the call that started it", () => {
+    const call: Item = {
+      id: "c1",
+      turnId: "t1",
+      kind: {
+        kind: "toolCall",
+        title: "Survey the code",
+        toolKind: "think",
+        status: "inProgress",
+        output: "",
+        truncated: false,
+        paths: [],
+        diffs: [],
+      },
+    };
+    const inner: Item = { ...reply("found the parser"), id: "n1", parent: "c1" };
+    const { container } = render(
+      <NestedItems.Provider value={new Map([["c1", [inner]]])}>
+        <ItemView item={call} actions={actions} />
+      </NestedItems.Provider>,
+    );
+    const nested = container.querySelector('[data-item="c1"] .at-tool__nested');
+    expect(nested?.textContent).toContain("found the parser");
   });
 });
