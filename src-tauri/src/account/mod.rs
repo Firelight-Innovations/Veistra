@@ -492,8 +492,16 @@ impl Account {
         self.authorized(api, path, &|url, token| wire::get(url, token))
     }
 
-    /// A JSON write (`POST` or `PATCH`) as the signed-in person, with the same
-    /// one retry as [`get`](Self::get).
+    /// The profile picture as a `data:` URL, or null with none; see
+    /// [`wire::get_picture`].
+    pub fn picture(&self, api: &str) -> Result<Value, AccountError> {
+        self.authorized(api, "v1/me/avatar", &|url, token| {
+            wire::get_picture(url, token)
+        })
+    }
+
+    /// A write (`POST`, `PUT`, `PATCH` or `DELETE`) as the signed-in person,
+    /// with the same one retry as [`get`](Self::get).
     pub fn write(
         &self,
         api: &str,

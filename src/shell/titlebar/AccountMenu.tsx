@@ -154,7 +154,7 @@ export default function AccountMenu({
         data-open={open || undefined}
         onClick={() => setOpen((v) => !v)}
       >
-        <Avatar initials={user ? initials(user) : null} />
+        <Avatar initials={user ? initials(user) : null} src={user ? account.picture : null} />
       </button>
       <AnimatePresence>
         {open && (

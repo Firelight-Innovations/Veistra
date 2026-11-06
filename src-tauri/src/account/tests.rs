@@ -19,7 +19,8 @@ struct Seen {
     body: String,
 }
 
-type Script = Arc<StdMutex<HashMap<String, VecDeque<(u16, String)>>>>;
+/// Each reply: its status, its `Content-Type` and its body.
+type Script = Arc<StdMutex<HashMap<String, VecDeque<(u16, String, Vec<u8>)>>>>;
 
 /// An account service that answers each `METHOD path` from its own queue of
 /// replies, and records what it was sent. Unscripted requests get a 404.
@@ -42,17 +43,21 @@ impl Server {
                 let request = read_request(&mut stream);
                 let key = format!("{} {}", request.method, request.path);
                 v.lock().unwrap().push(request);
-                let (status, body) = s
+                let (status, kind, body) = s
                     .lock()
                     .unwrap()
                     .get_mut(&key)
                     .and_then(VecDeque::pop_front)
-                    .unwrap_or((404, r#"{"title":"not scripted"}"#.into()));
-                let reply = format!(
-                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    .unwrap_or_else(|| {
+                        let body = br#"{"title":"not scripted"}"#.to_vec();
+                        (404, "application/json".into(), body)
+                    });
+                let head = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
                 );
-                let _ = stream.write_all(reply.as_bytes());
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(&body);
             }
         });
         Self { base, script, seen }
@@ -64,7 +69,22 @@ impl Server {
             .unwrap()
             .entry(key.into())
             .or_default()
-            .push_back((status, body.to_string()));
+            .push_back((
+                status,
+                "application/json".into(),
+                body.to_string().into_bytes(),
+            ));
+        self
+    }
+
+    /// A reply that is not JSON: a picture's bytes, with their type.
+    fn reply_raw(&self, key: &str, status: u16, kind: &str, body: &[u8]) -> &Self {
+        self.script
+            .lock()
+            .unwrap()
+            .entry(key.into())
+            .or_default()
+            .push_back((status, kind.into(), body.to_vec()));
         self
     }
 
@@ -903,5 +923,82 @@ mod runs {
         assert_eq!(send(&account, "", &op), Err(AccountError::NotConfigured));
         assert!(server.seen("PATCH /v1/runs/x").is_empty());
         assert!(server.seen(TOKEN).is_empty());
+    }
+}
+
+// --- The profile picture ------------------------------------------------------
+
+mod picture {
+    use super::*;
+
+    const PNG: &[u8] = &[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3];
+
+    #[test]
+    fn reads_the_picture_as_a_data_url_the_shell_can_draw() {
+        let server = Server::start();
+        server
+            .reply(TOKEN, 200, tokens("access-1", "refresh-2"))
+            .reply_raw("GET /v1/me/avatar", 200, "image/png", PNG);
+        let account = signed_in(&server, "refresh-1");
+        let url = account.picture(&server.base).unwrap();
+        assert_eq!(
+            url,
+            serde_json::json!("data:image/png;base64,iVBORw0KGgoBAgM=")
+        );
+        let seen = &server.seen("GET /v1/me/avatar")[0];
+        assert_eq!(seen.auth.as_deref(), Some("Bearer access-1"));
+    }
+
+    #[test]
+    fn none_set_is_null_and_anything_but_a_picture_is_refused() {
+        let server = Server::start();
+        server
+            .reply(TOKEN, 200, tokens("access-1", "refresh-2"))
+            .reply(
+                "GET /v1/me/avatar",
+                404,
+                serde_json::json!({ "type": "https://veistra.com/problems/no-avatar" }),
+            )
+            .reply_raw("GET /v1/me/avatar", 200, "text/html", b"<script></script>");
+        let account = signed_in(&server, "refresh-1");
+        assert_eq!(account.picture(&server.base), Ok(Value::Null));
+        let refused = account.picture(&server.base).unwrap_err();
+        assert!(refused.describe().contains("cannot show"), "{refused:?}");
+    }
+
+    #[test]
+    fn sets_it_as_json_and_removes_it_with_a_bare_delete() {
+        let server = Server::start();
+        server
+            .reply(TOKEN, 200, tokens("access-1", "refresh-2"))
+            .reply(
+                "PUT /v1/me/avatar",
+                200,
+                serde_json::json!({ "avatar": "3f9a2c41d0e8b7a6" }),
+            )
+            .reply_raw("DELETE /v1/me/avatar", 204, "application/json", b"");
+        let account = signed_in(&server, "refresh-1");
+        let body = serde_json::json!({ "image": "UklGRg==" });
+        let set = account
+            .write(&server.base, "PUT", "v1/me/avatar", &body)
+            .unwrap();
+        assert_eq!(set, serde_json::json!({ "avatar": "3f9a2c41d0e8b7a6" }));
+        let put = &server.seen("PUT /v1/me/avatar")[0];
+        assert_eq!(put.auth.as_deref(), Some("Bearer access-1"));
+        assert_eq!(serde_json::from_str::<Value>(&put.body).unwrap(), body);
+
+        let gone = account.write(&server.base, "DELETE", "v1/me/avatar", &Value::Null);
+        assert_eq!(gone, Ok(Value::Null));
+        let delete = &server.seen("DELETE /v1/me/avatar")[0];
+        assert_eq!(delete.auth.as_deref(), Some("Bearer access-1"));
+        assert_eq!(delete.body, "");
+    }
+
+    #[test]
+    fn signed_out_asks_for_nothing() {
+        let server = Server::start();
+        let account = Account::new(Box::<MemoryStore>::default());
+        assert_eq!(account.picture(&server.base), Err(AccountError::SignedOut));
+        assert!(server.seen("GET /v1/me/avatar").is_empty());
     }
 }

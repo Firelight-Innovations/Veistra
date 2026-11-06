@@ -6,6 +6,8 @@
 //! status, the OAuth `error` code or the problem's `title` and `detail`
 //! (RFC 9457), and never any part of the request.
 
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -111,18 +113,75 @@ pub fn post_form(url: &str, form: &[(&str, &str)]) -> Result<Value, Failure> {
     read(response)
 }
 
-/// One JSON write (`POST`, `PATCH`) with a bearer token.
+/// One write with a bearer token: `POST`, `PUT` or `PATCH` with a JSON body,
+/// or a `DELETE`, which sends none.
 pub fn send_json(method: &str, url: &str, bearer: &str, body: &Value) -> Result<Value, Failure> {
     let agent = crate::cloud::http::agent();
+    let auth = format!("Bearer {bearer}");
+    if method == "DELETE" {
+        let response = agent
+            .delete(url)
+            .header("Accept", "application/json")
+            .header("Authorization", &auth)
+            .call();
+        return read(response);
+    }
     let request = match method {
         "PATCH" => agent.patch(url),
+        "PUT" => agent.put(url),
         _ => agent.post(url),
     };
     let response = request
         .header("Accept", "application/json")
-        .header("Authorization", &format!("Bearer {bearer}"))
+        .header("Authorization", &auth)
         .send_json(body);
     read(response)
+}
+
+/// The types `PUT /v1/me/avatar` keeps, and so the only ones drawn.
+const PICTURE_TYPES: [&str; 3] = ["image/png", "image/jpeg", "image/webp"];
+
+/// The profile picture as a `data:` URL the shell can put in an `<img>`, which
+/// cannot send the bearer token itself. `Value::Null` when there is none: the
+/// service's `404 no-avatar`. Any other type is refused rather than drawn.
+pub fn get_picture(url: &str, bearer: &str) -> Result<Value, Failure> {
+    let response = crate::cloud::http::agent()
+        .get(url)
+        .header("Accept", &PICTURE_TYPES.join(", "))
+        .header("Authorization", &format!("Bearer {bearer}"))
+        .call();
+    let mut response = response.map_err(|e| Failure::Unreachable(e.to_string()))?;
+    let status = response.status().as_u16();
+    let kind = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(';').next())
+        .map(|v| v.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    let body = response
+        .body_mut()
+        .with_config()
+        .limit(LIMIT)
+        .read_to_vec()
+        .map_err(|e| Failure::Unreachable(e.to_string()))?;
+    if status == 404 {
+        return Ok(Value::Null);
+    }
+    if !(200..300).contains(&status) {
+        return Err(failure(status, &body));
+    }
+    if !PICTURE_TYPES.contains(&kind.as_str()) {
+        return Err(Failure::Status {
+            status,
+            kind: None,
+            message: "The Veistra account service sent a picture this version cannot show.".into(),
+        });
+    }
+    Ok(Value::String(format!(
+        "data:{kind};base64,{}",
+        BASE64.encode(&body)
+    )))
 }
 
 /// One GET with a bearer token.

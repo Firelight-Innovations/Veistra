@@ -399,10 +399,10 @@ Blunt list, because an undocumented absence reads as an oversight.
 - **No conditional rows.** Every setting is drawn regardless of what any other
   setting holds, so a row that is irrelevant given another's value is still
   drawn, still editable and still stored.
-- **Account and Billing draw only what the account service answers.** It has no
-  endpoint yet for: a profile photo (read or upload — the Profile photo row shows
-  initials and cannot be clicked), changing the name (Full name is text, not a
-  field), the signed-in devices and "log out of all devices" (so there is no
+- **Account and Billing draw only what the account service answers.** The profile
+  photo is read and set through `account/avatar`, `account/set-avatar` and
+  `account/remove-avatar` (`docs/account-api.md`). It has no endpoint yet for:
+  changing the name (Full name is text, not a field), the signed-in devices and "log out of all devices" (so there is no
   "Where you're logged in" table), the plan's renewal date, the payment method,
   or invoices (so Billing has the plan card, the monthly limit and a link to
   veistra.com, but no Payment or Invoices sections). Upgrade and Adjust plan open

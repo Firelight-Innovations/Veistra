@@ -137,10 +137,25 @@ All take `Authorization: Bearer <access token>`.
 
 ```json
 {
-  "user": { "id": "…", "email": "b@example.com", "name": "Braden Seaborn" },
+  "user": {
+    "id": "…", "email": "b@example.com", "name": "Braden Seaborn",
+    "avatar": "3f9a2c41d0e8b7a6"
+  },
   "workspace": { "id": "…", "name": "Personal workspace", "plan": "beta" }
 }
 ```
+
+`avatar` is the profile picture's version, or `null` with none. A service older than pictures
+leaves it out, which reads as none.
+
+### `GET /v1/me/avatar`
+
+The picture's bytes, `image/png`, `image/jpeg` or `image/webp`; `404` (`no-avatar`) with none.
+An `<img>` in the webview cannot send the bearer token, so `account/avatar` reads it in Rust and
+answers a `data:` URL, or `null` for the `404` (`wire::get_picture`). Any other type is refused,
+not drawn. The shell reads it once per `avatar` version, when `account/me` names a new one
+(`src/shell/account/useAccount.ts`), and draws it in the title bar, Settings' account header and
+Settings → Account → Profile, where `Avatar` falls back to the initials.
 
 ### `GET /v1/usage?range=period|7d|30d[&project=<name>]`
 
@@ -250,6 +265,21 @@ message of a conversation as a run.
 - Settings → Usage → "Show Claude Code and Codex sessions on your dashboard" (`runs.record`, on by
   default) stops new runs; an open one still finishes.
 - Run writes have their own budget per device.
+
+### `PUT /v1/me/avatar`, `DELETE /v1/me/avatar`
+
+Settings → Account → Profile → Change photo, and Remove.
+
+- The webview center-crops the picked file to a square, shrinks it to 256 pixels and re-encodes
+  it as WebP, or JPEG where it cannot encode WebP (`src/shell/account/picture.ts`, as the
+  website's `picture.ts` does). `account/set-avatar` sends `{"image": "<base64>"}`, with no
+  `data:` prefix, and answers `{"avatar": "<version>"}`. The shell draws the picture it sent and
+  reads nothing back.
+- The service reads the type from the bytes' own header and refuses anything but PNG, JPEG or
+  WebP (`400 bad-image`), over 1024 pixels a side (`400`), or over 128 KB (`413 too-large`). The
+  shell shows `detail`.
+- `account/remove-avatar` sends a `DELETE` with no body and gets `204`.
+- Bearer token. Ten changes a minute per person.
 
 ## Not yet sent by the app
 
