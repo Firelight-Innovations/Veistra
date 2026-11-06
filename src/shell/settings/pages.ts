@@ -75,6 +75,7 @@ export const PAGES: readonly PageDef[] = [
         description: "What your account has used and spent, by source, day and run.",
         keywords: "usage spend cost tokens runs limit cloud worker gpu renders",
       },
+      group("runs"),
     ],
   },
   {

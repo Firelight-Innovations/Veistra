@@ -72,7 +72,11 @@ export default function SettingsNav({
   return (
     <nav className="settings__nav" aria-label="Settings pages">
       <button type="button" className="settings__account" onClick={() => onPick("account")}>
-        <Avatar initials={user ? initials(user) : null} size={28} />
+        <Avatar
+          initials={user ? initials(user) : null}
+          src={user ? account.picture : null}
+          size={28}
+        />
         <span className="settings__account-text">
           <span className="settings__account-email">{user ? user.email : "Not signed in"}</span>
           <span className="settings__account-plan">

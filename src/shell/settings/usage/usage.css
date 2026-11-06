@@ -56,6 +56,11 @@
   border-bottom: 1px solid var(--border-subtle);
 }
 
+/* The plan's credits and the limit, stacked, share one rule between them. */
+.settings-usage__meter-row + .settings-usage__meter-row {
+  border-top: 0;
+}
+
 .settings-usage__meter-label {
   display: flex;
   flex-direction: column;

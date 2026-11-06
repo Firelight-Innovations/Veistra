@@ -2,13 +2,14 @@
  * Settings → Account → Profile: who this computer is signed in to Veistra as,
  * and the way in or out.
  *
- * Only what `account/status` and `account/me` answer is drawn. The account
- * service has no photo, no way to change a name, and no list of signed-in
- * devices yet, so the photo row shows initials and cannot be clicked, the name
- * is text rather than a field, and there is no "Where you're logged in" table.
- * `docs/settings.md` lists the endpoints those would need.
+ * Only what `account/status`, `account/me` and `account/avatar` answer is
+ * drawn. The photo can be changed here and on veistra.com, and the two show
+ * the same one. The account service has no way to change a name and no list
+ * of signed-in devices yet, so the name is text rather than a field and there
+ * is no "Where you're logged in" table; `docs/settings.md` lists the
+ * endpoints those would need.
  */
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { Check, Copy } from "lucide-react";
 import Avatar from "../../ui/Avatar";
 import { accountCall } from "../../../bindings";
@@ -43,11 +44,16 @@ export default function ProfilePanel() {
 
       {user !== null && (
         <>
-          <Row
-            title="Profile photo"
-            description="Your initials, until Veistra accounts carry a photo."
-          >
-            <Avatar initials={initials(user)} size={40} />
+          <Row title="Profile photo" description="Shown here and on veistra.com.">
+            <span className="settings-profile__actions">
+              <Avatar initials={initials(user)} src={account.picture} size={40} />
+              <PhotoButtons
+                has={account.picture !== null || Boolean(me?.user.avatar)}
+                busy={account.busy}
+                onPick={(file) => void account.setPicture(file)}
+                onRemove={() => void account.removePicture()}
+              />
+            </span>
           </Row>
           <Row title="Full name" description="As your Veistra account has it.">
             <span className="settings-profile__value">{user.name.trim() || "Not set"}</span>
@@ -104,6 +110,49 @@ export function Row({
       <div className="setting__control">{children}</div>
       <div className="setting__reset-slot" />
     </div>
+  );
+}
+
+/**
+ * "Change photo", which opens the system's file picker through a hidden file
+ * input, and "Remove" while there is one. The picked file is shrunk in the
+ * webview before it is sent (`account/picture.ts`).
+ */
+function PhotoButtons(p: {
+  has: boolean;
+  busy: boolean;
+  onPick: (file: File) => void;
+  onRemove: () => void;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  return (
+    <>
+      <input
+        ref={input}
+        type="file"
+        accept="image/*"
+        hidden
+        aria-label="Profile photo file"
+        onChange={(e) => {
+          const file = e.currentTarget.files?.[0];
+          e.currentTarget.value = "";
+          if (file) p.onPick(file);
+        }}
+      />
+      <button
+        type="button"
+        className="k-btn k-btn--secondary"
+        disabled={p.busy}
+        onClick={() => input.current?.click()}
+      >
+        {p.has ? "Change photo" : "Add photo"}
+      </button>
+      {p.has && (
+        <button type="button" className="k-btn k-btn--ghost" disabled={p.busy} onClick={p.onRemove}>
+          Remove
+        </button>
+      )}
+    </>
   );
 }
 

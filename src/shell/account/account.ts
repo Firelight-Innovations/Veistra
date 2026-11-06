@@ -29,9 +29,12 @@ export interface AccountStatus {
   ownSignIn: boolean;
 }
 
-/** `account/me`, which is `GET /v1/me`. */
+/**
+ * `account/me`, which is `GET /v1/me`. `avatar` is the profile picture's
+ * version, or null with none; a service older than pictures leaves it out.
+ */
 export interface Me {
-  user: { id: string; email: string; name: string };
+  user: { id: string; email: string; name: string; avatar?: string | null };
   workspace: { id: string; name: string; plan: string };
 }
 

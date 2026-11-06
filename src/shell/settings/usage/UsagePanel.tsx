@@ -18,6 +18,9 @@ import {
   type DayBar,
   type Range,
   alertTitle,
+  credits,
+  creditsPercent,
+  creditsUsedLabel,
   type Run,
   type Runs,
   type Source,
@@ -168,18 +171,41 @@ export default function UsagePanel() {
 /** The status sentence, the limit's bar, and what each source cost. */
 function Overview({ usage }: { usage: Usage }) {
   const limit = usage.limit;
+  const plan = credits(usage);
   const unbilled = usage.totals.unbilled_runs;
   const rangeText = `${shortDate(usage.range.from)} – ${shortDate(usage.range.to)}`;
   return (
     <>
       <p className="settings-usage__sentence">{statusSentence(usage)}</p>
 
+      {plan && (
+        <div className="settings-usage__meter-row">
+          <div className="settings-usage__meter-label">
+            <span className="setting__title">Included with {plan.name}</span>
+            <span className="setting__description">
+              {money(plan.used_micros)} of {money(plan.included_micros)} · Resets{" "}
+              {shortDate(plan.resets)}
+            </span>
+          </div>
+          <div
+            className="settings-usage__meter"
+            role="meter"
+            aria-label="Included credits used"
+            aria-valuemin={0}
+            aria-valuemax={plan.included_micros / 1_000_000}
+            aria-valuenow={plan.used_micros / 1_000_000}
+          >
+            <div style={{ width: `${creditsPercent(plan)}%` }} />
+          </div>
+          <span className="settings-usage__used">{creditsUsedLabel(plan)}</span>
+        </div>
+      )}
       <div className="settings-usage__meter-row">
         <div className="settings-usage__meter-label">
           <span className="setting__title">Monthly limit</span>
           <span className="setting__description">
             {limit
-              ? `${money(limit.spent_this_period_micros)} of ${money(limit.monthly_limit_micros)}`
+              ? `${money(limit.spent_this_period_micros)} of ${money(limit.monthly_limit_micros)}${plan ? " past your credits" : ""}`
               : "No monthly limit is set"}{" "}
             · Resets {shortDate(usage.period.resets)}
           </span>

@@ -178,6 +178,21 @@ pub fn call(app: &AppHandle, method: &str, params: Option<Value>) -> Result<Valu
 
         "account/me" => account.get(&api, "v1/me").map_err(rpc),
 
+        // The profile picture (`docs/account-api.md`). The shell shrinks a
+        // picked file to a 256-pixel WebP before it gets here, so `image` is
+        // a few KB of base64; the service checks what it really is.
+        "account/avatar" => account.picture(&api).map_err(rpc),
+        "account/set-avatar" => {
+            let image = text_param(params.as_ref(), "image")
+                .ok_or_else(|| RpcError::new(INVALID_PARAMS, "image is the picture, as base64"))?;
+            account
+                .write(&api, "PUT", "v1/me/avatar", &json!({ "image": image }))
+                .map_err(rpc)
+        }
+        "account/remove-avatar" => account
+            .write(&api, "DELETE", "v1/me/avatar", &Value::Null)
+            .map_err(rpc),
+
         "account/usage" => {
             let range = text_param(params.as_ref(), "range").unwrap_or("period");
             if !["period", "7d", "30d"].contains(&range) {

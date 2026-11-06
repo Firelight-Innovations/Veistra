@@ -41,6 +41,7 @@ const SHELL_GROUPS = [
   "github",
   "cloud",
   "account",
+  "runs",
   "updates",
   "telemetry",
   "mcp",
@@ -74,6 +75,11 @@ describe("pages", () => {
     const ids = pages([]).map((p) => p.id);
     expect(ids.slice(0, 3)).toEqual(["account", "billing", "usage"]);
     expect(ids[ids.length - 1]).toBe("developer");
+  });
+
+  it("draws the Claude Code and Codex switch on Usage, under the runs it adds", () => {
+    const usage = pages([group("runs", [])]).find((p) => p.id === "usage");
+    expect(usage?.sections.map((s) => s.id)).toEqual(["usage", "runs"]);
   });
 
   it("draws the account service addresses on Developer, not on Account", () => {

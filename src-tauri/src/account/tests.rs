@@ -15,9 +15,12 @@ struct Seen {
     path: String,
     auth: Option<String>,
     form: HashMap<String, String>,
+    /// The body as sent, for the JSON writes.
+    body: String,
 }
 
-type Script = Arc<StdMutex<HashMap<String, VecDeque<(u16, String)>>>>;
+/// Each reply: its status, its `Content-Type` and its body.
+type Script = Arc<StdMutex<HashMap<String, VecDeque<(u16, String, Vec<u8>)>>>>;
 
 /// An account service that answers each `METHOD path` from its own queue of
 /// replies, and records what it was sent. Unscripted requests get a 404.
@@ -40,17 +43,21 @@ impl Server {
                 let request = read_request(&mut stream);
                 let key = format!("{} {}", request.method, request.path);
                 v.lock().unwrap().push(request);
-                let (status, body) = s
+                let (status, kind, body) = s
                     .lock()
                     .unwrap()
                     .get_mut(&key)
                     .and_then(VecDeque::pop_front)
-                    .unwrap_or((404, r#"{"title":"not scripted"}"#.into()));
-                let reply = format!(
-                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    .unwrap_or_else(|| {
+                        let body = br#"{"title":"not scripted"}"#.to_vec();
+                        (404, "application/json".into(), body)
+                    });
+                let head = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
                 );
-                let _ = stream.write_all(reply.as_bytes());
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(&body);
             }
         });
         Self { base, script, seen }
@@ -62,7 +69,22 @@ impl Server {
             .unwrap()
             .entry(key.into())
             .or_default()
-            .push_back((status, body.to_string()));
+            .push_back((
+                status,
+                "application/json".into(),
+                body.to_string().into_bytes(),
+            ));
+        self
+    }
+
+    /// A reply that is not JSON: a picture's bytes, with their type.
+    fn reply_raw(&self, key: &str, status: u16, kind: &str, body: &[u8]) -> &Self {
+        self.script
+            .lock()
+            .unwrap()
+            .entry(key.into())
+            .or_default()
+            .push_back((status, kind.into(), body.to_vec()));
         self
     }
 
@@ -103,14 +125,14 @@ fn read_request(stream: &mut std::net::TcpStream) -> Seen {
                         .or_else(|| l.strip_prefix("Authorization: "))
                         .map(str::to_string)
                 });
-                let form = url::form_urlencoded::parse(&text.as_bytes()[split + 4..])
-                    .into_owned()
-                    .collect();
+                let raw = &text.as_bytes()[split + 4..];
+                let form = url::form_urlencoded::parse(raw).into_owned().collect();
                 return Seen {
                     method,
                     path,
                     auth,
                     form,
+                    body: String::from_utf8_lossy(raw).into_owned(),
                 };
             }
         }
@@ -120,6 +142,7 @@ fn read_request(stream: &mut std::net::TcpStream) -> Seen {
                 path: String::new(),
                 auth: None,
                 form: HashMap::new(),
+                body: String::new(),
             };
         }
     }
@@ -724,4 +747,258 @@ fn only_https_or_loopback_addresses_are_opened() {
     assert!(!safe_to_open("http://veistra.com/device"));
     assert!(!safe_to_open("file:///C:/Windows/System32/calc.exe"));
     assert!(!safe_to_open("javascript:alert(1)"));
+}
+
+// --- Claude Code and Codex sessions as runs (`runs.rs`) ----------------------
+
+mod runs {
+    use super::*;
+    use crate::account::runs::{send, Op, Runs};
+    use veistra_agent_host::{Harness, SessionState as S};
+
+    const CWD: &str = r"C:\work\Anomaly";
+
+    fn started(ops: &[Op]) -> String {
+        match ops {
+            [Op::Start { id, .. }] => id.clone(),
+            other => panic!("expected one start, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn one_session_is_one_run_from_start_to_stop() {
+        let runs = Runs::default();
+        let ops = runs.observe("tab-1", S::Starting, Harness::Claude, CWD, true);
+        let id = started(&ops);
+        assert_eq!(
+            ops[0],
+            Op::Start {
+                id: id.clone(),
+                harness: "claude_code",
+                name: "Claude Code session".into(),
+                project: "Anomaly".into(),
+            }
+        );
+        // A UUID, as the service requires: it makes a retried POST one run.
+        assert_eq!(id.len(), 36);
+        assert_eq!(&id[14..15], "4");
+        // Turns come and go inside the one session.
+        for state in [S::Ready, S::Working, S::NeedsInput, S::Working, S::Ready] {
+            assert!(runs
+                .observe("tab-1", state, Harness::Claude, CWD, true)
+                .is_empty());
+        }
+        assert_eq!(
+            runs.observe("tab-1", S::Stopped, Harness::Claude, CWD, true),
+            vec![Op::Finish { id, failed: false }]
+        );
+        // The next session is the next run.
+        started(&runs.observe("tab-1", S::Starting, Harness::Claude, CWD, true));
+    }
+
+    #[test]
+    fn a_failed_session_finishes_its_run_as_failed() {
+        let runs = Runs::default();
+        let id = started(&runs.observe(
+            "t",
+            S::Starting,
+            Harness::Codex,
+            "/home/b/Torn Apart/",
+            true,
+        ));
+        assert_eq!(
+            runs.observe("t", S::Failed, Harness::Codex, "", true),
+            vec![Op::Finish { id, failed: true }]
+        );
+        // A session that never started is no run.
+        assert!(runs
+            .observe("u", S::Failed, Harness::Codex, "", true)
+            .is_empty());
+    }
+
+    #[test]
+    fn a_harness_switch_ends_the_old_run_and_ignores_its_late_stop() {
+        let runs = Runs::default();
+        let claude = started(&runs.observe("t", S::Starting, Harness::Claude, CWD, true));
+        let ops = runs.observe("t", S::Starting, Harness::Codex, CWD, true);
+        assert_eq!(
+            ops[0],
+            Op::Finish {
+                id: claude,
+                failed: false
+            }
+        );
+        assert!(matches!(
+            &ops[1],
+            Op::Start {
+                harness: "codex",
+                ..
+            }
+        ));
+        // The retired Claude process reports its exit after the switch.
+        assert!(runs
+            .observe("t", S::Stopped, Harness::Claude, CWD, true)
+            .is_empty());
+    }
+
+    #[test]
+    fn veistra_sessions_are_metered_by_the_service_not_reported() {
+        let runs = Runs::default();
+        assert!(runs
+            .observe("t", S::Starting, Harness::Veistra, CWD, true)
+            .is_empty());
+        assert!(runs
+            .observe("t", S::Stopped, Harness::Veistra, CWD, true)
+            .is_empty());
+    }
+
+    #[test]
+    fn turned_off_starts_nothing_but_still_finishes_an_open_run() {
+        let runs = Runs::default();
+        assert!(runs
+            .observe("t", S::Starting, Harness::Claude, CWD, false)
+            .is_empty());
+        let id = started(&runs.observe("u", S::Starting, Harness::Claude, CWD, true));
+        assert_eq!(
+            runs.observe("u", S::Stopped, Harness::Claude, CWD, false),
+            vec![Op::Finish { id, failed: false }]
+        );
+    }
+
+    #[test]
+    fn a_run_is_sent_as_the_service_takes_it() {
+        let server = Server::start();
+        let id = "3b2f8c1e-6a4d-4e8b-9c1f-2d3e4f5a6b7c";
+        let patch = format!("PATCH /v1/runs/{id}");
+        server
+            .reply(TOKEN, 200, tokens("access-1", "refresh-2"))
+            .reply("POST /v1/runs", 201, serde_json::json!({ "id": id }))
+            .reply(&patch, 200, serde_json::json!({ "id": id }));
+        let account = signed_in(&server, "refresh-1");
+
+        let start = Op::Start {
+            id: id.into(),
+            harness: "claude_code",
+            name: "Claude Code session".into(),
+            project: "Anomaly".into(),
+        };
+        send(&account, &server.base, &start).unwrap();
+        let posted = &server.seen("POST /v1/runs")[0];
+        assert_eq!(posted.auth.as_deref(), Some("Bearer access-1"));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&posted.body).unwrap(),
+            serde_json::json!({
+                "id": id, "harness": "claude_code",
+                "name": "Claude Code session", "project": "Anomaly"
+            })
+        );
+
+        send(
+            &account,
+            &server.base,
+            &Op::Finish {
+                id: id.into(),
+                failed: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&server.seen(&patch)[0].body).unwrap(),
+            serde_json::json!({ "status": "failed", "tokens": null })
+        );
+    }
+
+    #[test]
+    fn signed_out_nothing_leaves_this_computer() {
+        let server = Server::start();
+        let account = Account::new(Box::<MemoryStore>::default());
+        let op = Op::Finish {
+            id: "x".into(),
+            failed: false,
+        };
+        assert_eq!(
+            send(&account, &server.base, &op),
+            Err(AccountError::SignedOut)
+        );
+        assert_eq!(send(&account, "", &op), Err(AccountError::NotConfigured));
+        assert!(server.seen("PATCH /v1/runs/x").is_empty());
+        assert!(server.seen(TOKEN).is_empty());
+    }
+}
+
+// --- The profile picture ------------------------------------------------------
+
+mod picture {
+    use super::*;
+
+    const PNG: &[u8] = &[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3];
+
+    #[test]
+    fn reads_the_picture_as_a_data_url_the_shell_can_draw() {
+        let server = Server::start();
+        server
+            .reply(TOKEN, 200, tokens("access-1", "refresh-2"))
+            .reply_raw("GET /v1/me/avatar", 200, "image/png", PNG);
+        let account = signed_in(&server, "refresh-1");
+        let url = account.picture(&server.base).unwrap();
+        assert_eq!(
+            url,
+            serde_json::json!("data:image/png;base64,iVBORw0KGgoBAgM=")
+        );
+        let seen = &server.seen("GET /v1/me/avatar")[0];
+        assert_eq!(seen.auth.as_deref(), Some("Bearer access-1"));
+    }
+
+    #[test]
+    fn none_set_is_null_and_anything_but_a_picture_is_refused() {
+        let server = Server::start();
+        server
+            .reply(TOKEN, 200, tokens("access-1", "refresh-2"))
+            .reply(
+                "GET /v1/me/avatar",
+                404,
+                serde_json::json!({ "type": "https://veistra.com/problems/no-avatar" }),
+            )
+            .reply_raw("GET /v1/me/avatar", 200, "text/html", b"<script></script>");
+        let account = signed_in(&server, "refresh-1");
+        assert_eq!(account.picture(&server.base), Ok(Value::Null));
+        let refused = account.picture(&server.base).unwrap_err();
+        assert!(refused.describe().contains("cannot show"), "{refused:?}");
+    }
+
+    #[test]
+    fn sets_it_as_json_and_removes_it_with_a_bare_delete() {
+        let server = Server::start();
+        server
+            .reply(TOKEN, 200, tokens("access-1", "refresh-2"))
+            .reply(
+                "PUT /v1/me/avatar",
+                200,
+                serde_json::json!({ "avatar": "3f9a2c41d0e8b7a6" }),
+            )
+            .reply_raw("DELETE /v1/me/avatar", 204, "application/json", b"");
+        let account = signed_in(&server, "refresh-1");
+        let body = serde_json::json!({ "image": "UklGRg==" });
+        let set = account
+            .write(&server.base, "PUT", "v1/me/avatar", &body)
+            .unwrap();
+        assert_eq!(set, serde_json::json!({ "avatar": "3f9a2c41d0e8b7a6" }));
+        let put = &server.seen("PUT /v1/me/avatar")[0];
+        assert_eq!(put.auth.as_deref(), Some("Bearer access-1"));
+        assert_eq!(serde_json::from_str::<Value>(&put.body).unwrap(), body);
+
+        let gone = account.write(&server.base, "DELETE", "v1/me/avatar", &Value::Null);
+        assert_eq!(gone, Ok(Value::Null));
+        let delete = &server.seen("DELETE /v1/me/avatar")[0];
+        assert_eq!(delete.auth.as_deref(), Some("Bearer access-1"));
+        assert_eq!(delete.body, "");
+    }
+
+    #[test]
+    fn signed_out_asks_for_nothing() {
+        let server = Server::start();
+        let account = Account::new(Box::<MemoryStore>::default());
+        assert_eq!(account.picture(&server.base), Err(AccountError::SignedOut));
+        assert!(server.seen("GET /v1/me/avatar").is_empty());
+    }
 }

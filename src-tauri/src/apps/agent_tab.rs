@@ -31,7 +31,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use veistra_agent_host::harness::installed_spec as spec;
 use veistra_agent_host::models::{self, Catalogue, Models};
 use veistra_agent_host::{
-    harness, AgentHost, Harness, HarnessInfo, HostError, LaunchSpec, Level, McpServer,
+    harness, AgentHost, Event, Harness, HarnessInfo, HostError, LaunchSpec, Level, McpServer,
     QuestionOutcome, Worktree, REGISTRY,
 };
 use veistra_rpc::{RpcError, INVALID_PARAMS, METHOD_NOT_FOUND};
@@ -360,6 +360,17 @@ impl Sessions {
             let emitter = app.clone();
             AgentHost::new(
                 Arc::new(move |envelope| {
+                    // A Claude Code or Codex session starting or stopping is
+                    // a run on the person's dashboard (`account::runs`).
+                    if let Event::Status { status } = &envelope.event {
+                        crate::account::runs::record(
+                            &emitter,
+                            &envelope.instance_id,
+                            status.state,
+                            status.harness,
+                            &status.cwd,
+                        );
+                    }
                     let _ = emitter.emit(EVENT, &envelope);
                 }),
                 Arc::new(|level, line| match level {

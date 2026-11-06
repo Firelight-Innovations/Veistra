@@ -1972,7 +1972,11 @@ function viewerFileRequest(
 
 /** The file a `FILE_TAB_APPS` app is asked to open, else `null`. */
 function fileTabRequest(appId: string, payload: unknown): string | null {
-  const field = Object.hasOwn(FILE_TAB_APPS, appId) ? FILE_TAB_APPS[appId] : undefined;
+  // An own key only, so an app id of "constructor" names no field. Not
+  // `Object.hasOwn`: tsconfig's lib is ES2020, where it does not exist.
+  const field = Object.prototype.hasOwnProperty.call(FILE_TAB_APPS, appId)
+    ? FILE_TAB_APPS[appId]
+    : undefined;
   if (!field || typeof payload !== "object" || payload === null) return null;
   const file = (payload as Record<string, unknown>)[field];
   return typeof file === "string" && file !== "" ? file : null;
