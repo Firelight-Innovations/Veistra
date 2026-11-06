@@ -185,6 +185,65 @@ describe("Settings → Usage", () => {
     expect(screen.queryByRole("meter")).toBeNull();
   });
 
+  it("draws the plan's credits above the limit, which then counts spend past them", async () => {
+    signedIn();
+    const answer = bindings.accountCall.getMockImplementation()!;
+    const pro: Usage = {
+      ...usage,
+      plan: {
+        id: "pro",
+        name: "Pro",
+        price_micros: 10_000_000,
+        included_micros: 10_000_000,
+        used_micros: 10_000_000,
+        remaining_micros: 0,
+        resets: "2026-12-01",
+      },
+      limit: { ...usage.limit!, spent_this_period_micros: 8_400_000 },
+    };
+    bindings.accountCall.mockImplementation((method: string, params?: unknown) =>
+      method === "account/usage" ? Promise.resolve(pro) : answer(method, params),
+    );
+    render(<UsagePanel />);
+    await screen.findByText("Included with Pro");
+    expect(screen.getByRole("meter", { name: "Included credits used" })).toBeTruthy();
+    expect(screen.getByText("100% used")).toBeTruthy();
+    expect(screen.getByText(/\$8\.40 of \$50\.00 past your credits/)).toBeTruthy();
+    expect(screen.getByText("17% used")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Your Pro credits are used, and you've spent $8.40 of your $50.00 monthly limit, $41.60 left.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("draws no credits for a plan that includes none", async () => {
+    signedIn();
+    const answer = bindings.accountCall.getMockImplementation()!;
+    const beta: Usage = {
+      ...usage,
+      plan: {
+        id: "beta",
+        name: "Beta",
+        price_micros: 0,
+        included_micros: 0,
+        used_micros: 0,
+        remaining_micros: 0,
+        resets: "2026-12-01",
+      },
+    };
+    bindings.accountCall.mockImplementation((method: string, params?: unknown) =>
+      method === "account/usage" ? Promise.resolve(beta) : answer(method, params),
+    );
+    render(<UsagePanel />);
+    await screen.findByText("Generate crate variants");
+    expect(screen.queryByText(/^Included with/)).toBeNull();
+    expect(screen.getAllByRole("meter")).toHaveLength(1);
+    expect(
+      screen.getByText("You've spent $18.40 of your $50.00 monthly limit, $31.60 left."),
+    ).toBeTruthy();
+  });
+
   it("shows an alert the dashboard turned off as no alert", async () => {
     signedIn();
     const answer = bindings.accountCall.getMockImplementation()!;

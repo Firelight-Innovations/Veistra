@@ -4,9 +4,8 @@
  * so the title bar's account button and Settings' account header and Profile
  * row cannot draw three different circles for one account.
  *
- * The account service sends no picture today (`GET /v1/me` is a name, an
- * email and a workspace), so `src` is null at every caller; the slot is here
- * so the day it sends one, nothing but the caller changes.
+ * `src` is the profile picture as `useAccount` holds it: a `data:` URL,
+ * since an `<img>` cannot send the account's token itself.
  */
 import { UserRound } from "lucide-react";
 import "./ui.css";

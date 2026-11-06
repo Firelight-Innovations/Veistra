@@ -137,10 +137,25 @@ All take `Authorization: Bearer <access token>`.
 
 ```json
 {
-  "user": { "id": "…", "email": "b@example.com", "name": "Braden Seaborn" },
+  "user": {
+    "id": "…", "email": "b@example.com", "name": "Braden Seaborn",
+    "avatar": "3f9a2c41d0e8b7a6"
+  },
   "workspace": { "id": "…", "name": "Personal workspace", "plan": "beta" }
 }
 ```
+
+`avatar` is the profile picture's version, or `null` with none. A service older than pictures
+leaves it out, which reads as none.
+
+### `GET /v1/me/avatar`
+
+The picture's bytes, `image/png`, `image/jpeg` or `image/webp`; `404` (`no-avatar`) with none.
+An `<img>` in the webview cannot send the bearer token, so `account/avatar` reads it in Rust and
+answers a `data:` URL, or `null` for the `404` (`wire::get_picture`). Any other type is refused,
+not drawn. The shell reads it once per `avatar` version, when `account/me` names a new one
+(`src/shell/account/useAccount.ts`), and draws it in the title bar, Settings' account header and
+Settings → Account → Profile, where `Avatar` falls back to the initials.
 
 ### `GET /v1/usage?range=period|7d|30d[&project=<name>]`
 
@@ -162,9 +177,14 @@ All take `Authorization: Bearer <access token>`.
   },
   "daily": [{ "day": "2026-11-01", "source": "veistra_harness", "cost_micros": 300000 }],
   "projects": ["Anomaly", "Torn Apart"],
+  "plan": {
+    "id": "pro", "name": "Pro", "price_micros": 10000000,
+    "included_micros": 10000000, "used_micros": 10000000, "remaining_micros": 0,
+    "resets": "2026-12-01"
+  },
   "limit": {
     "monthly_limit_micros": 50000000,
-    "spent_this_period_micros": 18400000,
+    "spent_this_period_micros": 8400000,
     "alert_pct": 80,
     "pause_at_limit": true,
     "projected_date": "2026-11-14"
@@ -173,11 +193,18 @@ All take `Authorization: Bearer <access token>`.
 }
 ```
 
-`limit` is `null` when the workspace has no limit. `limit.alert_pct` is `null` when the 80% email
+`plan` is the workspace's plan and this month's included credits, whatever the range. Included
+credits pay for billed usage first and reset with the month; the beta plan includes none and
+answers zeros. Optional: a service older than plans leaves it out, and the app reads that as no
+credits.
+
+`limit` is `null` when the workspace has no limit. It caps only spend past the plan's credits, so
+`spent_this_period_micros` is the month's spend minus what the credits paid for (above, 18.40
+spent, 10.00 of it from credits). `limit.alert_pct` is `null` when the 80% email
 is off, which the dashboard can do; Settings → Usage then says "No spend alert". `projected_date`
-is computed by the server (remaining budget over the last 7 days' average daily spend) and is
-`null` with fewer than 3 days of spend or when it falls after the billing period, so the web and
-the app never disagree about it. The app never recomputes it.
+is computed by the server (what is left of the credits and the limit together, over the last 7
+days' average daily spend) and is `null` with fewer than 3 days of spend or when it falls after
+the billing period, so the web and the app never disagree about it. The app never recomputes it.
 
 Days are UTC calendar days, and `period` is the current UTC month. `7d` and `30d` end today and
 include it. `by_source` lists only sources with spend in the range, and `daily` only days with
@@ -205,29 +232,56 @@ Newest first.
 
 `harness` is one of `veistra_harness`, `claude_code`, `codex`, `cloud_worker`, `gpu_render`.
 `status` is `running`, `finished` or `failed`. `billed: false` rows (own Claude, own Codex) show
-"Your plan" in place of a cost. `limit` defaults to 20 and is capped at 100; `next_cursor` is
+"Your plan" in place of a cost: they never use a plan's credits and never count against the
+limit. `limit` defaults to 20 and is capped at 100; `next_cursor` is
 opaque, and a cursor the service did not send is `400`. The runs are the newest of every range:
 this endpoint takes a project, not dates.
 
-## Not yet sent by the app
+## Writes
 
 ### `POST /v1/runs`, `PATCH /v1/runs/{id}`
 
-Served, and not yet called: the app does not record runs yet, so `unbilled_runs` and the runs
-table stay empty until it does. Deciding what one run is (an agent tab's send, its session, a
-terminal agent) comes first. As the service takes them:
+The app records each Claude Code and Codex session as one run, so they show in `unbilled_runs`
+and the runs list here and on the dashboard (`src-tauri/src/account/runs.rs`). One run is one
+agent session: from the harness process starting in an agent tab to its stopping, as the agent
+host reports each session's state. A Veistra harness session is not sent; billed work is metered
+by the service, never reported by a client. Rejected: a run per prompt, which counted every
+message of a conversation as a run.
 
 - Bearer token and a JSON body. A cookie is refused, so the website cannot write a run.
-- `POST` body: `{"id": "<UUID the app chooses>", "name": "…", "project": "…", "harness":
-  "claude_code" | "codex"}`. The service sets `started_at` and `status: "running"`, and answers
-  `201` with the run in the `/v1/runs` shape. The same `id` again answers the same run, so a retry
-  after a lost reply is still one run; there is no `Idempotency-Key` header. Another workspace's
-  `id` is `409`.
-- A billed harness is `400`: a client never states a cost. Billed runs come from the service's own
-  meters.
-- `PATCH` body: `{"status": "finished" | "failed", "tokens": 560000 | null}`. Answers the run. A
-  billed run, or another workspace's, is `404`.
+- `POST` when the session starts: `{"id": "<UUID the app chooses>", "name": "Claude Code session"
+  | "Codex session", "project": "<the working folder's name>", "harness": "claude_code" |
+  "codex"}`. Never a prompt, the session's title (the agent writes it from the prompts) or a
+  path. The service sets `started_at` and `status: "running"`, and answers `201` with the run in
+  the `/v1/runs` shape. The same `id` again answers the same run, so a retry after a lost reply
+  is still one run; there is no `Idempotency-Key` header. Another workspace's `id` is `409`.
+- A billed harness is `400`: a client never states a cost.
+- `PATCH` when it stops: `{"status": "finished" | "failed", "tokens": null}`. The agent host
+  reports a session's context size, not tokens used, so the app sends none. A tab that switches
+  harness finishes the old run before it starts the new one. A billed run, or another
+  workspace's, is `404`.
+- Best effort, on a thread of its own: signed out or offline, the run is not sent and not
+  retried. A run open when Veistra quits stays `running`.
+- Settings → Usage → "Show Claude Code and Codex sessions on your dashboard" (`runs.record`, on by
+  default) stops new runs; an open one still finishes.
 - Run writes have their own budget per device.
+
+### `PUT /v1/me/avatar`, `DELETE /v1/me/avatar`
+
+Settings → Account → Profile → Change photo, and Remove.
+
+- The webview center-crops the picked file to a square, shrinks it to 256 pixels and re-encodes
+  it as WebP, or JPEG where it cannot encode WebP (`src/shell/account/picture.ts`, as the
+  website's `picture.ts` does). `account/set-avatar` sends `{"image": "<base64>"}`, with no
+  `data:` prefix, and answers `{"avatar": "<version>"}`. The shell draws the picture it sent and
+  reads nothing back.
+- The service reads the type from the bytes' own header and refuses anything but PNG, JPEG or
+  WebP (`400 bad-image`), over 1024 pixels a side (`400`), or over 128 KB (`413 too-large`). The
+  shell shows `detail`.
+- `account/remove-avatar` sends a `DELETE` with no body and gets `204`.
+- Bearer token. Ten changes a minute per person.
+
+## Not yet sent by the app
 
 ### The gateway
 

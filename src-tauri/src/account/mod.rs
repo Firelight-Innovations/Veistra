@@ -18,6 +18,7 @@
 //! sees [`Status`], which has a name and an email and nothing else.
 
 pub mod methods;
+pub mod runs;
 pub mod wire;
 
 use crate::cloud::google::SecretStore;
@@ -488,10 +489,41 @@ impl Account {
     /// A GET on the account service as the signed-in person. A 401 drops the
     /// access token and tries once more with a fresh one.
     pub fn get(&self, api: &str, path: &str) -> Result<Value, AccountError> {
+        self.authorized(api, path, &|url, token| wire::get(url, token))
+    }
+
+    /// The profile picture as a `data:` URL, or null with none; see
+    /// [`wire::get_picture`].
+    pub fn picture(&self, api: &str) -> Result<Value, AccountError> {
+        self.authorized(api, "v1/me/avatar", &|url, token| {
+            wire::get_picture(url, token)
+        })
+    }
+
+    /// A write (`POST`, `PUT`, `PATCH` or `DELETE`) as the signed-in person,
+    /// with the same one retry as [`get`](Self::get).
+    pub fn write(
+        &self,
+        api: &str,
+        method: &str,
+        path: &str,
+        body: &Value,
+    ) -> Result<Value, AccountError> {
+        self.authorized(api, path, &|url, token| {
+            wire::send_json(method, url, token, body)
+        })
+    }
+
+    fn authorized(
+        &self,
+        api: &str,
+        path: &str,
+        send: &dyn Fn(&str, &str) -> Result<Value, Failure>,
+    ) -> Result<Value, AccountError> {
         let url = wire::url(api, path);
         for attempt in 0..2 {
             let token = self.access_token(api)?;
-            match wire::get(&url, &token) {
+            match send(&url, &token) {
                 Ok(value) => return Ok(value),
                 Err(Failure::Unauthorized) if attempt == 0 => *lock(&self.access) = None,
                 Err(Failure::Unauthorized) => return Err(AccountError::SignedOut),

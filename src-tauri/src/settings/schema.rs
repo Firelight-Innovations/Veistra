@@ -31,6 +31,7 @@ pub mod keys {
     pub const CLOUD_GATEWAY_URL: &str = "cloud.gatewayUrl";
     pub const ACCOUNT_API_URL: &str = "account.apiUrl";
     pub const ACCOUNT_WEB_URL: &str = "account.webUrl";
+    pub const RUNS_RECORD: &str = "runs.record";
     pub const MCP_WRITE_PROJECT_CONFIG: &str = "mcp.writeProjectConfig";
     pub const UPDATES_CHECK_AUTOMATICALLY: &str = "updates.checkAutomatically";
     pub const DEVELOPER_MODE: &str = "developer.mode";
@@ -57,6 +58,7 @@ static GROUPS: &[&Group] = &[
     &GITHUB,
     &CLOUD,
     &ACCOUNT,
+    &RUNS,
     &UPDATES,
     &TELEMETRY,
     &MCP,
@@ -731,6 +733,30 @@ static ACCOUNT_SETTINGS: &[Setting] = &[
     },
 ];
 
+// Claude Code and Codex sessions on the person's dashboard
+// (`crate::account::runs`). Beside Usage, where the runs show, not with the
+// account service's addresses under Developer.
+static RUNS_SETTINGS: &[Setting] = &[Setting {
+    key: keys::RUNS_RECORD,
+    title: "Show Claude Code and Codex sessions on your dashboard",
+    description: "Each session counts as one run in Usage and on veistra.com. They run on \
+                      your own Claude or ChatGPT plan, so Veistra never bills them. Sent: the \
+                      harness and the working folder's name, never a prompt.",
+    control: Control::Toggle { default: true },
+    applies: Applies::Next {
+        what: "the next agent session",
+    },
+}];
+
+static RUNS: Group = Group {
+    id: "runs",
+    title: "Claude Code and Codex",
+    description:
+        "Sessions on your own Claude or ChatGPT plan, counted on your dashboard and never billed.",
+    order: 49,
+    settings: RUNS_SETTINGS,
+};
+
 static ACCOUNT: Group = Group {
     id: "account",
     title: "Account",
@@ -1064,6 +1090,7 @@ mod tests {
             (keys::CLOUD_GATEWAY_URL, "string"),
             (keys::ACCOUNT_API_URL, "string"),
             (keys::ACCOUNT_WEB_URL, "string"),
+            (keys::RUNS_RECORD, "bool"),
             (keys::MCP_WRITE_PROJECT_CONFIG, "bool"),
             (keys::UPDATES_CHECK_AUTOMATICALLY, "bool"),
             (keys::DEVELOPER_MODE, "bool"),
