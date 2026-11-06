@@ -179,6 +179,32 @@ impl Godot {
     }
 }
 
+/// The variable an agent session finds the Godot executable in, so it can run
+/// and check the game it builds (`skills/finish-godot-game`). Veistra finds
+/// Godot in places a shell does not look (its setting, install folders, Steam),
+/// so without this an agent could only hope Godot was on PATH.
+pub const AGENT_ENV: &str = "VEISTRA_GODOT";
+
+/// [`AGENT_ENV`] for `found`: the build that keeps a console, because a
+/// GUI-subsystem `godot.exe` writes nothing an agent's shell can read.
+pub fn agent_env(found: &detect::Found) -> (String, String) {
+    (
+        AGENT_ENV.to_string(),
+        found.for_logging().to_string_lossy().into_owned(),
+    )
+}
+
+/// The Godot executable as the Godot app would find it: by the setting, then
+/// the machine, answered from [`Godot`]'s memory once anything has found it.
+pub fn find_live(app: &tauri::AppHandle) -> Option<detect::Found> {
+    use tauri::Manager;
+    let setting = crate::settings::text(app, KEY_EXECUTABLE_PATH);
+    let check = |p: &std::path::Path| detect::ask_version(p, std::time::Duration::from_secs(10));
+    app.state::<Godot>()
+        .executable(&detect::Probe::from_system(&setting), false, &check)
+        .found
+}
+
 /// The folder run channels and scratch files live in. The OS temp directory,
 /// never the project: a channel is throwaway, and writing it into a checkout
 /// would be a change to a repository nobody asked for.
@@ -216,6 +242,23 @@ mod tests {
         probe.setting = String::new();
         assert!(godot.executable(&probe, false, &check).found.is_none());
         assert_eq!(calls.get(), 2, "nothing to try, so nothing is asked");
+    }
+
+    #[test]
+    fn an_agent_is_handed_the_console_build_when_there_is_one() {
+        let found = |console: Option<&str>| detect::Found {
+            path: PathBuf::from("C:/Godot/Godot_v4.5-stable_win64.exe"),
+            source: detect::Source::Common,
+            version: "4.5.stable".into(),
+            major: 4,
+            minor: 5,
+            console: console.map(PathBuf::from),
+        };
+        let (key, value) = agent_env(&found(Some("C:/Godot/Godot_v4.5-stable_win64_console.exe")));
+        assert_eq!(key, "VEISTRA_GODOT");
+        assert_eq!(value, "C:/Godot/Godot_v4.5-stable_win64_console.exe");
+        let (_, value) = agent_env(&found(None));
+        assert_eq!(value, "C:/Godot/Godot_v4.5-stable_win64.exe");
     }
 
     #[test]

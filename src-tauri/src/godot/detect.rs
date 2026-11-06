@@ -522,6 +522,28 @@ pub fn find_projects(root: &Path) -> Vec<GodotProject> {
     dirs.into_iter().map(|dir| describe(root, dir)).collect()
 }
 
+/// Whether `root` holds any Godot work: a `project.godot`, a script or a
+/// scene, looked for where [`find_projects`] looks. A folder of `.gd` files
+/// with no project counts, because that is what an agent asked for a game
+/// left behind before the `finish-godot-game` skill (`crate::skills`).
+pub fn has_godot_sources(root: &Path) -> bool {
+    let mut found = false;
+    walk(root, 0, &mut |dir| {
+        if found {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        found = entries.flatten().any(|entry| {
+            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+            let godot = name == "project.godot" || name.ends_with(".gd") || name.ends_with(".tscn");
+            godot && entry.file_type().is_ok_and(|t| t.is_file())
+        });
+    });
+    found
+}
+
 fn walk(dir: &Path, depth: usize, visit: &mut dyn FnMut(&Path)) {
     visit(dir);
     if depth >= MAX_DEPTH {
@@ -833,6 +855,28 @@ mod tests {
             found[1].name, "game",
             "a project with no name takes its folder's"
         );
+    }
+
+    #[test]
+    fn godot_sources_are_a_project_a_script_or_a_scene_outside_skipped_folders() {
+        let dir = TempDir::new().unwrap();
+        assert!(!has_godot_sources(dir.path()), "an empty folder");
+        touch(&dir.path().join("README.md"));
+        touch(&dir.path().join("addons/veistra/plugin.gd"));
+        touch(&dir.path().join(".godot/editor/x.tscn"));
+        touch(&dir.path().join("node_modules/pkg/y.gd"));
+        assert!(
+            !has_godot_sources(dir.path()),
+            "only skipped folders hold any"
+        );
+        for found in ["scripts/player.gd", "levels/one.tscn", "game/project.godot"] {
+            let dir = TempDir::new().unwrap();
+            touch(&dir.path().join(found));
+            assert!(has_godot_sources(dir.path()), "{found}");
+        }
+        let deep = TempDir::new().unwrap();
+        touch(&deep.path().join("a/b/c/d/e/too_deep.gd"));
+        assert!(!has_godot_sources(deep.path()), "below MAX_DEPTH");
     }
 
     #[test]

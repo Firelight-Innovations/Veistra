@@ -20,6 +20,14 @@ before it is built.
    (Elijah's game, for example), an agent writes the scripts and stops: there is
    no built, runnable result at the end. The deliverable should be the artifact
    itself, not only the code that would produce it.
+   *In progress.* Elijah's agent (agent tab, Claude, developer mode off, a
+   prompt naming Godot, an empty folder) left only `.gd` files: no scene and no
+   main scene, though both are text it could write. That is guidance, so the
+   first fix is the `finish-godot-game` built-in skill, plus `VEISTRA_GODOT` so
+   the agent can import, check (`scripts/check_game.gd`), run and capture its
+   game from its own shell. Still open, pending Braden: tools any agent can
+   call to run the game in the Play pane, read its log and capture a frame, and
+   the same treatment for Blender assets.
 
 ## Done
 

@@ -38,6 +38,7 @@ pub mod keys {
     pub const KEYS_COPILOT_GLOBAL: &str = "keys.copilotGlobal";
     /// Named after the skill's folder, so `skills.rs` can find a skill's key.
     pub const SKILLS_AGENT_READY_CANVAS: &str = "skills.agent-ready-canvas";
+    pub const SKILLS_FINISH_GODOT_GAME: &str = "skills.finish-godot-game";
 }
 
 /// Every group the shell itself registers, in no particular order — `Group::order`
@@ -868,38 +869,67 @@ static MCP: Group = Group {
 // session starts, and by `skills::sync` when it changes. The panel above the
 // rows (`BuiltInSkillsPanel.tsx`) draws each row inside its skill's card.
 
-static SKILL_MODES: &[SelectOption] = &[
-    SelectOption {
-        value: "auto",
-        label: "Auto",
-        description: "On for canvas work: the project has canvas files, the prompt names a \
-                      canvas, or a Design pane is open in the cluster.",
+/// A skill's three modes, `auto` described by `when`: what makes a session
+/// the skill's kind of work (`skills::Trigger`).
+const fn skill_modes(when: &'static str) -> [SelectOption; 3] {
+    [
+        SelectOption {
+            value: "auto",
+            label: "Auto",
+            description: when,
+        },
+        SelectOption {
+            value: "on",
+            label: "On",
+            description: "Every agent session gets it.",
+        },
+        SelectOption {
+            value: "off",
+            label: "Off",
+            description: "No session gets it, and Veistra removes the copies it installed.",
+        },
+    ]
+}
+
+static CANVAS_SKILL_MODES: [SelectOption; 3] = skill_modes(
+    "On for canvas work: the project has canvas files, the prompt names a canvas, or a Design \
+     pane is open in the cluster.",
+);
+
+static GODOT_SKILL_MODES: [SelectOption; 3] = skill_modes(
+    "On for Godot work: the project has a project.godot, a script or a scene, the prompt names \
+     Godot, or the Godot app is open in the cluster.",
+);
+
+static SKILLS_SETTINGS: &[Setting] = &[
+    Setting {
+        key: keys::SKILLS_AGENT_READY_CANVAS,
+        title: "agent-ready-canvas",
+        description: "Builds canvases out of named frames and groups, so a click or a comment \
+                      hands an agent whole objects.",
+        control: Control::Select {
+            default: "auto",
+            options: &CANVAS_SKILL_MODES,
+        },
+        applies: Applies::Next {
+            what: "the next agent session",
+        },
     },
-    SelectOption {
-        value: "on",
-        label: "On",
-        description: "Every agent session gets it.",
-    },
-    SelectOption {
-        value: "off",
-        label: "Off",
-        description: "No session gets it, and Veistra removes the copies it installed.",
+    Setting {
+        key: keys::SKILLS_FINISH_GODOT_GAME,
+        title: "finish-godot-game",
+        description: "Has an agent asked for a Godot game finish one you can play: scenes that \
+                      use its scripts, a main scene, and a run it checked itself before saying \
+                      it is done.",
+        control: Control::Select {
+            default: "auto",
+            options: &GODOT_SKILL_MODES,
+        },
+        applies: Applies::Next {
+            what: "the next agent session",
+        },
     },
 ];
-
-static SKILLS_SETTINGS: &[Setting] = &[Setting {
-    key: keys::SKILLS_AGENT_READY_CANVAS,
-    title: "agent-ready-canvas",
-    description: "Builds canvases out of named frames and groups, so a click or a comment hands \
-                  an agent whole objects.",
-    control: Control::Select {
-        default: "auto",
-        options: SKILL_MODES,
-    },
-    applies: Applies::Next {
-        what: "the next agent session",
-    },
-}];
 
 static SKILLS: Group = Group {
     id: "skills",
@@ -1038,6 +1068,7 @@ mod tests {
             (keys::UPDATES_CHECK_AUTOMATICALLY, "bool"),
             (keys::DEVELOPER_MODE, "bool"),
             (keys::SKILLS_AGENT_READY_CANVAS, "string"),
+            (keys::SKILLS_FINISH_GODOT_GAME, "string"),
         ] {
             let value = registry
                 .get(key)

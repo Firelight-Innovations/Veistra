@@ -87,8 +87,10 @@ The agent tab is a chat with a coding agent, built into the window. Pick a
 harness (Veistra's own, Claude or Codex) and a mode before the session starts,
 and Veistra can install a harness you are missing from the tab itself.
 Type `@` to attach files and other context as chips, use slash commands with
-autocomplete, rename sessions, and reopen previous ones. Built-in skills, such
-as the one for drawing canvas designs, can be switched on in Settings.
+autocomplete, rename sessions, and reopen previous ones. Built-in skills switch
+on by themselves for the work they cover: one structures canvas designs, and one
+has an agent asked for a Godot game finish a game you can play, with a main
+scene it has run and looked at. Settings decides when each one is on.
 
 ### Design canvas
 
