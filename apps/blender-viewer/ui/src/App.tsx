@@ -68,7 +68,7 @@ import EditorMode from "./editor/EditorMode";
 import { EXPORT_VIEWS, modesFor, viewFor, type BlenderMode, type ExportView } from "./modes";
 import { exportChip, hasExport } from "./chip";
 import { footerIsCompact } from "./layout";
-import { reconcileBlend, selectionWasDropped } from "./selection";
+import { openedBlend, reconcileBlend, selectionWasDropped } from "./selection";
 import {
   dragContext,
   keepMarkup,
@@ -151,9 +151,15 @@ function message(err: unknown): string {
 export default function App() {
   const [mode, setMode] = useState<BlenderMode>("editor");
   const [view, setView] = useState<ExportView>(viewFor("editor"));
-  const { frameRect, overlays } = useShellPlacement();
+  const { frameRect } = useShellPlacement();
   const [state, setState] = useState<BlenderViewerState | null>(null);
   const [blend, setBlend] = useState<string | null>(null);
+  /**
+   * A `.blend` the shell opened this tab on (`{ blend }`, from the Explorer),
+   * until a poll for it answers: Editor mode holds its open on mount till
+   * then, or Blender would start on the environment's default file first.
+   */
+  const [asked, setAsked] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [images, setImages] = useState<Record<string, string>>({});
   const [auto, setAuto] = useState(readAuto);
@@ -177,11 +183,18 @@ export default function App() {
   const offerReveal = reveal.offer;
 
   // A chip clicked in the agent tab opens this pane with a reveal: Editor
-  // mode shows it in Blender.
+  // mode shows it in Blender. A `.blend` opened from the Explorer comes as
+  // `{ blend }`, and is the file this tab's Blender opens on.
   useEffect(
     () =>
       on(OPENED_EVENT, (p) => {
-        if (!offerReveal(p)) return;
+        const file = openedBlend(p);
+        if (file) {
+          setBlend(file);
+          setAsked(file);
+        } else if (!offerReveal(p)) {
+          return;
+        }
         setMode("editor");
         setView(viewFor("editor"));
       }),
@@ -229,6 +242,8 @@ export default function App() {
     try {
       const next = await getState(blend);
       setState(next);
+      // Whatever the host made of the asked-for file, it has now said.
+      if (blend !== null) setAsked((a) => (a === blend ? null : a));
       // The host answers with the file it resolved. After a project switch the
       // old path no longer resolves, so drop it and everything hung off it.
       if (selectionWasDropped(blend, next)) {
@@ -456,8 +471,8 @@ export default function App() {
         modeSwitch={modeSwitch}
         viewer={state}
         onPick={setBlend}
+        loading={asked !== null}
         frameRect={frameRect}
-        overlays={overlays}
         onCompare={(n) => {
           setCompareB(n);
           setMode("compare");

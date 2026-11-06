@@ -187,10 +187,14 @@ impl Editors {
 /// so it never shows as a window of its own before it becomes the pane's
 /// child. Without it, the editor's own decorated window showed over the pane
 /// for a second or more first, and grew to the editor's floor size.
+///
+/// `scene`, a `res://` scene, is the one the editor opens on: a scene opened
+/// from the Explorer, which needs no plugin to show this way.
 pub fn launch_args(
     project: &Path,
     at: Option<LaunchRect>,
     wid: Option<isize>,
+    scene: Option<&str>,
     channel: &Path,
 ) -> Vec<String> {
     let mut args: Vec<String> = ["--editor", "--single-window", "--path"]
@@ -209,6 +213,9 @@ pub fn launch_args(
     if let Some(hwnd) = wid {
         args.push("--wid".into());
         args.push(hwnd.to_string());
+    }
+    if let Some(scene) = scene {
+        args.push(scene.to_string());
     }
     args.push("--".into());
     args.push(format!("--veistra-editor-dir={}", channel.display()));
@@ -324,6 +331,13 @@ fn open(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
              Open a worktree to edit there.",
         ));
     }
+    let scene = p.scene.as_deref();
+    if let Some(scene) = scene.filter(|s| !rpc::valid_scene(s)) {
+        return Err(RpcError::new(
+            INVALID_PARAMS,
+            format!("`{scene}` is not a res:// scene"),
+        ));
+    }
     let found = rpc::require_engine(ctx)?;
     let project = rpc::pick_project_for(ctx, p.project.as_deref())?;
     godot_4(&project)?;
@@ -362,7 +376,7 @@ fn open(ctx: &Ctx, p: &Params) -> Result<Value, RpcError> {
     // beside the editor, and nothing here reads the editor's output.
     let child = rpc::detached(
         &found.path,
-        &launch_args(&project.dir, at, wid, &channel),
+        &launch_args(&project.dir, at, wid, scene, &channel),
         &project.dir,
     )
     .env(DIR_ENV, &channel)

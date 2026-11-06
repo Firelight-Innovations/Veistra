@@ -68,6 +68,25 @@ export function resolveViewerTarget(
   return { kind: "new", paneId: newViewerPane(layout) };
 }
 
+/**
+ * Where a file goes in an app that runs one editor per file (Blender): the
+ * tab already on it, else a new tab. Never an existing tab on another file,
+ * nor an "empty" one: that tab's editor may have a file of its own open, and
+ * taking it over would mean closing that. `viewerIds` here are the app's
+ * instances; the new tab lands where a new viewer would.
+ */
+export function resolveFileTabTarget(
+  layout: TargetLayout,
+  path: string,
+): Exclude<ViewerTarget, { kind: "reuse" }> {
+  const want = normalizePath(path);
+  for (const id of layout.viewerIds) {
+    const subject = layout.subjectOf(id);
+    if (subject && normalizePath(subject.path) === want) return { kind: "focus", id };
+  }
+  return { kind: "new", paneId: newViewerPane(layout) };
+}
+
 function paneOf(layout: TargetLayout, id: string): string | undefined {
   return layout.panes.find((pane) => pane.tabs.includes(id))?.id;
 }

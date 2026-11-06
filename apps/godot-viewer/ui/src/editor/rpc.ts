@@ -98,8 +98,9 @@ export interface PluginStatus {
   readOnly: boolean;
 }
 
-export const openEditor = (project?: string) =>
-  invoke<EditorState>("godot/editor-open", { project });
+/** `scene`, a `res://` scene, is the one the editor starts on. */
+export const openEditor = (project?: string, scene?: string) =>
+  invoke<EditorState>("godot/editor-open", scene ? { project, scene } : { project });
 
 /** The poll; `eventsSince` is the last dock event the pane has taken. */
 export const editorState = (eventsSince = 0) =>

@@ -85,9 +85,87 @@ pub fn read(root: &Path, rel: &str) -> Option<Lock> {
     serde_json::from_str(&raw).ok()
 }
 
-/// The lock on `rel` if its holder still runs. A stale one is removed.
+/// The lock on `rel` if its holder still runs. A stale one is removed, and so
+/// is one whose holder is [`abandoned`], which is ended first.
 pub fn live(root: &Path, rel: &str) -> Option<Lock> {
-    live_with(root, rel, &process_start)
+    let lock = live_with(root, rel, &process_start)?;
+    if !abandoned(&lock) {
+        return Some(lock);
+    }
+    crate::veistra_log!(
+        "blender: ending process {}, a Blender on {rel} whose window went with an earlier Veistra",
+        lock.pid
+    );
+    end_tree(lock.pid);
+    if let Some(path) = lock_path(root, rel) {
+        let _ = std::fs::remove_file(path);
+    }
+    None
+}
+
+/// The Veistra that started the lock's Blender: its channel folder is named
+/// `<cluster>-<veistra pid>-<n>` (`editor::fresh_channel`).
+pub fn veistra_pid(lock: &Lock) -> Option<u32> {
+    let channel = lock.channel.as_deref()?;
+    let name = Path::new(channel).file_name()?.to_str()?;
+    let mut parts = name.rsplitn(3, '-');
+    let _n: u64 = parts.next()?.parse().ok()?;
+    let pid = parts.next()?.parse().ok()?;
+    parts.next()?;
+    Some(pid)
+}
+
+/// Whether the lock's Blender is one an earlier Veistra placed in a pane and
+/// lost: that Veistra has exited, and the Blender has no window left. A
+/// Blender in a pane is a child of Veistra's window, so when that Veistra is
+/// ended without handing it back (a crash, or `tauri dev` rebuilding), Windows
+/// destroys Blender's window with it. The process stays, holding the file,
+/// and nothing can reach its work. A Blender with any window of its own, or
+/// one this Veistra or another running one started, is never abandoned.
+fn abandoned(lock: &Lock) -> bool {
+    abandoned_with(
+        lock,
+        std::process::id(),
+        &crate::godot::session::is_running,
+        &|pid| {
+            let tree = crate::godot::session::process_tree(pid);
+            crate::embed::sys::find_window(&tree, crate::embed::Kind::Blender).is_some()
+        },
+    )
+}
+
+fn abandoned_with(
+    lock: &Lock,
+    me: u32,
+    running: &dyn Fn(u32) -> bool,
+    has_window: &dyn Fn(u32) -> bool,
+) -> bool {
+    // Off Windows nothing is placed as a child, and no window is found either.
+    if !crate::embed::SUPPORTED {
+        return false;
+    }
+    let Some(starter) = veistra_pid(lock) else {
+        return false;
+    };
+    starter != me && !running(starter) && !has_window(lock.pid)
+}
+
+/// End `pid` and everything it started.
+fn end_tree(pid: u32) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let ended = std::process::Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+        if let Err(e) = ended {
+            crate::veistra_log!("blender: could not end process {pid}: {e}");
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = pid;
 }
 
 fn live_with(root: &Path, rel: &str, start_of: &dyn Fn(u32) -> Option<u64>) -> Option<Lock> {
@@ -358,6 +436,54 @@ mod tests {
         let chair = env.path().join("props/chair.blend");
         std::fs::write(&chair, b"BLENDER").unwrap();
         assert_eq!(live_above_with(&chair, &table), None);
+    }
+
+    fn held_by(channel: Option<&str>) -> Lock {
+        Lock {
+            version: VERSION,
+            file: "chair.blend".into(),
+            pid: 10,
+            process_start: 1000,
+            since: 0,
+            cluster: Some("cluster-13".into()),
+            channel: channel.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn the_starting_veistra_is_read_from_the_channel_folder() {
+        let dir = Path::new("C:/tmp/veistra-blender/blender-editor/cluster_13-37364-1");
+        let lock = held_by(Some(&dir.display().to_string()));
+        assert_eq!(veistra_pid(&lock), Some(37364));
+        assert_eq!(veistra_pid(&held_by(Some("C:/tmp/odd"))), None);
+        assert_eq!(veistra_pid(&held_by(Some("C:/tmp/a-b-1"))), None);
+        assert_eq!(veistra_pid(&held_by(None)), None);
+    }
+
+    /// The Blender that held chair.blend after a `tauri dev` rebuild: its
+    /// Veistra gone, its window destroyed with Veistra's, the file locked.
+    #[cfg(windows)]
+    #[test]
+    fn a_windowless_blender_of_an_exited_veistra_is_abandoned_and_nothing_else_is() {
+        let lock = held_by(Some("C:/t/blender-editor/cluster_13-37364-1"));
+        let gone = |_: u32| false;
+        let alive = |_: u32| true;
+        let none = |_: u32| false;
+        let one = |_: u32| true;
+        assert!(abandoned_with(&lock, 1, &gone, &none));
+        assert!(
+            !abandoned_with(&lock, 1, &gone, &one),
+            "it still has a window"
+        );
+        assert!(!abandoned_with(&lock, 1, &alive, &none), "its Veistra runs");
+        assert!(
+            !abandoned_with(&lock, 37364, &gone, &none),
+            "this Veistra started it"
+        );
+        assert!(
+            !abandoned_with(&held_by(None), 1, &gone, &none),
+            "not Veistra's"
+        );
     }
 
     #[test]

@@ -8,7 +8,7 @@ vi.mock("./rpc", () => ({
 }));
 
 import { editorEdit, editorOpenScene, editorSelect, type EditorInfo } from "./rpc";
-import { godotPlace, godotReport, revealInGodot } from "./reveal";
+import { godotPlace, godotReport, launchSceneFor, revealInGodot } from "./reveal";
 
 const editor = {
   project: "game",
@@ -91,5 +91,29 @@ describe("a chip shown in the running Godot", () => {
     expect(await revealInGodot({ tool: "godot", project: "other", nodes: ["A"] }, editor)).toBe(
       "That is in the project other; this editor has game open.",
     );
+  });
+});
+
+describe("a scene opened from the Explorer", () => {
+  const projects = [{ rel: "." }, { rel: "games/hall" }];
+
+  it("starts the innermost project holding it, on that scene", () => {
+    expect(launchSceneFor({ tool: "godot", file: "games/hall/levels/a.tscn" }, projects)).toEqual({
+      project: "games/hall",
+      scene: "res://levels/a.tscn",
+    });
+    expect(launchSceneFor({ tool: "godot", file: "menu.scn" }, projects)).toEqual({
+      project: ".",
+      scene: "res://menu.scn",
+    });
+  });
+
+  it("is nothing for a script, a node reveal, or a file in no project", () => {
+    expect(launchSceneFor({ tool: "godot", file: "player.gd" }, projects)).toBeNull();
+    expect(
+      launchSceneFor({ tool: "godot", scene: "res://a.tscn", nodes: ["A"] }, projects),
+    ).toBeNull();
+    expect(launchSceneFor({ tool: "godot", file: "x/a.tscn" }, [{ rel: "games/hall" }])).toBeNull();
+    expect(launchSceneFor(null, projects)).toBeNull();
   });
 });

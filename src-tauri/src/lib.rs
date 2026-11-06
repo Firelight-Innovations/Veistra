@@ -638,6 +638,7 @@ pub fn run() {
             commands::review_comment_remove,
             commands::review_comments_mark_sent,
             github::github_feed,
+            embed::host::embed_overlays,
             github::github_open_in_browser,
             cloud::hindsight::hindsight_status,
             cloud::google::google_auth_status,

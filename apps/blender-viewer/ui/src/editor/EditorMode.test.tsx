@@ -218,7 +218,6 @@ function show(viewer: Partial<BlenderViewerState> = {}, onPick = vi.fn(), onComp
       viewer={{ ...VIEWER, ...viewer }}
       onPick={onPick}
       frameRect={null}
-      overlays={[]}
       onCompare={onCompare}
     />,
   );
@@ -288,12 +287,31 @@ describe("Blender's Editor mode opens Blender by itself", () => {
         viewer={{ ...VIEWER, versions: [6, 5, 4, 3] }}
         onPick={onPick}
         frameRect={null}
-        overlays={[]}
         onCompare={onCompare}
       />,
     );
     await pollsGoBy();
     expect(calls("blender-viewer/editor-open")).toHaveLength(1);
+  });
+
+  it("waits for the file the Explorer opened this tab on, then opens Blender on it", async () => {
+    const modeSwitch = { value: "editor" as const, options: modesFor(3), onChange: vi.fn() };
+    const mode = (viewer: Partial<BlenderViewerState>, loading: boolean) => (
+      <EditorMode
+        modeSwitch={modeSwitch}
+        viewer={{ ...VIEWER, ...viewer }}
+        onPick={vi.fn()}
+        loading={loading}
+        frameRect={null}
+      />
+    );
+    // The app still shows the environment's default while it fetches the asked-for file.
+    const { rerender } = render(mode({}, true));
+    await pollsGoBy();
+    expect(calls("blender-viewer/editor-open")).toHaveLength(0);
+    rerender(mode({ rel: "art/chair.blend" }, false));
+    await waitFor(() => expect(calls("blender-viewer/editor-open")).toHaveLength(1));
+    expect(calls("blender-viewer/editor-open")[0]![1]).toEqual({ blend: "art/chair.blend" });
   });
 
   it("does not start a second Blender when the first poll finds one open", async () => {
@@ -447,7 +465,6 @@ describe("Blender's Editor mode with no .blend in the environment", () => {
         }}
         onPick={onPick}
         frameRect={null}
-        overlays={[]}
         onCompare={onCompare}
       />,
     );
