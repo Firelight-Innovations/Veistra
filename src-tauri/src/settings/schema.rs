@@ -688,18 +688,18 @@ static CLOUD: Group = Group {
 // "Veistra accounts are not set up on this build", silently. The address is
 // public (it is in every request the app sends), like `wire::CLIENT_ID`.
 //
-// `webUrl` is Firebase Hosting's own domain, not veistra.com, until veistra.com
-// moves off Render: Render serves the static pages but has no `/api`, so its
-// dashboard could not sign anyone in. It is also the origin the service sends
-// in `verification_uri`, so the approve page and "Manage on veistra.com" land
-// on the same site, with the same session cookie. Change both defaults back to
-// veistra.com with the DNS move (the website's `docs/firebase-hosting.md`).
+// `webUrl` is the origin the service sends in `verification_uri` (its
+// `SITE_ORIGIN`), so the approve page and "Manage on veistra.com" land on the
+// same site, with the same session cookie. Change the two together. It was
+// Firebase Hosting's own `veistra-prod.web.app` until veistra.com moved off
+// Render, which had no `/api` and so could sign no one in (the website's
+// `docs/handoffs/domain-move.md`).
 
 /// The account service on Cloud Run, called directly: Hosting would cut a
 /// request at 60 s (`docs/account-api.md`, Base address).
 pub const DEFAULT_ACCOUNT_API: &str = "https://account-622707038832.us-central1.run.app";
 /// The website the account pages and the docs are read from.
-pub const DEFAULT_ACCOUNT_WEB: &str = "https://veistra-prod.web.app";
+pub const DEFAULT_ACCOUNT_WEB: &str = "https://veistra.com";
 
 static ACCOUNT_SETTINGS: &[Setting] = &[
     Setting {

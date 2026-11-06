@@ -24,11 +24,11 @@ Empty turns Veistra accounts off in that build: the app shows no sign-in screen,
 Account and Usage say so.
 
 `account.webUrl` is the website: the approve page, "Manage on veistra.com", "Open on veistra.com"
-and the Docs pages. Its default is `https://veistra-prod.web.app`, Firebase Hosting's own domain,
-until veistra.com moves off Render. Render serves the static pages but has no `/api`, so its
-dashboard cannot sign anyone in. It is also the origin the service puts in `verification_uri`, so
-the browser holds one session cookie for both. Both defaults go back to veistra.com with the DNS
-move.
+and the Docs pages. Its default is `https://veistra.com`, served by Firebase Hosting, which
+forwards `/api/**` to the service. It is also the origin the service puts in `verification_uri`
+(its `SITE_ORIGIN`), so the browser holds one session cookie for both; the two change together.
+`https://veistra-prod.web.app`, Hosting's own domain, serves the same site and stays signed-in
+capable, for builds made before the domain moved.
 
 The shell reads these endpoints through the `account/*` methods (`src-tauri/src/account/`): Home
 calls them as an app, and the shell's title-bar avatar and Settings' Account, Billing and Usage
