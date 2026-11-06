@@ -29,8 +29,9 @@ pub const MENU: &str = include_str!("veistra_menu.gd");
 
 /// What each script's first line says it is, so an older copy reads as
 /// partial. v2 is the first with the dock (#320); v3, with dock v2 and the
-/// menus, the first with Mention in agent.
-const VERSION_MARKER: &str = "# veistra-editor v3";
+/// menus, the first with Mention in agent; v4, the first that can quit
+/// without its prompt, for a cluster closed with Close.
+const VERSION_MARKER: &str = "# veistra-editor v4";
 const DOCK_MARKER: &str = "# veistra-dock v2";
 const MENU_MARKER: &str = "# veistra-menu v1";
 const SECTION: &str = "[editor_plugins]";
@@ -344,6 +345,18 @@ mod tests {
         assert!(std::fs::read_to_string(menu_path(dir.path()))
             .unwrap()
             .starts_with(MENU_MARKER));
+    }
+
+    // Editor v3 cannot quit without its prompt, so a cluster closed with
+    // Close would hand its editor back asking; the pane offers the update.
+    #[test]
+    fn a_plugin_that_cannot_quit_reads_as_partial_until_reinstalled() {
+        let dir = project(PROJECT);
+        install(dir.path()).unwrap();
+        std::fs::write(script_path(dir.path()), "# veistra-editor v3\n").unwrap();
+        assert_eq!(status(dir.path()), Installed::Partial);
+        install(dir.path()).unwrap();
+        assert_eq!(status(dir.path()), Installed::Yes);
     }
 
     #[test]

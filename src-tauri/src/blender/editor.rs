@@ -9,7 +9,8 @@
 //! what the title bar's close button sends, so Blender asks to save; with no
 //! window to post to, the boot script's `quit` runs Blender's own quit, which
 //! asks the same. A pane that closes, or Veistra exiting, hands the window
-//! back as a normal one ([`Orphan::Release`]).
+//! back as a normal one ([`Orphan::Release`]); a cluster closed with Save &
+//! close or Close saves or just quits it instead ([`crate::editor_close`]).
 //!
 //! **One writer per file** ([`super::lock`]): while Blender here has a
 //! `.blend` open, `.veistra/locks/<file>.lock` names its process. A watcher
@@ -288,6 +289,33 @@ impl Editors {
     fn next_id(&self) -> u64 {
         self.next_id.fetch_add(1, Ordering::SeqCst) + 1
     }
+
+    /// Every Blender Veistra started, running or not.
+    pub fn all(&self) -> Vec<Arc<Editor>> {
+        self.all.lock_or_panic().values().cloned().collect()
+    }
+}
+
+/// One command to `editor` with no pane or cluster behind the call, as a
+/// cluster closing sends `save` and `quit`. Its answer when it was `ok`.
+pub fn send(
+    editors: &Editors,
+    editor: &Editor,
+    action: &str,
+    extra: Value,
+    wait: Duration,
+) -> Result<Value, String> {
+    if !editor.booted() {
+        return Err(NOT_BOOTED.to_string());
+    }
+    let reply = exchange(&editor.channel, editors.next_id(), action, extra, wait)?;
+    if reply["ok"].as_bool() != Some(true) {
+        return Err(reply["error"]
+            .as_str()
+            .unwrap_or("Blender refused")
+            .to_string());
+    }
+    Ok(reply)
 }
 
 fn same_dir(a: &Path, b: &Path) -> bool {

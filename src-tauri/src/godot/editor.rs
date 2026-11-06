@@ -7,9 +7,9 @@
 //! the pane can say it runs and follow it; nothing here kills it. Close posts
 //! `WM_CLOSE` to its window, what the title bar's close button sends, so Godot
 //! asks to save unsaved work and the person may cancel. With no window to post
-//! to, the plugin's `close` does the same from inside. When the pane closes or
-//! Veistra exits, the window is handed back as a normal one
-//! ([`Orphan::Release`]).
+//! to, the plugin's `close` does the same from inside. A closed pane or exit
+//! hands the window back ([`Orphan::Release`]); a cluster closed with Save &
+//! close or Close saves or just quits it instead ([`crate::editor_close`]).
 //!
 //! **One per cluster, one per project:** two editors on one project folder
 //! write over each other's saves, so a second cluster's is refused.
@@ -163,6 +163,11 @@ impl Editors {
         if all.get(cluster).is_some_and(|e| Arc::ptr_eq(e, editor)) {
             all.remove(cluster);
         }
+    }
+
+    /// Every cluster's editor, running or not.
+    pub fn all(&self) -> Vec<Arc<Editor>> {
+        self.0.lock_or_panic().values().cloned().collect()
     }
 
     /// The running editor on `project`, whichever cluster opened it.
@@ -586,6 +591,41 @@ fn command(ctx: &Ctx, action: &str, extra: Value) -> Result<(Value, Option<Vec<u
         return Err(fail(format!("Godot: {error}")));
     }
     Ok((reply, png))
+}
+
+/// One plugin command to `editor` with no pane or cluster behind the call,
+/// as a cluster closing sends `save` and `quit`.
+pub fn send(
+    godot: &super::Godot,
+    editor: &Editor,
+    action: &str,
+    wait: Duration,
+) -> Result<(), String> {
+    if !editor.plugin_running() {
+        return Err(no_plugin(editor));
+    }
+    let id = godot.next_command_id();
+    let reply = addon::exchange(
+        &editor.channel,
+        id,
+        action,
+        json!({}),
+        wait,
+        SILENT,
+        |dir, text| {
+            let reply: Value =
+                serde_json::from_str(text).map_err(|e| format!("unreadable reply: {e}"))?;
+            let _ = std::fs::remove_file(dir.join(format!("res-{id}.json")));
+            Ok(reply)
+        },
+    )?;
+    match reply["ok"].as_bool() {
+        Some(true) => Ok(()),
+        _ => Err(reply["error"]
+            .as_str()
+            .unwrap_or("the editor refused")
+            .to_string()),
+    }
 }
 
 /// A reply's picture as the page takes it, beside its size and camera.

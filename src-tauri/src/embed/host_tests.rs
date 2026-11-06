@@ -219,6 +219,48 @@ fn closing_an_editor_s_pane_hands_the_editor_back_and_closing_play_s_stops_the_g
     assert_eq!(hosts.box_of(&Slot::new("blender-1", Kind::Blender)), None);
 }
 
+// A cluster closed with Save & close or Close: its editors are taken before
+// it goes, hidden, and handed back only if ending them fails.
+#[test]
+fn an_editor_taken_from_a_closing_cluster_is_hidden_and_not_handed_back() {
+    let fake = Arc::new(Fake::default());
+    let hosts = hosts(&fake);
+    boxed(&hosts, "blender-1", Kind::Blender);
+    let blender = hosts.host(
+        owners(),
+        true,
+        spec(&hosts, Some("blender-1"), Kind::Blender, Orphan::Release),
+    );
+    wait_for("Blender placed", || state_of(&blender) == State::Embedded);
+    let game = hosts.host(
+        owners(),
+        true,
+        spec(&hosts, Some("play-1"), Kind::Game, Orphan::Release),
+    );
+
+    let c2 = ["godot-1".to_string(), "play-2".into(), "blender-1".into()];
+    let found = hosts.editors_in(&c2);
+    assert_eq!(found.len(), 1, "the game is never an editor");
+    assert!(Arc::ptr_eq(&found[0], &blender));
+    assert!(hosts.editors_in(&["play-1".into()]).is_empty());
+    drop(game);
+
+    let taken = hosts.take(&found[0], &owners()).expect("taken");
+    assert!(!blender.embed.shown(), "hidden while it saves and quits");
+    assert!(hosts.take(&found[0], &owners()).is_none(), "taken once");
+    assert!(hosts.get(&Slot::new("blender-1", Kind::Blender)).is_none());
+
+    let closed = without(snapshot("c1", "play-1"), "blender-1");
+    hosts.sync_visibility(&closed, &owners());
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(state_of(&blender), State::Embedded, "not handed back");
+    assert!(fake.released.lock_or_panic().is_empty());
+
+    taken.hand_back();
+    assert_eq!(state_of(&blender), State::PoppedOut);
+    assert_eq!(fake.released.lock_or_panic().len(), 1);
+}
+
 #[test]
 fn the_game_belongs_to_the_play_pane_that_last_showed_it() {
     let fake = Arc::new(Fake::default());

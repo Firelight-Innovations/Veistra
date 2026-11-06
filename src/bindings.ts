@@ -1687,8 +1687,34 @@ export function renameCluster(clusterId: string, name: string): Promise<void> {
   return invoke("rename_cluster", { clusterId, name });
 }
 
-export function closeCluster(clusterId: string): Promise<void> {
-  return invoke("close_cluster", { clusterId });
+/**
+ * What to do with the Blender and Godot editors in a cluster being closed:
+ * save and quit them, or quit them. Mirrors `editor_close::OnClose`.
+ */
+export type EditorsOnClose = "save" | "discard";
+
+/** An editor open in a cluster's panes. Mirrors `editor_close::OpenEditor`. */
+export interface OpenEditor {
+  instance: string;
+  kind: "blender" | "godot";
+  /** The `.blend` Blender has open or the Godot project's folder; `null` for an untitled scene. */
+  name: string | null;
+  /** Whether it has unsaved changes, when the editor says. */
+  dirty: boolean | null;
+}
+
+/**
+ * Close a cluster. `editors` is what the person chose for the editors in it,
+ * asked first when `clusterEditors` names any; without it they are handed
+ * back as windows of their own.
+ */
+export function closeCluster(clusterId: string, editors?: EditorsOnClose): Promise<void> {
+  return invoke("close_cluster", { clusterId, editors: editors ?? null });
+}
+
+/** The Blender and Godot editors open in a cluster, to ask about before closing it. */
+export function clusterEditors(clusterId: string): Promise<OpenEditor[]> {
+  return invoke("cluster_editors", { clusterId });
 }
 
 // --- windows ----------------------------------------------------------------

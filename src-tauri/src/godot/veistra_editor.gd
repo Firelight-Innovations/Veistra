@@ -1,4 +1,4 @@
-# veistra-editor v3
+# veistra-editor v4
 #
 # The Veistra editor plugin. Installed by Veistra (Godot > Editor > Enable the
 # Veistra plugin) beside the capture addon in addons/veistra/, and removable
@@ -18,6 +18,8 @@
 #   {"id": 7, "action": "save"}
 #   {"id": 8, "action": "close"}   (the editor's own save prompt, then quit)
 #   {"id": 9, "action": "edit", "path": "res://enemy.gd"}   (v3: a script or resource)
+#   {"id": 10, "action": "quit"}   (v4: quit with no prompt; the person chose
+#                                   Close in Veistra, which asked first)
 #
 # Written to state.json whenever it changes: the edited scene, the open
 # scenes, the selected nodes, the edited scene's nodes (v3, for the agent
@@ -262,6 +264,10 @@ func _poll_command() -> void:
 			# What the window's close button does: the editor asks to save
 			# anything unsaved, in its own dialog, and may be cancelled.
 			get_tree().root.propagate_notification(NOTIFICATION_WM_CLOSE_REQUEST)
+		"quit":
+			# No prompt: closing the cluster with Close already asked. The
+			# quit lands at the end of this frame, after the answer is written.
+			get_tree().quit()
 		_:
 			result = {"id": id, "ok": false, "error": "unknown action"}
 	result["t"] = int(Time.get_unix_time_from_system() * 1000.0)

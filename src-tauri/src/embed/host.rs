@@ -145,6 +145,24 @@ impl Hosted {
     }
 }
 
+/// An editor out of the registry, hidden, for its closing cluster to end.
+pub struct Taken {
+    hosted: Arc<Hosted>,
+    owner: Option<Owner>,
+}
+
+impl Taken {
+    pub fn embed(&self) -> &Arc<Embed> {
+        &self.hosted.embed
+    }
+
+    /// Back to a normal window, as a pane closing does: what is left when
+    /// the editor could not be saved or would not quit.
+    pub fn hand_back(&self) {
+        self.hosted.release(self.owner.as_ref());
+    }
+}
+
 /// The registry, managed by Tauri. Boxes are shared with the threads that
 /// wait for a window, which read the pane's window label when it appears.
 pub struct Hosts {
@@ -416,6 +434,38 @@ impl Hosts {
             Orphan::Release => hosted.release(owner.as_ref()),
             Orphan::Stop(stop) => stop(),
         });
+    }
+
+    /// The editors shown in any of `instances`: a cluster's, before it closes.
+    pub fn editors_in(&self, instances: &[String]) -> Vec<Arc<Hosted>> {
+        self.live()
+            .into_iter()
+            .filter(|h| h.kind != Kind::Game)
+            .filter(|h| h.instance().is_some_and(|i| instances.contains(&i)))
+            .collect()
+    }
+
+    /// Take `hosted` out of the registry and hide it, so its pane closing
+    /// does not hand it back: a cluster closed with Save & close or Close
+    /// ends it instead ([`crate::editor_close`]). `None` if it was already
+    /// let go of.
+    pub fn take(&self, hosted: &Arc<Hosted>, owner_of: &OwnerFn) -> Option<Taken> {
+        if hosted.orphaned.swap(true, Ordering::SeqCst) {
+            return None;
+        }
+        self.hosted
+            .lock_or_panic()
+            .retain(|h| !Arc::ptr_eq(h, hosted));
+        let owner = self.owner_for(hosted, owner_of);
+        if hosted.embed.set_shown(false) {
+            if let Some(owner) = &owner {
+                hosted.embed.reapply(owner);
+            }
+        }
+        Some(Taken {
+            hosted: hosted.clone(),
+            owner,
+        })
     }
 
     /// Put every placed window back over its pane: the Veistra window moved

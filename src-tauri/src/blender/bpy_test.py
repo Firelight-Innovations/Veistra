@@ -208,6 +208,24 @@ class BootScript(Booted):
         self.assertFalse(headless["ok"])
         self.assertTrue(headless["error"])
 
+    # Save & close on a cluster: the open file, saved where it is.
+    def test_save_writes_the_open_file_in_place(self):
+        blend = os.path.join(self.dir, "bed.blend")
+        bpy.data.objects["Frame"].location.x += 1.0
+        before = sha256(blend)
+        res = self.send({"id": 6, "action": "save"})
+        self.assertTrue(res["ok"], res)
+        self.assertTrue(res["file"].endswith("bed.blend"))
+        if res["saved"]:
+            self.assertNotEqual(sha256(blend), before)
+        self.assertFalse(bpy.data.is_dirty)
+
+    def test_save_refuses_a_scene_with_no_file(self):
+        bpy.ops.wm.read_homefile(use_empty=True)
+        res = self.send({"id": 7, "action": "save"})
+        self.assertFalse(res["ok"])
+        self.assertIn("never been saved", res["error"])
+
 
 class Layout:
     """Enough of a UILayout to record what a panel's draw puts in it."""

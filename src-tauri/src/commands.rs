@@ -791,18 +791,38 @@ pub fn set_cluster_icon(
 /// Closing the last one leaves a window with no clusters, which is a legal
 /// state: the app area draws an empty state. `detach_cluster` below can leave a
 /// window in the same state, and no longer refuses to — see `move_cluster_pure`.
+///
+/// `editors` is what the person chose for the Blender and Godot editors in it,
+/// asked by the shell when `cluster_editors` names any: saved and quit, or
+/// quit. Without it they are handed back as windows of their own, as a pane
+/// closing does — see `editor_close`.
 #[tauri::command]
 pub fn close_cluster(
     app: tauri::AppHandle,
     shell: State<'_, ShellState>,
     ptys: State<'_, PtySessions>,
     cluster_id: String,
+    editors: Option<crate::editor_close::OnClose>,
 ) {
+    // Before the cluster goes: closing it hands back whatever is still hosted.
+    if let Some(on) = editors {
+        crate::editor_close::close_with(&app, &cluster_id, on);
+    }
     let (_instances, terminals) = shell.close_cluster(&app, &cluster_id);
     for id in terminals {
         ptys.close(&id);
     }
     project::retitle(&app);
+}
+
+/// The Blender and Godot editors open in a cluster's panes, so the shell can
+/// ask what to do with them before `close_cluster`.
+#[tauri::command]
+pub fn cluster_editors(
+    app: tauri::AppHandle,
+    cluster_id: String,
+) -> Vec<crate::editor_close::OpenEditor> {
+    crate::editor_close::open_in(&app, &cluster_id)
 }
 
 // --- windows ----------------------------------------------------------------

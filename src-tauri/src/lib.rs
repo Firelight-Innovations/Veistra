@@ -24,6 +24,7 @@ mod design_comments;
 mod devtools;
 mod diagnostics;
 mod discovery;
+mod editor_close;
 mod editor_notes;
 mod editor_surface;
 mod embed;
@@ -550,6 +551,7 @@ pub fn run() {
             commands::rename_cluster,
             commands::set_cluster_icon,
             commands::close_cluster,
+            commands::cluster_editors,
             commands::set_cluster_project,
             commands::cluster_project,
             commands::list_recent_projects,

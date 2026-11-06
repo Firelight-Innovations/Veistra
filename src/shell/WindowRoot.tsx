@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, MotionConfig } from "framer-motion";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { contextItemPaths, onCopilotKey, type Openable, type StackSnapshot } from "../bindings";
+import {
+  clusterEditors,
+  contextItemPaths,
+  onCopilotKey,
+  type EditorsOnClose,
+  type Openable,
+  type OpenEditor,
+  type StackSnapshot,
+} from "../bindings";
 import Frame, { BOTTOM_DEFAULT, PROJECT_PAGE_DEFAULT } from "./frame/Frame";
 import { bandGeometry, withBandGeometry, type BandGeometryByCluster } from "./frame/bandGeometry";
 import {
@@ -34,6 +42,7 @@ import NewClusterDialog, {
 import SwitchProjectDialog from "./dialogs/SwitchProjectDialog";
 import SignInCodeHost from "./account/SignInCodeDialog";
 import CloseUnsavedDialog from "./dialogs/CloseUnsavedDialog";
+import CloseEditorsDialog from "./dialogs/CloseEditorsDialog";
 import { getSubject } from "./viewerSubjects";
 import { nextAddClusterStep } from "./addClusterFlow";
 import { commandsFromMenus, withOpenAppCommands } from "./palette/registry";
@@ -839,9 +848,30 @@ export default function WindowRoot({
     [label, clusters.length, project, activeClusterId],
   );
 
+  // A cluster with Blender or the Godot editor in it asks first: those are
+  // programs of the person's own, with work of their own, and closing the
+  // cluster ends them (`CloseEditorsDialog`). One without closes at once.
+  const [editorsClose, setEditorsClose] = useState<{
+    clusterId: string;
+    editors: OpenEditor[];
+  } | null>(null);
+
   const onCloseCluster = useCallback((clusterId: string) => {
-    void closeCluster(clusterId);
+    void clusterEditors(clusterId).then(
+      (editors) =>
+        editors.length === 0 ? closeCluster(clusterId) : setEditorsClose({ clusterId, editors }),
+      // Nothing could be asked: close as before, which hands any editor back.
+      () => closeCluster(clusterId),
+    );
   }, []);
+
+  const finishEditorsClose = useCallback(
+    (choice: EditorsOnClose | null) => {
+      if (editorsClose && choice) void closeCluster(editorsClose.clusterId, choice);
+      setEditorsClose(null);
+    },
+    [editorsClose],
+  );
 
   // The cluster whose icon picker is open. Held as an id, not a cluster, so the
   // dialog reads the live one and closes itself if the cluster is closed under it.
@@ -2166,6 +2196,15 @@ export default function WindowRoot({
             void closeInstance(unsavedClose.id);
             setUnsavedClose(null);
           }}
+        />
+      )}
+      {editorsClose && (
+        <CloseEditorsDialog
+          cluster={clusters.find((c) => c.id === editorsClose.clusterId)?.name ?? "This cluster"}
+          editors={editorsClose.editors}
+          onCancel={() => finishEditorsClose(null)}
+          onClose={() => finishEditorsClose("discard")}
+          onSaveAndClose={() => finishEditorsClose("save")}
         />
       )}
       {switchProjectOpen && (
